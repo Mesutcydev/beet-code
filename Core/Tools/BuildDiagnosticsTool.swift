@@ -126,7 +126,11 @@ struct BuildDiagnosticsTool: AgentTool, CommandExecuting {
         // Run through the same cancellation-aware runner as run_command.
         let cancelled = OSAllocatedUnfairLock(initialState: false)
         return try await withTaskCancellationHandler {
-            try await Task.detached(priority: .utility) {
+            // .userInitiated to match the awaiting task's QoS (see the same
+            // fix in RunCommandTool — a .utility detached task caused a
+            // priority-inversion warning whose inline symbolication wedged
+            // the waiter).
+            try await Task.detached(priority: .userInitiated) {
                 try ShellRunner.run(
                     command: command,
                     workingDirectory: directory,

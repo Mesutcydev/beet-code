@@ -36,16 +36,18 @@ struct ChatView: View {
 
     @State private var isPinnedToBottom = true
 
+    /// Cursor/ChatGPT-style transcript: a centered content column (never
+    /// edge-to-edge prose), grouped tool steps, avatar-led assistant output.
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     if controller.transcript.isEmpty && controller.streamingText.isEmpty {
                         emptyState
                     }
-                    ForEach(controller.transcript) { item in
-                        TranscriptRow(item: item)
-                            .id(item.id)
+                    ForEach(displayRows) { row in
+                        rowView(row)
+                            .id(row.id)
                     }
                     if !controller.streamingText.isEmpty {
                         StreamingCard(text: controller.streamingText)
@@ -74,7 +76,13 @@ struct ChatView: View {
                     }
                     Color.clear.frame(height: 8).id("bottom")
                 }
-                .padding()
+                // Centered content column: on wide windows the transcript
+                // never stretches edge-to-edge (Cursor/ChatGPT both keep a
+                // readable measure of ~760pt centered).
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 // Pinned means the viewport bottom is within ~40 pt of the
@@ -136,9 +144,85 @@ struct ChatView: View {
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
+
+            // ChatGPT-style quick prompts: one tap drops a ready-made task
+            // into the composer. Only offered when a model can actually run
+            // (no dead affordance on a failed/no-model state).
+            if canSuggestPrompts {
+                VStack(spacing: 10) {
+                    suggestionRow(suggestions[0])
+                    suggestionRow(suggestions[1])
+                }
+                .padding(.top, 6)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.top, 80)
+    }
+
+    /// Label (chip text) + prompt (what actually goes in the composer).
+    private struct Suggestion: Identifiable {
+        let label: String
+        let prompt: String
+        let glyph: String
+        var id: String { label }
+    }
+
+    private var suggestions: [[Suggestion]] {
+        [
+            [
+                Suggestion(label: "Explain this codebase",
+                           prompt: "What does this project do? Walk me through the structure and the main entry points.",
+                           glyph: "doc.text.magnifyingglass"),
+                Suggestion(label: "Find bugs",
+                           prompt: "Review this project for likely bugs and correctness problems. Report the top issues with file locations.",
+                           glyph: "ladybug"),
+            ],
+            [
+                Suggestion(label: "Fix the failing build",
+                           prompt: "Run the build/tests and fix whatever fails. Explain each fix.",
+                           glyph: "wrench.and.screwdriver"),
+                Suggestion(label: "Add a feature",
+                           prompt: "I want to add a new feature. First explore the codebase, then propose a plan before changing anything.",
+                           glyph: "wand.and.stars"),
+            ],
+        ]
+    }
+
+    /// Suggestion chips make sense only when a run could actually start.
+    private var canSuggestPrompts: Bool {
+        switch appState.enginePhase {
+        case .ready, .idle: return appState.activeModel != nil || appState.isRemoteActive || APIKeyStore.shared.configuredProviders.isEmpty == false
+        case .loading, .failed: return false
+        }
+    }
+
+    @ViewBuilder
+    private func suggestionRow(_ items: [Suggestion]) -> some View {
+        HStack(spacing: 10) {
+            ForEach(items) { suggestion in
+                Button {
+                    latticeStore.prompt = suggestion.prompt
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: suggestion.glyph)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.accent)
+                        Text(suggestion.label)
+                            .font(.caption)
+                            .foregroundStyle(Theme.textPrimary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(Theme.surface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .lfHoverLift()
+                .help(suggestion.prompt)
+            }
+        }
     }
 
     private var emptyTitle: String {
@@ -205,17 +289,79 @@ struct ChatView: View {
 }
 // MARK: - Rows
 
-private struct TranscriptRow: View {
+/// One rendered transcript row. Consecutive tool activity (calls, results,
+/// reasoning) collapses into a single "steps" card — the Cursor pattern —
+/// so a run reads as "answer, work, answer", never a wall of alternating
+/// call/result lines.
+private enum TranscriptRowModel: Identifiable {
+    case user(AgentSessionController.TranscriptItem)
+    case assistant(AgentSessionController.TranscriptItem)
+    case toolSteps([AgentSessionController.TranscriptItem])
+    case meta(AgentSessionController.TranscriptItem)
+
+    var id: String {
+        switch self {
+        case .user(let item), .assistant(let item), .meta(let item):
+            return item.id.uuidString
+        case .toolSteps(let items):
+            return "steps-" + (items.first?.id.uuidString ?? "empty")
+        }
+    }
+}
+
+private extension ChatView {
+    /// Groups the flat transcript into display rows.
+    var displayRows: [TranscriptRowModel] {
+        var rows: [TranscriptRowModel] = []
+        var buffer: [AgentSessionController.TranscriptItem] = []
+        func flush() {
+            if !buffer.isEmpty {
+                rows.append(.toolSteps(buffer))
+                buffer = []
+            }
+        }
+        for item in controller.transcript {
+            switch item.kind {
+            case .user:
+                flush(); rows.append(.user(item))
+            case .assistant:
+                flush(); rows.append(.assistant(item))
+            case .toolCall, .toolResult, .reasoning:
+                buffer.append(item)
+            case .checkpoint, .notice:
+                flush(); rows.append(.meta(item))
+            }
+        }
+        flush()
+        return rows
+    }
+
+    @ViewBuilder
+    func rowView(_ row: TranscriptRowModel) -> some View {
+        switch row {
+        case .user(let item):
+            UserBubble(item: item)
+        case .assistant(let item):
+            AssistantMessage(item: item)
+        case .toolSteps(let items):
+            ToolStepsCard(items: items)
+        case .meta(let item):
+            MetaRow(item: item)
+        }
+    }
+}
+
+/// User message: right-aligned pill (ChatGPT pattern) with a max measure.
+private struct UserBubble: View {
     let item: AgentSessionController.TranscriptItem
 
     var body: some View {
-        switch item.kind {
-        case .user(let text):
+        if case .user(let text) = item.kind {
             HStack {
                 Spacer()
                 Text(text)
                     .foregroundStyle(Theme.textPrimary)
-                    .padding(.horizontal, 13)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
@@ -223,99 +369,251 @@ private struct TranscriptRow: View {
                     .frame(maxWidth: 520, alignment: .trailing)
                     .textSelection(.enabled)
             }
-        case .assistant(let text):
-            AssistantBubble(text: text)
-        case .toolCall(let invocation):
-            ToolCallRow(invocation: invocation)
-        case .toolResult(let id, let output, let failed, let toolName):
-            ToolResultRow(callID: id, output: output, failed: failed, toolName: toolName)
-        case .reasoning(let text):
-            ReasoningCard(text: text)
-        case .checkpoint(let checkpoint):
-            Label(
-                "Checkpoint saved — \(checkpoint.summary)",
-                systemImage: "camera.fill")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .notice(let text):
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 }
 
-private struct AssistantBubble: View {
+/// Assistant output: avatar-led, no bubble, full column width, inline
+/// markdown — the ChatGPT/Cursor reading pattern.
+private struct AssistantMessage: View {
+    let item: AgentSessionController.TranscriptItem
+
+    var body: some View {
+        if case .assistant(let text) = item.kind {
+            HStack(alignment: .top, spacing: 12) {
+                AssistantAvatar()
+                MarkdownText(text: text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+}
+
+/// The agent's identity mark: gradient tile with a sparkles glyph. Reused by
+/// assistant messages and the streaming card so output always has a face.
+struct AssistantAvatar: View {
+    var size: CGFloat = 26
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+            .fill(Theme.accentGradient)
+            .frame(width: size, height: size)
+            .overlay(
+                Image(systemName: "sparkles")
+                    .font(.system(size: size * 0.46, weight: .semibold))
+                    .foregroundStyle(.white))
+            .shadow(color: Theme.accent.opacity(0.35), radius: 6, y: 2)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Inline-markdown text with a plain-text fallback. Markdown renders code,
+/// bold, and links like ChatGPT; if parsing fails (raw identifiers with
+/// stray underscores), plain text shows — never a blank bubble.
+struct MarkdownText: View {
     let text: String
 
     var body: some View {
-        Text(text)
-            .foregroundStyle(Theme.textPrimary)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
-            .frame(maxWidth: 640, alignment: .leading)
-            .lfCard()
-            .textSelection(.enabled)
-    }
-}
-
-private struct ToolCallRow: View {
-    let invocation: ToolInvocation
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "wrench.and.screwdriver")
-                .foregroundStyle(.secondary)
-            Text(invocation.name).font(.callout.monospaced().bold())
-            Text(invocation.summary)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+        if let attributed = try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            Text(attributed)
+                .font(.callout)
+                .foregroundStyle(Theme.textPrimary)
+        } else {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(Theme.textPrimary)
         }
-        .padding(.vertical, 2)
     }
 }
 
-private struct ToolResultRow: View {
-    let callID: UUID
-    let output: String
-    let failed: Bool
-    let toolName: String?
-
-    @State private var expanded = false
+/// Checkpoint + notice lines: quiet, centered, never shouting.
+private struct MetaRow: View {
+    let item: AgentSessionController.TranscriptItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation { expanded.toggle() }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: failed ? "xmark.circle.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(failed ? Theme.danger : Theme.success)
-                    Text(expanded ? "Hide output" : "Show output")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
-                }
+        switch item.kind {
+        case .checkpoint(let checkpoint):
+            Label("Checkpoint saved — \(checkpoint.summary)", systemImage: "camera.fill")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+        case .notice(let text):
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+/// Grouped tool activity: one collapsible card per consecutive run of
+/// calls/results/reasoning. Header shows the step count + outcome; the
+/// expanded body lists each step with status and inline output.
+private struct ToolStepsCard: View {
+    let items: [AgentSessionController.TranscriptItem]
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var callCount: Int {
+        items.filter { if case .toolCall = $0.kind { return true }; return false }.count
+    }
+    private var hasFailure: Bool {
+        items.contains { if case .toolResult(_, _, let failed, _) = $0.kind { return failed }; return false }
+    }
+    private var toolNames: [String] {
+        var names: [String] = []
+        for item in items {
+            if case .toolCall(let invocation) = item.kind, !names.contains(invocation.name) {
+                names.append(invocation.name)
             }
-            .buttonStyle(.borderless)
+        }
+        return names
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if reduceMotion {
+                    expanded.toggle()
+                } else {
+                    withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "wrench.and.screwdriver.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.accent)
+                    Text("\(callCount) step\(callCount == 1 ? "" : "s")")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    if !toolNames.isEmpty {
+                        Text(toolNames.joined(separator: " · "))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    if hasFailure {
+                        Label("failed", systemImage: "xmark.circle.fill")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Theme.danger)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.success)
+                    }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "Hide tool steps" : "Show tool steps")
 
             if expanded {
-                if toolName == "build_diagnostics" {
-                    DiagnosticsCard(rawOutput: output)
-                } else {
-                    ScrollView {
-                        Text(output)
-                            .font(.caption.monospaced())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
+                Divider().padding(.horizontal, 12)
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(items) { item in
+                        StepRow(item: item)
                     }
-                    .frame(maxHeight: 280)
-                    .padding(8)
-                    .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                }
+                .padding(12)
+            }
+        }
+        .background(Theme.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .strokeBorder(Theme.hairline, lineWidth: 1))
+    }
+}
+
+/// One line inside the steps card: call, result (with inline output), or
+/// reasoning.
+private struct StepRow: View {
+    let item: AgentSessionController.TranscriptItem
+    @State private var outputExpanded = false
+    @State private var reasoningExpanded = false
+
+    var body: some View {
+        switch item.kind {
+        case .toolCall(let invocation):
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.textTertiary)
+                Text(invocation.name)
+                    .font(.caption.monospaced().bold())
+                    .foregroundStyle(Theme.textPrimary)
+                Text(invocation.summary)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        case .toolResult(_, let output, let failed, let toolName):
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    outputExpanded.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: failed ? "xmark.circle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(failed ? Theme.danger : Theme.success)
+                        Text(outputExpanded ? "Hide output" : "Show output")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+                .buttonStyle(.borderless)
+
+                if outputExpanded {
+                    if toolName == "build_diagnostics" {
+                        DiagnosticsCard(rawOutput: output)
+                    } else {
+                        ScrollView {
+                            Text(output)
+                                .font(.caption.monospaced())
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 280)
+                        .padding(8)
+                        .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                    }
                 }
             }
+        case .reasoning(let text):
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    reasoningExpanded.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: reasoningExpanded ? "brain.head.profile" : "chevron.right.circle")
+                            .foregroundStyle(Theme.accent)
+                        Text(reasoningExpanded ? "Hide reasoning" : "Reasoning")
+                            .font(.caption.bold())
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+                .buttonStyle(.borderless)
+                if reasoningExpanded {
+                    Text(text)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(Theme.textSecondary)
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .background(Theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                }
+            }
+        default:
+            EmptyView()
         }
     }
 }
@@ -554,73 +852,36 @@ private struct FinishBanner: View {
         .padding(.vertical, 4)
     }
 }
-/// Live streaming assistant output with a typing indicator.
+/// Live streaming assistant output: avatar-led (same identity as finished
+/// messages), inline markdown, and a blinking caret while generating.
+/// Reduce Motion: the caret renders solid instead of blinking.
 private struct StreamingCard: View {
     let text: String
 
-    @State private var dotIndex = 0
+    @State private var caretVisible = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                ForEach(0..<3, id: \.self) { index in
-                    Circle()
-                        .fill(index == dotIndex ? Theme.accent : Theme.textSecondary.opacity(0.4))
-                        .frame(width: 7, height: 7)
-                        .scaleEffect(index == dotIndex ? 1.2 : 0.8)
-                }
-                Text("Generating…")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textSecondary)
-                Spacer()
+        HStack(alignment: .top, spacing: 12) {
+            AssistantAvatar()
+            HStack(alignment: .top, spacing: 0) {
+                MarkdownText(text: text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Caret: blinks while generating (solid under Reduce Motion).
+                Text("▍")
+                    .font(.callout)
+                    .foregroundStyle(Theme.accent)
+                    .opacity(caretVisible ? 1 : 0)
             }
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(Theme.textPrimary)
-                .textSelection(.enabled)
+            .textSelection(.enabled)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 11)
-        .frame(maxWidth: 640, alignment: .leading)
-        .lfCard()
         .task {
+            guard !reduceMotion else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(350))
-                dotIndex = (dotIndex + 1) % 3
+                try? await Task.sleep(for: .milliseconds(450))
+                caretVisible.toggle()
             }
         }
-    }
-}
-/// Collapsible chain-of-thought card.
-private struct ReasoningCard: View {
-    let text: String
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation { expanded.toggle() }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: expanded ? "brain.head.profile" : "chevron.right.circle")
-                        .foregroundStyle(Theme.accent)
-                    Text(expanded ? "Hide reasoning" : "Reasoning")
-                        .font(.caption.bold())
-                        .foregroundStyle(Theme.textSecondary)
-                }
-            }
-            .buttonStyle(.borderless)
-            if expanded {
-                Text(text)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Theme.textSecondary)
-                    .frame(maxWidth: 560, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .background(Theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            }
-        }
-        .padding(.vertical, 2)
     }
 }
 /// Plan-mode card: the agent's proposed plan with Approve / Revise.
@@ -683,5 +944,6 @@ struct AttachmentChip: View {
         .padding(.vertical, 5)
         .background(Theme.surfaceInset, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+        .lfHoverLift()
     }
 }

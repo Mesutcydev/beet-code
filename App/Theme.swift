@@ -39,10 +39,11 @@ enum Theme {
 
     // Neutrals — one cohesive cool-slate hue, deepest (bg) to raised (inset).
     // Dark steps are deliberately close so bg→surface→inset reads as gentle
-    // depth, never as clashing tones.
+    // depth, never as clashing tones. Light inset is one full step darker
+    // than the page so inset wells + chips keep visible separation (U9).
     static let bg           = Color.dynamic(light: 0xF6F7F9, dark: 0x0E1016)
     static let surface      = Color.dynamic(light: 0xFFFFFF, dark: 0x161922)
-    static let surfaceInset = Color.dynamic(light: 0xEDEFF3, dark: 0x1F2330)
+    static let surfaceInset = Color.dynamic(light: 0xE3E6EB, dark: 0x1F2330)
     static let hairline     = Color.dynamic(light: 0xE1E4EA, dark: 0x2C3140)
 
     // Text tiers.
@@ -122,6 +123,15 @@ extension View {
                 .strokeBorder(Theme.hairline, lineWidth: 1))
     }
 
+    /// Cursor/ChatGPT-style hover affordance for small chips and accessory
+    /// buttons: a +0.03 brightness lift, a pointing cursor, and a hairline
+    /// tint so interactive controls are never mistaken for static text.
+    /// Reduce Motion is respected automatically (no animation, just a
+    /// pointer + brightness change — both non-animated).
+    func lfHoverLift() -> some View {
+        modifier(HoverLiftModifier())
+    }
+
     /// Semantic accent-washed card (approval / question / plan / error).
     func lfWashCard(_ tint: Color, radius: CGFloat = Radius.lg) -> some View {
         background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
@@ -179,5 +189,19 @@ private struct LFGlassModifier<S: InsettableShape>: ViewModifier {
                 contentLegibility ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial),
                 in: shape)
         }
+    }
+}
+
+/// Hover affordance (U5): pointer cursor + a small brightness lift so chips
+/// and accessory buttons read as interactive. pointerStyle is macOS 15+,
+/// which is our deployment target — no availability gate needed.
+private struct HoverLiftModifier: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering = $0 }
+            .pointerStyle(hovering ? .link : .default)
+            .brightness(hovering ? 0.03 : 0)
     }
 }

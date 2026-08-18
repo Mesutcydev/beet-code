@@ -138,7 +138,13 @@ enum ShellRunner {
 
         let collected = OutputBuffer(maxBytes: maxOutputBytes)
         let readerDone = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .utility).async {
+        // .userInitiated, NOT .utility: the waiting thread (runProcess's
+        // caller) runs at user-initiated QoS for interactive agent commands.
+        // Blocking a user-initiated thread on a utility reader is a QoS
+        // inversion — the Thread Performance Checker reports it and its
+        // inline symbolication of the report wedged XCTest's main run loop
+        // (deterministic hang in testCancellationDuringToolExecution).
+        DispatchQueue.global(qos: .userInitiated).async {
             let handle = FileHandle(fileDescriptor: readFD, closeOnDealloc: true)
             while true {
                 let data = handle.availableData

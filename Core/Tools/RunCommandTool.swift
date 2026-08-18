@@ -50,7 +50,14 @@ struct RunCommandTool: AgentTool, CommandExecuting {
         let cancelled = OSAllocatedUnfairLock(initialState: false)
 
         return try await withTaskCancellationHandler {
-            try await Task.detached(priority: .utility) {
+            // .userInitiated, NOT .utility: the interactive agent loop awaits
+            // this at user-initiated QoS. A lower-priority detached task
+            // triggers the Thread Performance Checker's priority-inversion
+            // warning, whose inline CoreSymbolication can wedge the awaiting
+            // main thread (observed as a deterministic hang). Running the
+            // command at the same QoS as its waiter removes the inversion —
+            // and is the right priority for a user-facing command anyway.
+            try await Task.detached(priority: .userInitiated) {
                 try ShellRunner.run(
                     command: command,
                     workingDirectory: workspace.root,

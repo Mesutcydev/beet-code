@@ -28,7 +28,26 @@ this session — judged on current state.
 | U6 | ~~Medium~~ ✅ FIXED | `ChatView.swift` transcript | Empty/error states center the same purple hammer icon for both "no model" and "load failed" — only the heading text differs. Easy to miss which state you're in. | Distinct icon + color per state (hammer for setup, warning triangle in danger tint for failure). |
 | U7 | ~~Medium~~ ✅ FIXED | `LatticeComposer.swift` | Column/row header buttons are a good addition but have no visible affordance that they're clickable (no hover cursor/hint beyond tooltip). | Add hover tint + pointing cursor on header buttons. |
 | U8 | ~~Low~~ ✅ FIXED | `SettingsView.swift` | Provider Test result line reserves 16pt min height — good — but long error bodies can still exceed 2 lines and push the card. | Cap at 3 lines + `.lineLimit` with expandable disclosure. |
-| U9 | Low | Global | Light mode is the default; several surfaces (telemetry bar, chips) were tuned for dark and read slightly flat in light. | Light-pass contrast check on `Theme.surfaceInset`-based fills. |
+| U9 | ~~Low~~ ✅ FIXED | Global | Light mode is the default; several surfaces (telemetry bar, chips) were tuned for dark and read slightly flat in light. | Light `surfaceInset` darkened one step (0xEDEFF3 → 0xE3E6EB) so inset wells/chips keep visible separation. |
+
+## 2026-08-18 — Cursor/ChatGPT-style transcript polish
+
+The transcript was restyled to match the Cursor/ChatGPT reading pattern:
+
+- **Centered 760pt content column** — on wide windows the prose never
+  stretches edge-to-edge; it stays at a readable measure, centered.
+- **Avatar-led assistant messages** — no bubble; a gradient sparkles tile
+  (`AssistantAvatar`) gives output a face, full column width, inline
+  markdown rendering (`MarkdownText`, with plain-text fallback).
+- **Grouped tool activity** — consecutive tool calls/results/reasoning
+  collapse into one `ToolStepsCard` with a step-count header, outcome badge,
+  and expandable per-step rows. A run reads as "answer, work, answer".
+- **Streaming caret** — a blinking `▍` follows live output (solid under
+  Reduce Motion), replacing the bouncing-dots indicator.
+- **Suggestion chips** — ChatGPT-style quick prompts in the empty state,
+  only shown when a model can actually run; one tap fills the composer.
+- **Hover affordances (U5)** — `lfHoverLift()` (pointer cursor + brightness
+  lift) on attachment chips + suggestion chips.
 
 ## Already polished
 

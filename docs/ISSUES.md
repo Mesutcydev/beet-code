@@ -17,7 +17,12 @@ Living punch-list from user feedback. [x] = done, [ ] = open.
   budget / cells + utilization bar), intent chips, superposition toggle, and a
   LOCAL/REMOTE model badge with tok/s semantics. Replaces the old sheet;
   Esc/Collapse closes it. Launch-stable (HStack rows) + 166 tests green.
-- [ ] Inspector + branch rail remain in the web reference (lattice-composer/).
+- [x] Full Intent Lattice repair (2026-08-18): information architecture,
+  interaction logic, and state machine rebuilt chips-first — single-source-of-
+  truth store, availability-gated cells, presets with skip explanations,
+  derived Plan/Activity tabs, immutable run snapshots, robust cancel phase
+  transitions. 36 new tests. The web reference (lattice-composer/) is retired;
+  the native composer supersedes it — no inspector/branch rail carried over.
 - [x] Native LatticeEngine port: composition + budgeting + dynamic estimation in
   Core/Lattice/LatticeEngine.swift (pure, Foundation-only), bridged into the
   composer (contextPreamble + live budget readout). 9 new tests; 166 total green.

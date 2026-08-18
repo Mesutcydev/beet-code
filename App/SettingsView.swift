@@ -399,8 +399,18 @@ private struct AgentTab: View {
 // MARK: - Providers tab
 
 private struct ProvidersTab: View {
+    @ObservedObject private var keyStore = APIKeyStore.shared
+    /// Keys that survived the LocalForge rename inside the OLD Keychain
+    /// services but could not be copied silently (their ACLs demand one
+    /// interactive re-authorization). Banner offers the one-tap restore.
+    @State private var pendingRestore = false
+    @State private var restoreResult: String?
+
     var body: some View {
         TabScroll {
+            if pendingRestore {
+                keyRestoreBanner
+            }
             SettingsCard(title: "Bring your own key", icon: "info.circle") {
                 Text("Run the agent on a remote model instead of a local download. Keys live in the Keychain only. After saving a key, use **Test** to verify the connection, then activate the provider in the Model Manager.")
                     .font(.callout)
@@ -409,6 +419,51 @@ private struct ProvidersTab: View {
             }
             ForEach(LLMProvider.allCases) { provider in
                 ProviderCard(provider: provider)
+            }
+        }
+        .task { pendingRestore = LegacyMigration.needsInteractiveKeyMigration() }
+        .onReceive(keyStore.objectWillChange) { _ in
+            // A restored/saved key may have cleared the pending state.
+            pendingRestore = LegacyMigration.needsInteractiveKeyMigration()
+        }
+    }
+
+    private var keyRestoreBanner: some View {
+        SettingsCard(title: "Keys from LocalForge found", icon: "key.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Your saved API keys are still in the Keychain under the old LocalForge app, but macOS requires one authorization to move them. Your keys were never deleted.")
+                    .font(.callout)
+                    .foregroundStyle(Theme.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button("Restore Keys…") {
+                        restoreKeys()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    if let restoreResult {
+                        Text(restoreResult)
+                            .font(.callout)
+                            .foregroundStyle(Theme.success)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Runs the interactive migration OFF the main actor — the Keychain
+    /// authorization dialog is system-rendered, but the SecItem calls must
+    /// not block SwiftUI while it is up.
+    private func restoreKeys() {
+        Task.detached(priority: .userInitiated) {
+            let migrated = LegacyMigration.migrateInteractively()
+            await MainActor.run {
+                if migrated > 0 {
+                    restoreResult = "Restored \(migrated) key\(migrated == 1 ? "" : "s")."
+                    pendingRestore = LegacyMigration.needsInteractiveKeyMigration()
+                    keyStore.objectWillChange.send()
+                } else {
+                    restoreResult = "Nothing restored — approve the Keychain prompt and try again."
+                }
             }
         }
     }

@@ -44,46 +44,135 @@ enum LegacyMigration {
         migrateAppSupportFolder()
     }
 
+    /// Renames whose destination item is still missing — i.e. the silent
+    /// startup copy could not migrate them (legacy items ACL-bound to an old
+    /// ad-hoc signature refuse non-interactive reads). The Settings UI turns
+    /// this into one bounded "Restore keys" action with a visible Keychain
+    /// prompt instead of a silent loss.
+    static func pendingInteractiveRenames() -> [(legacy: String, current: String)] {
+        keychainRenames.filter { _, current in
+            !itemExists(service: current)
+        }
+    }
+
+    /// True when at least one legacy item still needs the interactive copy.
+    static func needsInteractiveKeyMigration() -> Bool {
+        !pendingInteractiveRenames().isEmpty
+    }
+
+    /// Copies legacy Keychain items WITH authorization allowed: macOS shows
+    /// its Keychain prompt ("Always Allow" applies it once for all items).
+    /// Returns the number of items actually migrated so the UI can confirm.
+    /// Runs the same destination-exists guard as the silent path — never
+    /// overwrites a key the user already re-entered.
+    @discardableResult
+    static func migrateInteractively() -> Int {
+        guard !Keychain.runningUnderXCTest else { return 0 }
+        var migrated = 0
+        for (legacy, current) in pendingInteractiveRenames() {
+            migrated += copyGenericPasswords(
+                from: legacy, to: current, allowAuthenticationUI: true)
+        }
+        if migrated > 0 {
+            Log.app.info("Interactive keychain migration restored \(migrated) item(s)")
+        }
+        return migrated
+    }
+
+    /// Existence probe that never prompts: attribute-only query without
+    /// kSecReturnData. ACL-protected items still answer attribute queries.
+    private static func itemExists(service: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    }
+
     // MARK: Keychain
 
     private static func migrateKeychainItems() {
         for (legacy, current) in keychainRenames {
-            copyGenericPasswords(from: legacy, to: current)
+            _ = copyGenericPasswords(from: legacy, to: current)
         }
     }
 
     /// Copies every generic-password item of one service into another,
     /// account by account, skipping accounts that already exist at the
     /// destination. Fail-fast reads only — never blocks on a prompt.
-    private static func copyGenericPasswords(from legacyService: String, to newService: String) {
-        let query: [String: Any] = [
+    /// `allowAuthenticationUI: true` permits the Keychain authorization
+    /// dialog (interactive restore path); the bulk listing can itself be
+    /// ACL-blocked, so interactive mode also probes the known accounts
+    /// individually.
+    private static func copyGenericPasswords(
+        from legacyService: String,
+        to newService: String,
+        allowAuthenticationUI: Bool = false
+    ) -> Int {
+        var migrated = 0
+        // Silent mode: never block on a Keychain authorization prompt.
+        // Interactive mode: omit the key entirely — the default behavior
+        // permits the system prompt (kSecUseAuthenticationUIAllow itself is
+        // deprecated since macOS 11).
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: legacyService,
             kSecReturnData as String: true,
             kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
         ]
+        if !allowAuthenticationUI {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+        }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let items = result as? [[String: Any]] else { return }
-
-        for item in items {
-            guard let data = item[kSecValueData as String] as? Data,
-                  let account = item[kSecAttrAccount as String] as? String
-            else { continue }
-
-            var check: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: newService,
-                kSecAttrAccount as String: account,
-            ]
-            // Destination already populated → never overwrite.
-            if SecItemCopyMatching(check as CFDictionary, nil) == errSecSuccess { continue }
-            check[kSecValueData as String] = data
-            check[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(check as CFDictionary, nil)
+        if status == errSecSuccess, let items = result as? [[String: Any]] {
+            for item in items {
+                guard let data = item[kSecValueData as String] as? Data,
+                      let account = item[kSecAttrAccount as String] as? String
+                else { continue }
+                if writeMigrated(data: data, account: account, service: newService) {
+                    migrated += 1
+                }
+            }
+            return migrated
         }
+
+        // Bulk listing was refused (ACL-bound legacy items). Interactive mode:
+        // probe each known account directly so the authorization dialog names
+        // a concrete item.
+        guard allowAuthenticationUI else { return 0 }
+        for account in ["api-key", "local", "default-token"] {
+            var itemQuery = query
+            itemQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+            itemQuery[kSecAttrAccount as String] = account
+            var single: CFTypeRef?
+            guard SecItemCopyMatching(itemQuery as CFDictionary, &single) == errSecSuccess,
+                  let data = single as? Data
+            else { continue }
+            if writeMigrated(data: data, account: account, service: newService) {
+                migrated += 1
+            }
+        }
+        return migrated
+    }
+
+    /// Writes one migrated item, honoring the never-overwrite rule. Returns
+    /// true when the destination was actually populated.
+    private static func writeMigrated(data: Data, account: String, service: String) -> Bool {
+        var check: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        // Destination already populated → never overwrite.
+        if SecItemCopyMatching(check as CFDictionary, nil) == errSecSuccess { return false }
+        check[kSecValueData as String] = data
+        check[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(check as CFDictionary, nil) == errSecSuccess
     }
 
     // MARK: Application Support

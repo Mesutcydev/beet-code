@@ -145,7 +145,9 @@ private struct ModelRow: View {
                     verdictBadge
                     if isActive { Label("Active", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(Theme.success) }
                 }
-                Text(model.subtitle).font(.callout).foregroundStyle(.secondary)
+                // Installed models show their REAL measured size; the catalog
+                // estimate (~) only applies to not-yet-downloaded entries.
+                Text(sizeLine).font(.callout).foregroundStyle(.secondary)
                 Text("\(model.contextWindow / 1024)K context · min \(model.minRAMGB) GB RAM · recommends \(model.recommendedRAMGB) GB")
                     .font(.caption)
                     .monospacedDigit()
@@ -169,6 +171,16 @@ private struct ModelRow: View {
     private var budget: MemoryAdvisor.Budget { appState.budget(for: model) }
 
     private var isActive: Bool { appState.activeModelID == model.id }
+
+    /// Parameters · quantization · size. Installed rows use the measured
+    /// on-disk size; the catalog estimate (~) only labels pending downloads.
+    private var sizeLine: String {
+        if let installed = appState.modelStore.installedModel(id: model.id),
+           appState.modelStore.isInstalled(catalogModel: model) {
+            return "\(model.parameters) · \(model.quantization) · \(ByteFormatter.bytes(installed.sizeBytes))"
+        }
+        return model.subtitle
+    }
 
     @ViewBuilder
     private var downloadProgressView: some View {
@@ -292,55 +304,98 @@ private struct ModelRow: View {
     }
 }
 /// BYOK remote providers — activate one to run the agent without a local
-/// model download.
+/// model download. Rendered as a proper legible panel: a real header row,
+/// full-size provider rows, and a bounded scroll region so many configured
+/// providers never push the sheet off-screen or clip their own text.
 private struct RemoteSection: View {
     @EnvironmentObject private var appState: AppState
 
     private var configured: [LLMProvider] {
-        LLMProvider.allCases.filter { APIKeyStore.shared.key(for: $0) != nil }
+        APIKeyStore.shared.configuredProviders.sorted {
+            $0.displayName < $1.displayName
+        }
     }
 
     var body: some View {
-        Section("Remote (BYOK)") {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "cloud.fill")
+                    .foregroundStyle(Theme.accent)
+                Text("Remote (BYOK)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                if !configured.isEmpty {
+                    Text("\(configured.count) configured")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+            }
+
             if configured.isEmpty {
-                Text("Add an API key in Settings → BYOK Providers to run the agent on a remote model.")
+                Text("Add an API key in Settings → Providers to run the agent on a remote model.")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                ForEach(configured) { provider in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(provider.displayName).font(.callout)
-                            Text(modelID(for: provider))
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if appState.isRemoteActive,
-                           appState.engine.activeRemoteEndpoint?.provider == provider {
-                            Label("Active", systemImage: "checkmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(Theme.success)
-                            Button("Use local") {
-                                appState.deactivateRemote()
-                            }
-                            .font(.caption)
-                        } else {
-                            Button("Use remote") {
-                                let endpoint = RemoteEndpoint(
-                                    provider: provider,
-                                    model: modelID(for: provider))
-                                Task {
-                                    _ = await appState.activateRemote(endpoint: endpoint)
-                                }
-                            }
-                            .font(.caption)
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(configured) { provider in
+                            providerRow(provider)
                         }
                     }
-                    .padding(.vertical, 2)
                 }
+                .frame(maxHeight: 180)
             }
         }
+        .padding(12)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1))
+    }
+
+    private func providerRow(_ provider: LLMProvider) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(provider.displayName)
+                    .font(.callout)
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                Text(modelID(for: provider))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 12)
+            if appState.isRemoteActive,
+               appState.engine.activeRemoteEndpoint?.provider == provider {
+                Label("Active", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.success)
+                Button("Use local") {
+                    appState.deactivateRemote()
+                }
+                .font(.caption)
+                .controlSize(.small)
+            } else {
+                Button("Use remote") {
+                    let endpoint = RemoteEndpoint(
+                        provider: provider,
+                        model: modelID(for: provider))
+                    Task {
+                        _ = await appState.activateRemote(endpoint: endpoint)
+                    }
+                }
+                .font(.caption)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
     }
 
     private func modelID(for provider: LLMProvider) -> String {

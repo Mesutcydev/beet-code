@@ -143,6 +143,7 @@
 		A9F5EF7170886D74751B1005 /* BrowserPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 099A740F3420013693BD2673 /* BrowserPanelView.swift */; };
 		AA6B6C2E02A8BEE16711E8C6 /* TaskCapsuleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28CCD548E99E0F4B1604C13C /* TaskCapsuleStore.swift */; };
 		AB2068461FB525AFC1754E47 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47138534FD28C74C1EC5F15 /* AppState.swift */; };
+		ACC22BABDEE3F4F4F8BEE7CF /* ModelPillView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2267CB799451C9A2BD48E00A /* ModelPillView.swift */; };
 		AF079C8BE302804FC0BF3843 /* CommandPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E54BE0F83E190CCFC3E901B0 /* CommandPolicy.swift */; };
 		B004244CE0FE34D0288BE482 /* RepoIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2FD0385BF038FD7EE8D7AC /* RepoIndex.swift */; };
 		B15272D3BBCE2F224E0144EF /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 81EDB94ABCA6DB4224756AAB /* MLXLMCommon */; };
@@ -224,6 +225,7 @@
 		1C99885B596BF327B2DDB386 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
 		20F75D33A34A9995B7B90F95 /* GitCheckpointer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitCheckpointer.swift; sourceTree = "<group>"; };
 		2258310B1DB08703AA2F6D66 /* BYOKTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BYOKTests.swift; sourceTree = "<group>"; };
+		2267CB799451C9A2BD48E00A /* ModelPillView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPillView.swift; sourceTree = "<group>"; };
 		226B95A0A0995E1574052D95 /* SmartDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartDownloader.swift; sourceTree = "<group>"; };
 		28CCD548E99E0F4B1604C13C /* TaskCapsuleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskCapsuleStore.swift; sourceTree = "<group>"; };
 		29E4455372C7FF6B27B41E31 /* CacheBudgetGovernor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheBudgetGovernor.swift; sourceTree = "<group>"; };
@@ -435,6 +437,7 @@
 				5B2E10744D172BF012DFD18A /* IntentLatticeView.swift */,
 				F77354A71655115599CC0D98 /* MainWindowView.swift */,
 				03ED0E6EAB7C60556587E74B /* ModelManagerView.swift */,
+				2267CB799451C9A2BD48E00A /* ModelPillView.swift */,
 				D74A584EF90F67826F086E19 /* SettingsView.swift */,
 				9C14748BC02FA1EDF587A5F3 /* SimulatorController.swift */,
 				809B810601D587334018C3A7 /* SimulatorPanelView.swift */,
@@ -786,6 +789,7 @@
 				D64D260C96580BC8985D5546 /* ModelCatalog.swift in Sources */,
 				FB05DD35D13B1344AB2C4555 /* ModelDownloadManager.swift in Sources */,
 				7E2FFC83470CBD3A9203C7DB /* ModelManagerView.swift in Sources */,
+				ACC22BABDEE3F4F4F8BEE7CF /* ModelPillView.swift in Sources */,
 				91C4560B40353ACAF2ED550C /* ModelStore.swift in Sources */,
 				056CBCBB03F6D315EB18D840 /* OpenAIRoutes.swift in Sources */,
 				7BC9DE1DDD41A9BAE50EC3A9 /* PermissionGate.swift in Sources */,

@@ -9,6 +9,11 @@ struct InstalledModel: Codable, Identifiable, Sendable, Equatable {
     var repo: String
     var addedAt: Date
     var sizeBytes: Int64
+    /// Explicit base directory when the model lives OUTSIDE the managed
+    /// Application Support Models folder (e.g. the project's gitignored
+    /// `beetcode-models/` created by the legacy `lf download` CLI). nil means
+    /// the default base.
+    var basePath: String?
 
     var directoryName: String { id }
 }
@@ -39,6 +44,21 @@ final class ModelStore: ObservableObject {
         return dir
     }
 
+    /// Extra scan roots: the legacy CLI (`lf download`) stored weights in the
+    /// repo checkout (`beetcode-models/`, `localforge-models/`) instead of
+    /// Application Support. #file resolves this source file's location at
+    /// compile time, so the project-relative folder is found regardless of
+    /// the app's launch working directory. Downloads/imports still target
+    /// the managed Application Support folder only.
+    nonisolated static var extraScanDirectories: [URL] {
+        let sourceDir = URL(fileURLWithPath: #filePath)  // Core/ModelManager
+        let projectRoot = sourceDir.deletingLastPathComponent().deletingLastPathComponent()
+        return [
+            projectRoot.appendingPathComponent("beetcode-models", isDirectory: true),
+            projectRoot.appendingPathComponent("localforge-models", isDirectory: true),
+        ]
+    }
+
     private var registryURL: URL {
         modelsDirectory.appendingPathComponent("InstalledModels.json")
     }
@@ -56,12 +76,17 @@ final class ModelStore: ObservableObject {
             saveRegistry()
         }
         // Registry missing but model directories present (manual copy, older
-        // version): rescan off the main actor — sizing multi-gigabyte model
-        // directories must never block the UI.
+        // version, or the legacy CLI's repo-relative folder): rescan off the
+        // main actor — sizing multi-gigabyte model directories must never
+        // block the UI.
         if installed.isEmpty, hasModelDirectories() {
             let base = modelsBaseURL
+            let extras = Self.extraScanDirectories
             Task.detached(priority: .utility) {
-                let scanned = Self.scanFromDisk(modelsDirectory: base)
+                var scanned = Self.scanFromDisk(modelsDirectory: base)
+                for extra in extras {
+                    scanned.append(contentsOf: Self.scanFromDisk(modelsDirectory: extra))
+                }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.installed = scanned
@@ -72,15 +97,20 @@ final class ModelStore: ObservableObject {
     }
 
     private func hasModelDirectories() -> Bool {
-        guard let names = try? fileManager.contentsOfDirectory(atPath: modelsDirectory.path) else {
-            return false
-        }
+        let roots = [modelsDirectory] + Self.extraScanDirectories
         let catalogIDs = Set(ModelCatalog.all.map(\.id))
-        return names.contains { catalogIDs.contains($0) }
+        return roots.contains { root in
+            let names = (try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []
+            return names.contains { catalogIDs.contains($0) }
+        }
     }
 
     func directory(for model: InstalledModel) -> URL {
-        modelsDirectory.appendingPathComponent(model.directoryName, isDirectory: true)
+        if let basePath = model.basePath {
+            return URL(fileURLWithPath: basePath, isDirectory: true)
+                .appendingPathComponent(model.directoryName, isDirectory: true)
+        }
+        return modelsDirectory.appendingPathComponent(model.directoryName, isDirectory: true)
     }
 
     /// A model is only loadable when its config.json is present AND every
@@ -134,7 +164,13 @@ final class ModelStore: ObservableObject {
     }
 
     func uninstall(_ model: InstalledModel) {
-        try? fileManager.removeItem(at: directory(for: model))
+        // Only delete from the managed Application Support folder. Models
+        // living in an external base (legacy CLI folder, user import) get
+        // de-registered but their files stay put — deleting repo-local or
+        // user-owned directories would be surprising and destructive.
+        if model.basePath == nil {
+            try? fileManager.removeItem(at: directory(for: model))
+        }
         installed.removeAll { $0.id == model.id }
         saveRegistry()
     }
@@ -170,10 +206,13 @@ final class ModelStore: ObservableObject {
             let dir = baseURL.appendingPathComponent(name, isDirectory: true)
             guard let dirNames = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
                   dirNames.contains("config.json"),
-                  !dirNames.contains(where: { $0.hasSuffix(".incomplete") })
+                  !dirNames.contains(where: { $0.hasSuffix(".incomplete") }),
+                  dirNames.contains(where: { $0.hasSuffix(".safetensors") })
             else { return nil }
             let size = (try? sizeOfDirectory(dir)) ?? catalog.diskBytes
-            return InstalledModel(id: name, repo: catalog.repo, addedAt: Date(), sizeBytes: size)
+            return InstalledModel(
+                id: name, repo: catalog.repo, addedAt: Date(), sizeBytes: size,
+                basePath: baseURL.path)
         }
     }
 

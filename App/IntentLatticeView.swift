@@ -420,6 +420,11 @@ struct IntentLatticeView: View {
                 .fixedSize()
                 .help("Apply a preset — unavailable cells are skipped with an explanation")
 
+                // Model pill: shows which engine runs the next message and
+                // opens the switch popover without leaving the composer.
+                ModelSelectionPill()
+                    .environmentObject(appState)
+
                 if !store.presetSkips.isEmpty {
                     Text("\(store.presetSkips.count) preset cell\(store.presetSkips.count == 1 ? "" : "s") skipped (unavailable)")
                         .font(.caption2)

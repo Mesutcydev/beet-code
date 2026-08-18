@@ -1,0 +1,122 @@
+import XCTest
+@testable import BeetCode
+
+final class SessionStoreTests: XCTestCase {
+
+    private func isolatedStore() -> (SessionStore, URL) {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lf-sessions-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let store = SessionStore()
+        store.overrideSessionsDir = temp
+        return (store, temp)
+    }
+
+    func testSaveLoadRoundTrip() throws {
+        let (store, temp) = isolatedStore()
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let record = SessionRecord(
+            id: UUID(),
+            title: "Fix the build",
+            createdAt: Date(),
+            updatedAt: Date(),
+            workspacePath: "/tmp",
+            modelID: "qwen",
+            messages: [
+                SessionMessage(role: .user, content: "hello", toolName: nil, timestamp: Date()),
+                SessionMessage(role: .assistant, content: "hi", toolName: nil, timestamp: Date()),
+                SessionMessage(role: .toolCall, content: "{\"command\": \"swift build\"}", toolName: "run_command", timestamp: Date()),
+                SessionMessage(role: .toolResult, content: "Build succeeded", toolName: "run_command", timestamp: Date()),
+            ],
+            checkpoints: [SessionCheckpoint(id: UUID(), treeSHA: "abc", createdAt: Date(), summary: "before")],
+            schemaVersion: nil)
+
+        store.save(record)
+        let loaded = store.load(id: record.id)
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.title, record.title)
+        XCTAssertEqual(loaded?.messages.count, record.messages.count)
+        XCTAssertEqual(loaded?.checkpoints.count, 1)
+        // Schema version is stamped on save.
+        XCTAssertEqual(loaded?.schemaVersion, SessionRecord.currentSchemaVersion)
+        // loadAll returns it sorted.
+        XCTAssertEqual(store.loadAll().map(\.id), [record.id])
+        store.delete(record)
+        XCTAssertNil(store.load(id: record.id))
+    }
+
+    func testSecretsAreRedactedBeforePersistence() {
+        let scrubbed = SessionStore.redact(
+            "token hf_AbCdEf1234567890AbCdEf1234 and sk-abcdefghijklmnopqrstuvwx and Authorization: Bearer xyz-token-value-1234")
+        XCTAssertFalse(scrubbed.contains("hf_AbCdEf1234567890"), scrubbed)
+        XCTAssertFalse(scrubbed.contains("sk-abcdefghijklmnopqrstuvwx"), scrubbed)
+        XCTAssertFalse(scrubbed.contains("xyz-token-value-1234"), scrubbed)
+        XCTAssertTrue(scrubbed.contains("[redacted]"), scrubbed)
+    }
+
+    func testToolOutputIsBoundedAndRedacted() {
+        let big = String(repeating: "x", count: 30_000)
+        let messages = [
+            SessionMessage(role: .toolResult, content: "output hf_AbCdEf1234567890AbCdEf1234 " + big, toolName: "run_command", timestamp: Date()),
+        ]
+        let bounded = SessionStore.redactAndBound(messages)
+        XCTAssertLessThan(bounded[0].content.utf8.count, 20_000)
+        XCTAssertFalse(bounded[0].content.contains("hf_AbCdEf1234567890"))
+        XCTAssertTrue(bounded[0].content.contains("truncated for persistence"))
+    }
+
+    func testEncryptedPayloadsAreNotPlaintextJSON() throws {
+        let (store, temp) = isolatedStore()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let record = SessionRecord(
+            id: UUID(),
+            title: "secret session",
+            createdAt: Date(),
+            updatedAt: Date(),
+            workspacePath: "/tmp",
+            modelID: "m",
+            messages: [SessionMessage(role: .user, content: "payload", toolName: nil, timestamp: Date())],
+            checkpoints: [],
+            schemaVersion: nil)
+        store.save(record)
+        // The on-disk payload must not be decodable as plain JSON.
+        let url = temp.appendingPathComponent("\(record.id.uuidString).session")
+        let data = try Data(contentsOf: url)
+        XCTAssertNil(try? JSONDecoder().decode(SessionRecord.self, from: data),
+                      "sessions must be encrypted at rest")
+        XCTAssertNotNil(SessionCrypto.decrypt(data), "payload must use the session cipher")
+    }
+}
+
+final class AppPreferencesTests: XCTestCase {
+
+    func testPreferencesRoundTripAndValidation() throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("lf-prefs-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        var preferences = AppPreferences()
+        preferences.lastWorkspacePath = temp.path
+        preferences.lastModelID = "qwen-3-4b"
+        preferences.autoResumeDownloads = true
+
+        let store = AppPreferencesStore.shared
+        store.save(preferences)
+        let reloaded = store.current
+        XCTAssertEqual(reloaded.lastWorkspacePath, temp.path)
+        XCTAssertEqual(reloaded.lastModelID, "qwen-3-4b")
+        XCTAssertTrue(reloaded.autoResumeDownloads)
+
+        // Validation: an existing directory validates; a missing one fails
+        // without deleting stored state.
+        let validated = store.validatedWorkspaceURL()
+        XCTAssertEqual(validated?.path, temp.path)
+        var broken = preferences
+        broken.lastWorkspacePath = temp.appendingPathComponent("gone").path
+        store.save(broken)
+        XCTAssertNil(store.validatedWorkspaceURL())
+        // State is untouched.
+        XCTAssertNotNil(store.current.lastWorkspacePath)
+    }
+}

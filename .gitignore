@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+*.swp
+
+# Xcode / build artifacts
+.derived/
+DerivedData/
+build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+
+# Local model weights (~1 GB per model) — downloaded via `lf download`,
+# never committed.
+beetcode-models/
+localforge-models/
+
+# Local agent data
+.beetcode/
+*.log

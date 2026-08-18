@@ -1,5 +1,12 @@
 # Lattice Composer — Logic Redesign Spec (v0.5)
 
+> **Status: implemented (2026-08-18).** The lattice grid, store, and engine
+> are deleted. The Intent model shipped as `Core/Intent/IntentTypes.swift` +
+> `Core/Intent/ContextResolvers.swift` (roles/focus/presets/composer) and
+> `App/ComposerStore.swift` + `App/ComposerView.swift` + `App/IntentPicker.swift`
+> (state and UI). Tests live in `Tests/IntentTests.swift`. This document
+> remains as the design rationale.
+
 Scope: **interaction logic and prompt-injection logic** of the Lattice Composer
 (`App/LatticeComposer.swift`, `App/ChatView.swift`, `Core/Lattice/LatticeEngine.swift`).
 Not a visual redesign; visual changes follow from the logic model defined here.

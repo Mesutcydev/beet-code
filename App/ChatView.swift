@@ -11,21 +11,21 @@ struct ChatView: View {
         self.controller = controller
     }
 
-    /// Single source of truth for the composer + lattice screen. Owned by
-    /// ChatView so it survives view rebuilds; attached to the live
-    /// controller/AppState in `.task`.
-    @State private var latticeStore = IntentLatticeStore()
+    /// Single source of truth for the composer (prompt, attachments, intent
+    /// selection). Owned by ChatView so it survives view rebuilds; attached
+    /// to the live controller/AppState in `.task`.
+    @State private var composerStore = ComposerStore()
 
     var body: some View {
         VStack(spacing: 0) {
             transcript
             Divider()
-            IntentLatticeView(store: latticeStore)
+            ComposerView(store: composerStore)
                 .environmentObject(controller)
         }
         .background(surfaceBackground)
         .task {
-            latticeStore.attach(controller: controller, appState: appState)
+            composerStore.attach(controller: controller, appState: appState)
         }
         .onPasteCommand(of: [.png, .tiff, .jpeg, .fileURL]) { providers in
             handlePaste(providers)
@@ -202,7 +202,7 @@ struct ChatView: View {
         HStack(spacing: 10) {
             ForEach(items) { suggestion in
                 Button {
-                    latticeStore.prompt = suggestion.prompt
+                    composerStore.prompt = suggestion.prompt
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: suggestion.glyph)
@@ -227,7 +227,7 @@ struct ChatView: View {
 
     private var emptyTitle: String {
         switch appState.enginePhase {
-        case .idle: "No model loaded — open the Model Manager (⌘M)"
+        case .idle: "No model loaded — open the Model Manager (⇧⌘M)"
         case .loading: "Loading model…"
         case .ready: "Ready — describe a task"
         case .failed: "Model failed to load — check the Model Manager"
@@ -238,22 +238,6 @@ struct ChatView: View {
     /// Deepest app surface behind the transcript.
     private var surfaceBackground: Color { Theme.bg }
 
-    /// Paperclip (kept for parity; the lattice composer has its own):
-    /// pick files and/or images from disk.
-    private func attachFiles() {
-        let panel = NSOpenPanel()
-        panel.title = "Attach files or images"
-        panel.message = "Files are quoted into the message; images are described by the vision provider."
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK {
-            for url in panel.urls.prefix(8) {
-                latticeStore.attachments.append(ComposerAttachment(url: url))
-            }
-        }
-    }
-
     /// ⌘V: paste images (screenshots) or file URLs.
     private func handlePaste(_ providers: [NSItemProvider]) {
         for provider in providers {
@@ -261,7 +245,7 @@ struct ChatView: View {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     if let url {
                         DispatchQueue.main.async {
-                            latticeStore.attachments.append(ComposerAttachment(url: url))
+                            composerStore.attachments.append(ComposerAttachment(url: url))
                         }
                     }
                 }
@@ -277,7 +261,7 @@ struct ChatView: View {
                            let png = bitmap.representation(using: .png, properties: [:]) {
                             try? png.write(to: url)
                             DispatchQueue.main.async {
-                                latticeStore.attachments.append(ComposerAttachment(url: url, isImage: true))
+                                composerStore.attachments.append(ComposerAttachment(url: url, isImage: true))
                             }
                         }
                     }
@@ -920,30 +904,5 @@ private struct PlanCard: View {
         }
         .padding(14)
         .lfWashCard(Theme.accent)
-    }
-}
-/// A removable attachment chip above the composer.
-struct AttachmentChip: View {
-    let attachment: ComposerAttachment
-    let onRemove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: attachment.isImage ? "photo" : "doc.text")
-                .font(.caption)
-            Text(attachment.name)
-                .font(.caption)
-                .lineLimit(1)
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
-            }
-            .buttonStyle(.borderless)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(Theme.surfaceInset, in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
-        .lfHoverLift()
     }
 }

@@ -11,7 +11,15 @@ import MLXLMCommon
 /// killing MLX crash) impossible by construction.
 public final class MLXEngine: LLMEngine, @unchecked Sendable {
 
-    private let gate = GenerationGate()
+    private let gate: GenerationGate
+
+    /// Engines created with a shared gate (the EnginePool) serialize their
+    /// Metal work with every other resident model — MLX permits only one
+    /// command buffer in flight per process, regardless of how many models
+    /// are resident. Standalone engines own their gate.
+    public init(gate: GenerationGate = GenerationGate()) {
+        self.gate = gate
+    }
 
     // Only accessed inside gate.run closures. `nonisolated(unsafe)` documents
     // that the gate — not the type system — guarantees exclusive access.
@@ -19,8 +27,6 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
     private nonisolated(unsafe) var loadedID: String?
     private nonisolated(unsafe) var statsState = EngineStats()
     private nonisolated(unsafe) var loading = false
-
-    public init() {}
 
     public var loadedModelID: String? {
         get async { try? await gate.run { self.loadedID } }

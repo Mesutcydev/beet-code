@@ -1,11 +1,11 @@
 import Foundation
 
-/// Real workspace context resolution for the Intent Lattice (Core, pure
-/// Foundation — no UI). The store uses these to inject genuine repository
-/// state into granted context layers; nothing here is mocked.
+/// Real workspace context resolution for Intent focus sources (Core, pure
+/// Foundation — no UI). The composer store uses these to inject genuine
+/// repository state into granted focus sources; nothing here is mocked.
 public enum ContextResolvers {
 
-    /// Bounded content cap so a huge diff can never blow up the manifest.
+    /// Bounded content cap so a huge diff can never blow up the message.
     public static let cap = 8_000
 
     /// Current branch, uncommitted status, and diff stat. Empty when the
@@ -21,12 +21,60 @@ public enum ContextResolvers {
         return String(body.prefix(cap)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Lists project documentation files (docs/*.md), capped.
+    /// Project documentation index: root-level markdown (README, AGENTS, …)
+    /// plus docs/*.md, capped. Empty when the project has no docs at all.
     public static func documentationContext(workspace: URL) -> String {
+        var parts: [String] = []
+        let rootDocs = markdownNames(in: workspace)
+        if !rootDocs.isEmpty {
+            parts.append(rootDocs.prefix(8).joined(separator: ", "))
+        }
         let docsDir = workspace.appendingPathComponent("docs", isDirectory: true)
         let names = markdownNames(in: docsDir)
-        guard !names.isEmpty else { return "" }
-        return "docs/: \(names.prefix(8).joined(separator: ", "))."
+        if !names.isEmpty {
+            parts.append("docs/: \(names.prefix(8).joined(separator: ", "))")
+        }
+        guard !parts.isEmpty else { return "" }
+        return String(parts.joined(separator: " · ").prefix(cap))
+    }
+
+    /// A bounded map of the workspace's top-level structure: directories and
+    /// files at the root, vendor/build directories excluded. This is an
+    /// orientation aid, not an index — the agent's own search tools do the
+    /// deep work.
+    public static func codebaseContext(workspace: URL) -> String {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: workspace, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles])
+        else { return "" }
+
+        let excluded: Set<String> = [
+            "node_modules", ".build", ".derived", "DerivedData", "build",
+            "dist", "out", "target", ".git", "Pods", "Carthage",
+        ]
+        var directories: [String] = []
+        var files: [String] = []
+        for item in items {
+            let name = item.lastPathComponent
+            guard !excluded.contains(name) else { continue }
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDirectory {
+                directories.append(name + "/")
+            } else {
+                files.append(name)
+            }
+        }
+        guard !directories.isEmpty || !files.isEmpty else { return "" }
+
+        var lines: [String] = []
+        if !directories.isEmpty {
+            lines.append("dirs: \(directories.sorted().prefix(24).joined(separator: " "))")
+        }
+        if !files.isEmpty {
+            lines.append("files: \(files.sorted().prefix(24).joined(separator: " "))")
+        }
+        return String(lines.joined(separator: "\n").prefix(cap))
     }
 
     /// Whether the workspace looks like it has test targets (used for

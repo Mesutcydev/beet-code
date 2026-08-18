@@ -1,5 +1,11 @@
 # Composer + Lattice redesign spec
 
+> **Status: implemented (2026-08-18), with one deviation.** The matrix is
+> gone and the Esc conflict is fixed, but the selection surface became the
+> Intent picker popover (presets → role chips → focus chips, per
+> `LATTICE-REDESIGN-SPEC.md`) instead of the palette described here — the
+> optional grid was not carried over at all.
+
 Drafted from direct code reading; two delegated design passes will refine before build.
 
 ## Current diagnosis (verified in code)

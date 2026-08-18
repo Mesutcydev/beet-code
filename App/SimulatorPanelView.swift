@@ -60,7 +60,8 @@ struct SimulatorPanelView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Close the simulator panel")
-                .keyboardShortcut(.cancelAction)
+                // No .cancelAction here: Esc is owned by the composer's
+                // stop button (stopping a run must never be ambiguous).
             }
         }
         .padding(10)

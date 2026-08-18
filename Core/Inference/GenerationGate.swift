@@ -40,6 +40,8 @@ public actor GenerationGate {
     private let counter = Counter()
     private var tail: Task<Void, Never> = Task {}
 
+    public init() {}
+
     /// Runs `operation` after all previously enqueued work completes.
     /// Throws `Superseded` if a newer operation was enqueued while this one
     /// waited its turn.

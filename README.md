@@ -142,6 +142,24 @@ Manual acceptance checklist: [`docs/ACCEPTANCE-v0.2.md`](docs/ACCEPTANCE-v0.2.md
   escaped through one JS-literal boundary; screenshots land in
   `.beetcode/screenshots/`.
 
+## v0.7 — Intent replaces the Lattice; composer redesign
+
+- **The Intent Lattice is gone.** The 48-cell role × context grid (and its
+  weights, muted states, and dead superposition toggle) is replaced by
+  **Intent**: four role chips (Research / Build / Review / Verify) and four
+  focus chips (@files / @git / @docs / @codebase) with real, bounded
+  resolvers, plus role-curation presets. Selection serializes into a plain,
+  auditable preface to the message — no invented fences, no weight metadata,
+  empty sources honestly marked `(nothing found)`.
+- **Redesigned composer**: one elevated card (editor + accessory row),
+  attachment chips, Intent picker popover with active-count badge, Plan and
+  Reasoning toggle chips, honest token estimate (`≈ chars/4` against the
+  model's real context window; absolute-only when the window is unknown),
+  and send↔stop morphing. Enter sends, Shift+Enter newline, ⌘↩ sends, Esc
+  stops the agent (single Esc owner — the old conflict is gone).
+- Per-workspace composer drafts (prompt + intent selection) persist across
+  sessions; intent is one-shot and clears on send.
+
 ## Requirements
 
 - Apple Silicon Mac (arm64)

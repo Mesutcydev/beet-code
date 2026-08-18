@@ -191,13 +191,24 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    /// The multi-resident local engine pool. When present, local loads keep
+    /// previously-loaded models warm instead of unloading them; generation
+    /// routes through the pool's active engine on the shared Metal gate.
+    /// nil → legacy single-resident path (test doubles).
+    private let pool: EnginePool?
     private let local: any LLMEngine
     private var currentRemote: RemoteLLMEngine?
     private(set) var source: Source = .localMLX
+    private var activeLocalID: String?
 
-    init(local: any LLMEngine = MLXEngine()) {
+    init(local: any LLMEngine = MLXEngine(), pool: EnginePool? = nil) {
         self.local = local
+        self.pool = pool
     }
+
+    /// The pool (when the router runs pooled) — exposed for AppState and the
+    /// memory-pressure coordinator.
+    var enginePool: EnginePool? { pool }
 
     var activeRemoteEndpoint: RemoteEndpoint? {
         withLock { currentRemote?.endpoint }
@@ -223,6 +234,7 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
     var loadedModelID: String? {
         get async {
             if let remote = withLock({ currentRemote }) { return await remote.loadedModelID }
+            if let pool { return await pool.activeLoadedModelID() }
             return await local.loadedModelID
         }
     }
@@ -230,21 +242,36 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
     var stats: EngineStats {
         get async {
             if let remote = withLock({ currentRemote }) { return await remote.stats }
+            if let pool { return await pool.stats() }
             return await local.stats
         }
     }
 
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws {
+        if let pool {
+            // Multi-resident: keeps other loaded models warm, evicting LRU
+            // idle residents only when the memory budget requires it.
+            try await pool.activate(directory: directory, modelID: modelID, diskBytes: diskBytes)
+            return
+        }
         try await local.load(directory: directory, modelID: modelID, diskBytes: diskBytes)
     }
 
     func unload() async {
+        if let pool {
+            // Pool semantics: only the ACTIVE model unloads; other residents
+            // stay warm until memory pressure or the cap evicts them.
+            await pool.unloadActive()
+            return
+        }
         await local.unload()
     }
 
     func reset() async {
         if let remote = withLock({ currentRemote }) {
             await remote.reset()
+        } else if let pool {
+            await pool.resetActive()
         } else {
             await local.reset()
         }
@@ -258,24 +285,53 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
         if let remote = withLock({ currentRemote }) {
             return remote.stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
         }
+        if let pool {
+            // The pool is an actor: resolve the active engine with a hop,
+            // then relay the inner stream chunk-by-chunk.
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        let inner = try await pool.stream(
+                            adding: turns, maxTokens: maxTokens, temperature: temperature)
+                        for try await chunk in inner {
+                            if Task.isCancelled { break }
+                            continuation.yield(chunk)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
         return local.stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
     }
 
     func cancelGeneration() async {
         if let remote = withLock({ currentRemote }) {
             await remote.cancelGeneration()
+        } else if let pool {
+            await pool.cancelActiveGeneration()
         } else {
             await local.cancelGeneration()
         }
     }
 
     func clearCaches() async {
-        await local.clearCaches()
+        if let pool {
+            await pool.clearCaches()
+        } else {
+            await local.clearCaches()
+        }
     }
 
     @discardableResult
     func dumpIfResident() async -> Bool {
-        await local.dumpIfResident()
+        if let pool {
+            return await pool.dumpLargestResident()
+        }
+        return await local.dumpIfResident()
     }
 
     private func withLock<T>(_ body: () -> T) -> T {

@@ -47,7 +47,10 @@ final class AppState: ObservableObject {
     @Published var apiServerRunning = false
     @Published var apiServerError: String?
 
-    init(engine: EngineRouter = EngineRouter(), hub hubOverride: (any HubServing)? = nil) {
+    init(
+        engine: EngineRouter = EngineRouter(pool: EnginePool()),
+        hub hubOverride: (any HubServing)? = nil
+    ) {
         // LocalForge → BeetCode rename migration: copies legacy Keychain
         // items (session key, BYOK keys, HF token) to the new services and
         // moves Application Support/LocalForge → BeetCode. Idempotent,
@@ -229,8 +232,11 @@ final class AppState: ObservableObject {
         // An active agent must fully stop before its engine is swapped:
         // cancellation is awaited, so generation can never outlive the model.
         await sessions.stopAndWait()
-        // Loading a second model unloads the first safely before admission.
-        if activeModelID != nil, activeModelID != model.id {
+        // Multi-resident pool: the previously active model STAYS RESIDENT
+        // (warm KV cache) — the pool evicts LRU idle residents only when the
+        // memory budget or the residency cap requires it. Single-resident
+        // routers (test doubles) keep the old unload-first behavior.
+        if engine.enginePool == nil, activeModelID != nil, activeModelID != model.id {
             await engine.unload()
             activeModelID = nil
         }

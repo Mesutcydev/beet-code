@@ -5,6 +5,7 @@ struct MainWindowView: View {
     @EnvironmentObject private var sessions: AgentSessionController
     @State private var showModelManager = false
     @State private var showSimulator = false
+    @State private var showBrowser = false
 
     var body: some View {
         NavigationSplitView {
@@ -32,11 +33,25 @@ struct MainWindowView: View {
                         .environmentObject(appState)
                         .frame(minWidth: 360, idealWidth: 440, maxWidth: 560, maxHeight: .infinity)
                 }
+
+                // Agent-controlled browser: docked like the simulator so the
+                // transcript stays visible while the agent drives the page.
+                if showBrowser {
+                    Divider()
+                    BrowserPanelView(onClose: { showBrowser = false })
+                        .frame(minWidth: 420, idealWidth: 520, maxWidth: 680, maxHeight: .infinity)
+                }
             }
         }
         .navigationTitle(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    showBrowser.toggle()
+                } label: {
+                    Label("Browser", systemImage: "safari")
+                }
+                .help("In-app browser the agent can control via browser_* tools")
                 Button {
                     showSimulator = true
                     appState.isSimulatorPanelOpen = true

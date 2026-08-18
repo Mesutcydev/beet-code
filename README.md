@@ -39,7 +39,10 @@ Manual acceptance checklist: [`docs/ACCEPTANCE-v0.2.md`](docs/ACCEPTANCE-v0.2.md
 ## v0.3 — BYOK, simulator, memory, reasoning
 
 - **BYOK remote engines**: OpenAI, DeepSeek, LongCat, Alibaba DashScope,
-  Gemini, and OpenRouter — Keychain-backed API keys, provider/model settings,
+  Alibaba Token Plan, Gemini, OpenRouter, **Anthropic** (native Messages
+  API), and a **Custom** OpenAI-compatible endpoint (Ollama, LM Studio,
+  vLLM, Groq, proxies — key optional) — Keychain-backed API keys,
+  provider/model settings with a live model-list refresh and a Test button,
   and a Model Manager section to switch between the local MLX engine and a
   remote provider. The agent loop is engine-agnostic.
 - **Built-in iOS Simulator side panel**: docked next to the chat (toolbar
@@ -119,6 +122,25 @@ Manual acceptance checklist: [`docs/ACCEPTANCE-v0.2.md`](docs/ACCEPTANCE-v0.2.md
   Core so the CLI target compiles (it previously didn't).
 - **Settings**: Local API Server card; composer style + animated-border
   toggle moved out of the chat toolbar into Settings → General.
+
+## v0.6 — provider hardening + agent-controlled browser
+
+- **Provider audit fixes (13 findings)**: UTF-8-safe SSE parsing (multi-byte
+  characters no longer corrupt across chunk boundaries), tool-role
+  translation so agent turns work on OpenAI/Gemini/Anthropic, reasoning-model
+  handling (`max_completion_tokens`, no forced temperature), Gemini
+  `systemInstruction` + adjacent-role merging, inactivity watchdog + one
+  bounded 429/503 retry honoring `Retry-After`, truthful token usage
+  (`stream_options`/`usageMetadata`/Anthropic `usage`), live `/v1/models`
+  refresh in Settings, API keys out of URLs (Gemini `x-goog-api-key`
+  header), User-Agent everywhere.
+- **In-app browser the agent controls**: docked WKWebView panel (toolbar
+  toggle, URL bar, back/forward/reload). Agent tools: `browser_read`
+  (text/links/info, auto-approved), `browser_screenshot`, and the
+  approval-gated `browser_navigate` / `browser_click` (selector or visible
+  text) / `browser_type` / `browser_eval`. All agent-supplied strings are
+  escaped through one JS-literal boundary; screenshots land in
+  `.beetcode/screenshots/`.
 
 ## Requirements
 
@@ -240,7 +262,7 @@ Catalog entries are ordinary Swift values; adding a user model later does not re
 ## Current limitations
 
 - The app currently targets MLX-quantized safetensors, not GGUF.
-- Native MCP client support is intentionally deferred until the core tool workflow is stable.
+- MCP support is stdio-only (no HTTP/SSE transports or OAuth yet).
 - The model manager currently downloads repo snapshots sequentially; per-file range resume is implemented, while parallel chunk fetching is a future optimization.
 - The in-process engine is intentionally single-resident; the safety coordinator unloads before admitting another model.
 

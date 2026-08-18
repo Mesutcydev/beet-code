@@ -355,6 +355,10 @@ private struct ProviderCard: View {
     @ObservedObject private var keyStore = APIKeyStore.shared
     @State private var keyDraft = ""
     @State private var modelDraft = ""
+    @State private var baseURDraft = ""
+    /// Models fetched live from the provider (P10); merged into the picker.
+    @State private var liveModels: [String] = []
+    @State private var refreshingModels = false
 
     enum TestState: Equatable {
         case idle
@@ -369,8 +373,13 @@ private struct ProviderCard: View {
     private var endpointLabel: String {
         provider.openAICompatibleBaseURL?.absoluteString
             ?? provider.geminiBaseURL?.absoluteString
-            ?? "—"
+            ?? provider.anthropicBaseURL?.absoluteString
+            ?? "not configured — set a base URL below"
     }
+
+    /// Custom + local servers run keyless (Ollama/LM Studio); the card must
+    /// not gate everything behind an API key for them.
+    private var keyless: Bool { provider.keyOptional && !hasKey }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -379,7 +388,7 @@ private struct ProviderCard: View {
                 Text(provider.displayName)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
-                if hasKey {
+                if hasKey || (provider.keyOptional && provider.openAICompatibleBaseURL != nil) {
                     Label("Configured", systemImage: "checkmark.seal.fill")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(Theme.success)
@@ -412,38 +421,75 @@ private struct ProviderCard: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
+            // Custom provider: base URL first — everything hangs off it.
+            if provider == .custom {
+                HStack(spacing: 8) {
+                    TextField("Base URL — e.g. http://127.0.0.1:11434/v1", text: $baseURDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout.monospaced())
+                        .autocorrectionDisabled()
+                    Button("Save URL") {
+                        var prefs = AppPreferencesStore.shared.current
+                        prefs.customBaseURL = baseURDraft.trimmingCharacters(in: .whitespaces)
+                        AppPreferencesStore.shared.save(prefs)
+                        testState = .idle
+                    }
+                    .disabled(baseURDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Text("Works with any OpenAI-compatible server: Ollama, LM Studio, vLLM, llama.cpp, Groq, Together, corporate proxies. Key is optional for local servers.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
             // Key input
             HStack(spacing: 8) {
-                SecureField(hasKey ? "API key (replace)" : "API key", text: $keyDraft)
+                SecureField(
+                    hasKey ? "API key (replace)" : (keyless ? "API key (optional)" : "API key"),
+                    text: $keyDraft)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                 Button("Save") {
                     if !keyDraft.trimmingCharacters(in: .whitespaces).isEmpty {
                         keyStore.save(key: keyDraft, for: provider)
                     }
+                    if provider == .custom { persistBaseURLDraft() }
                     persistModelDraft()
                     keyDraft = ""
                     testState = .idle
                 }
-                .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty && modelUnchanged)
+                .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty && modelUnchanged && baseURUnchanged)
             }
 
             // Model choice
             HStack(spacing: 8) {
-                Picker("Model", selection: $modelDraft) {
-                    ForEach(modelOptions, id: \.self) { model in
-                        Text(model).tag(model)
+                if !modelOptions.isEmpty {
+                    Picker("Model", selection: $modelDraft) {
+                        ForEach(modelOptions, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 260)
                 }
-                .labelsHidden()
-                .frame(width: 260)
 
-                TextField("Custom model id", text: $modelDraft)
+                TextField("Model id", text: $modelDraft)
                     .textFieldStyle(.roundedBorder)
                     .font(.callout.monospaced())
 
+                Button {
+                    refreshModels()
+                } label: {
+                    if refreshingModels {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .help("Fetch the provider's live model list")
+                .disabled(refreshingModels)
+
                 Button("Test") { runTest() }
-                    .disabled(testState == .running || resolvedKey.isEmpty)
+                    .disabled(testState == .running || (resolvedKey.isEmpty && !provider.keyOptional))
             }
 
             // Test result line — always present so the card never jumps.
@@ -485,13 +531,19 @@ private struct ProviderCard: View {
         .onAppear {
             modelDraft = AppPreferencesStore.shared.current.remoteModel[provider.rawValue]
                 ?? provider.defaultModel
+            if provider == .custom {
+                baseURDraft = AppPreferencesStore.shared.current.customBaseURL ?? ""
+            }
         }
     }
 
-    /// Suggested models plus whatever is already saved (so a custom saved id
-    /// always appears in the menu instead of silently vanishing).
+    /// Suggested models, any saved draft, plus whatever the provider's live
+    /// `/models` endpoint returned — static presets go stale fast (P10).
     private var modelOptions: [String] {
         var options = provider.suggestedModels
+        for live in liveModels where !options.contains(live) {
+            options.append(live)
+        }
         if !modelDraft.isEmpty, !options.contains(modelDraft) {
             options.append(modelDraft)
         }
@@ -504,10 +556,23 @@ private struct ProviderCard: View {
         return saved == modelDraft
     }
 
+    private var baseURUnchanged: Bool {
+        guard provider == .custom else { return true }
+        return (AppPreferencesStore.shared.current.customBaseURL ?? "") == baseURDraft
+    }
+
     private var resolvedKey: String {
         let draft = keyDraft.trimmingCharacters(in: .whitespaces)
         if !draft.isEmpty { return draft }
         return keyStore.key(for: provider) ?? ""
+    }
+
+    private func persistBaseURLDraft() {
+        let trimmed = baseURDraft.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        var prefs = AppPreferencesStore.shared.current
+        prefs.customBaseURL = trimmed
+        AppPreferencesStore.shared.save(prefs)
     }
 
     private func persistModelDraft() {
@@ -518,15 +583,34 @@ private struct ProviderCard: View {
         AppPreferencesStore.shared.save(preferences)
     }
 
+    private func refreshModels() {
+        refreshingModels = true
+        let key = resolvedKey.isEmpty ? nil : resolvedKey
+        Task {
+            let fetched = await RemoteLLMClient.fetchModels(provider: provider, apiKey: key)
+            await MainActor.run {
+                liveModels = fetched
+                refreshingModels = false
+                if fetched.isEmpty {
+                    testState = .failed("Could not fetch the model list — check the key/URL (or type a model id manually).")
+                }
+            }
+        }
+    }
+
     private func runTest() {
         let key = resolvedKey
-        guard !key.isEmpty else {
+        guard !key.isEmpty || provider.keyOptional else {
             testState = .failed("No API key for \(provider.displayName) — paste one above first.")
             return
         }
         let model = modelDraft.trimmingCharacters(in: .whitespaces).isEmpty
             ? provider.defaultModel
             : modelDraft.trimmingCharacters(in: .whitespaces)
+        guard !model.isEmpty else {
+            testState = .failed("No model id configured for \(provider.displayName).")
+            return
+        }
         testState = .running
         Task {
             do {

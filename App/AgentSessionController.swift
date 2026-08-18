@@ -625,6 +625,14 @@ final class AgentSessionController: ObservableObject {
         SimScreenshotTool(),
         DescribeImageTool(),
         SimBuildRunTool(),
+        // In-app browser: extraction is auto-approved; navigation/click/
+        // type/eval go through the approval card like every other mutation.
+        BrowserTools.ReadTool(),
+        BrowserTools.ScreenshotTool(),
+        BrowserTools.NavigateTool(),
+        BrowserTools.ClickTool(),
+        BrowserTools.TypeTool(),
+        BrowserTools.EvalTool(),
     ]
     /// Turns attachments into part of the user message: files are quoted
     /// (bounded), images are described through the active vision-capable

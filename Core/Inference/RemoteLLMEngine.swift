@@ -17,9 +17,12 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
     private var accumulated: [ChatTurn] = []
 
     init?(endpoint: RemoteEndpoint) {
-        guard let key = APIKeyStore.key(provider: endpoint.provider) else { return nil }
+        // Custom/local servers may run without auth; every other provider
+        // requires a Keychain key.
+        let key = APIKeyStore.key(provider: endpoint.provider)
+        if key == nil && !endpoint.provider.keyOptional { return nil }
         self.endpoint = endpoint
-        self.apiKey = key
+        self.apiKey = key ?? ""
     }
 
     var loadedModelID: String? {
@@ -54,32 +57,50 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
             accumulated.append(contentsOf: turns)
             return accumulated
         }
-        let messages = allTurns.map { turn in
-            RemoteLLMClient.OpenAIMessage(role: turn.role.rawValue, content: turn.content)
+
+        let usageBox = UsageBox()
+        let onUsage: @Sendable (RemoteLLMClient.UsageInfo) -> Void = { [weak self] usage in
+            usageBox.last = usage
+            self?.noteUsage(usage, startedAt: usageBox.started)
         }
 
         let stream: AsyncThrowingStream<String, Error>
-        if endpoint.provider == .gemini,
-           let base = endpoint.provider.geminiBaseURL {
+        if endpoint.provider == .anthropic,
+           let base = endpoint.provider.anthropicBaseURL {
+            stream = RemoteLLMClient.streamAnthropic(
+                baseURL: base,
+                apiKey: self.apiKey,
+                model: endpoint.model,
+                turns: allTurns,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                onUsage: onUsage)
+        } else if endpoint.provider == .gemini,
+                  let base = endpoint.provider.geminiBaseURL {
             stream = RemoteLLMClient.streamGemini(
                 baseURL: base,
-                apiKey: apiKey,
+                apiKey: self.apiKey,
                 model: endpoint.model,
-                messages: messages,
+                turns: allTurns,
                 temperature: temperature,
-                maxTokens: maxTokens)
+                maxTokens: maxTokens,
+                onUsage: onUsage)
         } else if let base = endpoint.provider.openAICompatibleBaseURL {
             stream = RemoteLLMClient.streamOpenAICompatible(
                 provider: endpoint.provider,
                 baseURL: base,
-                apiKey: apiKey,
+                apiKey: self.apiKey,
                 model: endpoint.model,
-                messages: messages,
+                turns: allTurns,
                 temperature: temperature,
-                maxTokens: maxTokens)
+                maxTokens: maxTokens,
+                onUsage: onUsage)
         } else {
             return AsyncThrowingStream { continuation in
-                continuation.finish(throwing: RemoteLLMError.invalidConfiguration("no endpoint URL"))
+                continuation.finish(throwing: RemoteLLMError.invalidConfiguration(
+                    endpoint.provider == .custom
+                        ? "No custom base URL configured — set one in Settings → BYOK Providers → Custom."
+                        : "no endpoint URL"))
             }
         }
 
@@ -100,8 +121,11 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+                // Usage callback (real token counts) already updated stats
+                // when the provider reported them; fall back to chunk-count
+                // stats only when no usage arrived (P9 truthfulness).
                 let elapsed = Date().timeIntervalSince(started)
-                if elapsed > 0.2 {
+                if elapsed > 0.2, usageBox.last == nil {
                     self.updateStats(EngineStats(
                         tokensPerSecond: Double(tokens) / elapsed,
                         generatedTokens: tokens))
@@ -110,6 +134,22 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
             self.setGenerationTask(task)
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Real usage accounting (P9): the provider reports completion tokens;
+    /// tok/s uses wall time since stream start.
+    private func noteUsage(_ usage: RemoteLLMClient.UsageInfo, startedAt: Date) {
+        guard let completion = usage.completionTokens, completion > 0 else { return }
+        let elapsed = Date().timeIntervalSince(startedAt)
+        updateStats(EngineStats(
+            tokensPerSecond: elapsed > 0 ? Double(completion) / elapsed : nil,
+            generatedTokens: completion))
+    }
+
+    /// Per-run usage state shared between the stream closure and callbacks.
+    private final class UsageBox: @unchecked Sendable {
+        var last: RemoteLLMClient.UsageInfo?
+        let started = Date()
     }
 
     func cancelGeneration() async {

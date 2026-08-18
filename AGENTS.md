@@ -14,7 +14,7 @@ This is a native macOS coding agent (Swift 6 / SwiftUI / MLX + BYOK).
    xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
      -destination 'platform=macOS' -derivedDataPath .derived test
    ```
-   Suite: 142 tests, all deterministic (no weights, no Metal, no network).
+   Suite: 237 tests, all deterministic (no weights, no Metal, no network).
 
 ## Architecture in 30 seconds
 

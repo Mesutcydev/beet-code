@@ -16,6 +16,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var autoResumeDownloads: Bool = false
     /// Last chosen model per BYOK provider (v0.3).
     var remoteModel: [String: String] = [:]
+    /// Base URL for the `.custom` OpenAI-compatible provider (v0.6).
+    var customBaseURL: String?
 }
 
 /// JSON-file-backed preferences under Application Support/BeetCode.

@@ -65,7 +65,7 @@ final class RemoteLLMClientTests: XCTestCase {
     }
 
     func testProviderRegistry() {
-        XCTAssertEqual(LLMProvider.allCases.count, 7)
+        XCTAssertEqual(LLMProvider.allCases.count, 9)
         XCTAssertEqual(LLMProvider.openAI.openAICompatibleBaseURL?.host, "api.openai.com")
         XCTAssertEqual(LLMProvider.deepSeek.openAICompatibleBaseURL?.host, "api.deepseek.com")
         XCTAssertEqual(LLMProvider.longCat.openAICompatibleBaseURL?.host, "api.longcat.ai")
@@ -84,8 +84,8 @@ final class RemoteLLMClientTests: XCTestCase {
     @MainActor
     func testAPIKeyStoreRoundTrip() {
         let store = APIKeyStore.shared
-        store.save(key: "sk-test-123456", for: .openAI)
-        XCTAssertEqual(store.key(for: .openAI), "sk-test-123456")
+        store.save(key: "sk-test-roundtrip-123", for: .openAI)
+        XCTAssertEqual(store.key(for: .openAI), "sk-test-roundtrip-123")
         XCTAssertTrue(store.configuredProviders.contains(.openAI))
         store.deleteKey(for: .openAI)
         XCTAssertNil(store.key(for: .openAI))

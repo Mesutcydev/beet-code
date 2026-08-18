@@ -9,13 +9,13 @@ OpenCode/ZCode, Hermes/OpenClaude). Full source reports:
 
 **"Bionic" is LM Studio's own agentic app** (v1.0.0 shipped 2026-07-17,
 weekly releases since). It is the direct benchmark — but it has three holes
-BeetCode already fills: **no BYOK** (their cloud is credit-only), **no
-context compression**, **no persistent memory**. BeetCode's wedge:
+Beet Code already fills: **no BYOK** (their cloud is credit-only), **no
+context compression**, **no persistent memory**. Beet Code's wedge:
 *local-first, your keys, real memory.*
 
 ## Matrix (verified today, not claimed)
 
-| Capability | BeetCode | Bionic/LM Studio | OpenCode | ZCode | Hermes |
+| Capability | Beet Code | Bionic/LM Studio | OpenCode | ZCode | Hermes |
 | --- | --- | --- | --- | --- | --- |
 | Native MLX local inference | ✅ | ✅ (mlx-engine) | ⚠️ via Ollama | ⚠️ via local providers | ❌ |
 | BYOK remote providers | ✅ 7 + Test buttons | ❌ credit cloud | ✅ 75+ | ✅ + coding plans | ✅ |

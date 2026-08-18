@@ -32,6 +32,9 @@ struct BeetCodeApp: App {
                 // Keep AppKit's appearance in sync so Theme's dynamic NSColors
                 // resolve to the forced scheme, not just the OS one.
                 .task(id: settings.appearance) { Theme.applyAppearance(settings.appearance) }
+                // Apply the accent palette at launch and on every change —
+                // Theme's palette-driven colors resolve live.
+                .task(id: settings.accentPalette) { Theme.applyPalette(settings.accentPalette) }
         }
         .defaultSize(width: 1240, height: 840)
         .windowResizability(.contentMinSize)

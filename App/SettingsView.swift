@@ -53,7 +53,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Theme.bg)
-        .frame(width: 780, height: 620)
+        .frame(width: 940, height: 720)
     }
 }
 
@@ -116,9 +116,65 @@ private struct SettingRow<Control: View>: View {
             }
             Spacer(minLength: 24)
             control
-                .frame(maxWidth: 320, alignment: .trailing)
+                .frame(maxWidth: 420, alignment: .trailing)
         }
         .frame(minHeight: 26)
+    }
+}
+
+/// Accent palette picker rendered as color swatches. Each swatch shows the
+/// palette's light-mode accent; selection draws a focus ring. Every swatch
+/// carries a tooltip and VoiceOver label naming the palette.
+private struct PaletteSwatchPicker: View {
+    @Binding var selection: AccentPalette
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(AccentPalette.allCases) { palette in
+                swatch(for: palette)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func swatch(for palette: AccentPalette) -> some View {
+        let isSelected = palette == selection
+        Button {
+            selection = palette
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(swatchColor(palette))
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(isSelected ? Theme.textPrimary : Color.clear, lineWidth: 2)
+                    )
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.35), radius: 1)
+                }
+            }
+            .frame(width: 26, height: 26)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(palette.label)
+        .accessibilityLabel("\(palette.label) palette")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// Static preview color for the swatch — always the palette's light-mode
+    /// accent so the picker itself stays readable in either appearance.
+    private func swatchColor(_ palette: AccentPalette) -> Color {
+        let hex = palette.hexes.accentLight
+        let red = Double((hex >> 16) & 0xFF) / 255
+        let green = Double((hex >> 8) & 0xFF) / 255
+        let blue = Double(hex & 0xFF) / 255
+        return Color(red: red, green: green, blue: blue)
     }
 }
 
@@ -167,6 +223,17 @@ private struct GeneralTab: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+
+                HStack(spacing: 12) {
+                    Text("Accent palette")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                    PaletteSwatchPicker(selection: Binding(
+                        get: { settings.accentPalette },
+                        set: { settings.accentPalette = $0 }))
+                }
+                .accessibilityElement(children: .contain)
             }
 
             SettingsCard(title: "Launch", icon: "power", footer: "Downloads that were interrupted by quitting resume automatically next launch. When off, they appear paused in the Model Manager for explicit resume.") {
@@ -456,40 +523,67 @@ private struct ProviderCard: View {
                     persistModelDraft()
                     keyDraft = ""
                     testState = .idle
+                    // The provider's own live /models list is the original
+                    // source of truth — fetch it as soon as a key lands.
+                    if resolvedKey.isEmpty == false { refreshModels() }
                 }
                 .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty && modelUnchanged && baseURUnchanged)
             }
 
-            // Model choice
-            HStack(spacing: 8) {
-                if !modelOptions.isEmpty {
-                    Picker("Model", selection: $modelDraft) {
-                        ForEach(modelOptions, id: \.self) { model in
-                            Text(model).tag(model)
+            // Model choice — live list first, static fallbacks below.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if !modelOptions.isEmpty {
+                        Picker("Model", selection: $modelDraft) {
+                            if !liveModels.isEmpty {
+                                Section("Live from \(provider.displayName)") {
+                                    ForEach(liveModels, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                                Section("Common") {
+                                    ForEach(provider.suggestedModels.filter { !liveModels.contains($0) }, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                            } else {
+                                ForEach(modelOptions, id: \.self) { model in
+                                    Text(model).tag(model)
+                                }
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(minWidth: 300, maxWidth: 420)
+                    }
+
+                    TextField("Model id", text: $modelDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout.monospaced())
+
+                    Button {
+                        refreshModels()
+                    } label: {
+                        if refreshingModels {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
                         }
                     }
-                    .labelsHidden()
-                    .frame(width: 260)
+                    .help("Fetch the provider's live model list")
+                    .disabled(refreshingModels || (resolvedKey.isEmpty && !provider.keyOptional))
+
+                    Button("Test") { runTest() }
+                        .disabled(testState == .running || (resolvedKey.isEmpty && !provider.keyOptional))
                 }
-
-                TextField("Model id", text: $modelDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout.monospaced())
-
-                Button {
-                    refreshModels()
-                } label: {
-                    if refreshingModels {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
+                if !liveModels.isEmpty {
+                    Text("Model list fetched live from \(provider.displayName) — \(liveModels.count) available.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                } else if hasKey || keyless {
+                    Text("The list below is a static fallback — press ⟳ to fetch \(provider.displayName)'s current models.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
                 }
-                .help("Fetch the provider's live model list")
-                .disabled(refreshingModels)
-
-                Button("Test") { runTest() }
-                    .disabled(testState == .running || (resolvedKey.isEmpty && !provider.keyOptional))
             }
 
             // Test result line — always present so the card never jumps.

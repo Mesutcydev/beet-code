@@ -19,6 +19,64 @@ enum AppAppearance: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+/// Accent color palettes. Every entry ships a light+dark hex pair for both
+/// the accent and its brighter variant; `Theme` resolves them at draw time.
+/// `beetRed` is the identity default (Pantone 19-2030 TCX, #7A1F3D).
+/// Foundation-only (no SwiftUI) so the CLI target can compile this file;
+/// the SwiftUI swatch extension lives in App/Theme.swift.
+enum AccentPalette: String, CaseIterable, Codable, Identifiable, Sendable {
+    case beetRed
+    case indigo
+    case ocean
+    case forest
+    case amber
+    case graphite
+
+    var id: String { rawValue }
+
+    struct Hexes: Sendable, Equatable {
+        var accentLight: UInt32
+        var accentDark: UInt32
+        var brightLight: UInt32
+        var brightDark: UInt32
+    }
+
+    var label: String {
+        switch self {
+        case .beetRed: "Beet Red"
+        case .indigo: "Indigo"
+        case .ocean: "Ocean"
+        case .forest: "Forest"
+        case .amber: "Amber"
+        case .graphite: "Graphite"
+        }
+    }
+
+    var hexes: Hexes {
+        switch self {
+        case .beetRed:
+            // Pantone 19-2030 TCX — #7A1F3D; dark mode lifts the hue.
+            Hexes(accentLight: 0x7A1F3D, accentDark: 0xD14775,
+                  brightLight: 0x8A2647, brightDark: 0xE06C92)
+        case .indigo:
+            Hexes(accentLight: 0x6C5CE7, accentDark: 0x8B7BFF,
+                  brightLight: 0x7C6CF7, brightDark: 0xA99BFF)
+        case .ocean:
+            Hexes(accentLight: 0x1E6FD9, accentDark: 0x5AA0FF,
+                  brightLight: 0x2B7FFF, brightDark: 0x7AB4FF)
+        case .forest:
+            Hexes(accentLight: 0x1E7A52, accentDark: 0x35D6A0,
+                  brightLight: 0x2A8F62, brightDark: 0x5CE0B4)
+        case .amber:
+            Hexes(accentLight: 0xB87400, accentDark: 0xF5B23D,
+                  brightLight: 0xD08A10, brightDark: 0xFFC861)
+        case .graphite:
+            Hexes(accentLight: 0x4A5060, accentDark: 0x9AA1B2,
+                  brightLight: 0x5B616E, brightDark: 0xB4BAC9)
+        }
+    }
+}
+
 /// User-facing settings. Defaults encode the safety posture: edits and shell
 /// commands always ask, reads never do.
 @MainActor
@@ -44,6 +102,7 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.showReasoning: false,
             DefaultsKeys.planMode: false,
             DefaultsKeys.appearance: AppAppearance.light.rawValue,
+            DefaultsKeys.accentPalette: AccentPalette.beetRed.rawValue,
             DefaultsKeys.composerBorderAnimation: true,
             DefaultsKeys.apiServerEnabled: false,
             DefaultsKeys.apiServerPort: 1234,
@@ -59,6 +118,20 @@ final class SettingsStore: ObservableObject {
         }
         set {
             defaults.set(newValue.rawValue, forKey: DefaultsKeys.appearance)
+            objectWillChange.send()
+        }
+    }
+
+    /// Accent color palette. Defaults to Beet Red (the app identity).
+    /// `Theme.applyPalette` is invoked from the app layer on change.
+    var accentPalette: AccentPalette {
+        get {
+            AccentPalette(
+                rawValue: defaults.string(forKey: DefaultsKeys.accentPalette)
+                    ?? AccentPalette.beetRed.rawValue) ?? .beetRed
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: DefaultsKeys.accentPalette)
             objectWillChange.send()
         }
     }
@@ -216,6 +289,7 @@ final class SettingsStore: ObservableObject {
         static let showReasoning = "showReasoning"
         static let planMode = "planMode"
         static let appearance = "appearance"
+        static let accentPalette = "accentPalette"
         static let composerBorderAnimation = "composerBorderAnimation"
         static let apiServerEnabled = "apiServerEnabled"
         static let apiServerPort = "apiServerPort"

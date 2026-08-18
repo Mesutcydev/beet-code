@@ -11,15 +11,25 @@ struct ChatView: View {
         self.controller = controller
     }
 
+    /// Single source of truth for the composer + lattice screen. Owned by
+    /// ChatView so it survives view rebuilds; attached to the live
+    /// controller/AppState in `.task`.
+    @State private var latticeStore = IntentLatticeStore()
+
     var body: some View {
         VStack(spacing: 0) {
             transcript
             Divider()
-            inputBar
+            IntentLatticeView(store: latticeStore)
+                .environmentObject(controller)
         }
         .background(surfaceBackground)
-        // Intent palette expands inline above the input; Esc is reserved for
-        // stopping the agent, never for collapsing the palette.
+        .task {
+            latticeStore.attach(controller: controller, appState: appState)
+        }
+        .onPasteCommand(of: [.png, .tiff, .jpeg, .fileURL]) { providers in
+            handlePaste(providers)
+        }
     }
 
     // MARK: Transcript
@@ -140,306 +150,12 @@ struct ChatView: View {
         }
     }
 
-    // MARK: Input
-
-    private var inputBar: some View {
-        let flow = settings.composerFlow
-        let phase: ComposerPhase = controller.pendingApproval != nil
-            ? .awaitingApproval
-            : (controller.isRunning ? .streaming : (isFocused ? .focused : .idle))
-
-        return VStack(alignment: .leading, spacing: 6) {
-            // Task phase indicator.
-            if controller.currentPhase != .idle, controller.currentPhase != .finished {
-                HStack(spacing: 6) {
-                    Image(systemName: phaseIcon(controller.currentPhase))
-                        .foregroundStyle(.secondary)
-                    Text(phaseLabel(controller.currentPhase))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-            }
-            // Attachment chips (Cursor-style context row).
-            if !attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(attachments) { attachment in
-                            AttachmentChip(attachment: attachment) {
-                                attachments.removeAll { $0.id == attachment.id }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if lattice.isExpanded {
-                IntentPalette(
-                    model: lattice,
-                    estimatedTokens: lattice.estimatedTokens(draft: draft),
-                    contextWindow: appState.activeModel?.contextWindow
-                )
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .lfGlass(radius: Radius.lg)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-
-            // Queued messages (sent in order as runs finish).
-            if !queue.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("QUEUED · \(queue.count)")
-                        .font(.system(size: 8, weight: .semibold))
-                        .kerning(0.8)
-                        .foregroundStyle(.secondary)
-                    ForEach(queue) { q in
-                        HStack(spacing: 6) {
-                            Image(systemName: "text.queue").font(.system(size: 9)).foregroundStyle(.tertiary)
-                            Text(q.text).font(.caption).lineLimit(1).foregroundStyle(.secondary)
-                            Spacer()
-                            Button { queue.removeAll { $0.id == q.id } } label: {
-                                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Theme.surfaceInset, in: Capsule())
-                    }
-                }
-            }
-
-            HStack(alignment: .bottom, spacing: 8) {
-                // Attachment button (paperclip).
-                Button {
-                    attachFiles()
-                } label: {
-                    Image(systemName: "paperclip")
-                        .font(.title3)
-                }
-                .buttonStyle(.borderless)
-                .help("Attach files or images (⌘V pastes a screenshot)")
-                .disabled(controller.isRunning)
-
-                // Auto-expanding textarea: 1 → 8 lines, then scrolls.
-                TextField(
-                    composerPlaceholder,
-                    text: $draft,
-                    axis: .vertical
-                )
-                .textFieldStyle(.plain)
-                .lineLimit(1...8)
-                .onSubmit(sendMessage)
-                .disabled(!canCompose)
-                .focused($inputFocused)
-                .padding(10)
-                .modifier(ComposerBorder(flow: flow, phase: phase, animated: settings.composerBorderAnimation))
-
-                if controller.isRunning {
-                    Button {
-                        controller.stop()
-                    } label: {
-                        Image(systemName: "stop.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(Theme.danger)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Stop the agent (Esc)")
-                    .keyboardShortcut(.cancelAction)
-                }
-                // Send now, or queue while the agent is running.
-                Button {
-                    sendMessage()
-                } label: {
-                    let ready = !draft.isEmpty && canCompose
-                    Image(systemName: controller.isRunning ? "text.append" : "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(ready ? AnyShapeStyle(Color.white) : AnyShapeStyle(Theme.textTertiary))
-                        .frame(width: 30, height: 30)
-                        .background(ready ? AnyShapeStyle(Theme.accentGradient) : AnyShapeStyle(Theme.surfaceInset),
-                                    in: Circle())
-                        .overlay(Circle().strokeBorder(Theme.hairline.opacity(ready ? 0 : 1), lineWidth: 1))
-                        .shadow(color: ready ? Theme.accent.opacity(0.4) : .clear, radius: 6, y: 2)
-                }
-                .buttonStyle(.plain)
-                .disabled(draft.isEmpty || !canCompose)
-                .help(controller.isRunning ? "Queue message (sent when the run finishes)" : "Send")
-            }
-
-            // Accessory row: model, intent, plan, reasoning.
-            HStack(spacing: 12) {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(appState.isRemoteActive ? Theme.info : Theme.success)
-                        .frame(width: 6, height: 6)
-                    Text(modelLabel).lineLimit(1)
-                    Text(appState.isRemoteActive ? "REMOTE" : "LOCAL")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(appState.isRemoteActive ? Theme.info : Theme.success)
-                }
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondary)
-
-                Spacer()
-
-                // Intent palette: roles + focus chips. Esc is reserved for Stop.
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        lattice.isExpanded.toggle()
-                    }
-                } label: {
-                    if lattice.selectionCount > 0 {
-                        Label("Intent · \(lattice.selectionCount)", systemImage: "sparkles")
-                    } else {
-                        Label("Intent", systemImage: "sparkles")
-                    }
-                }
-                .buttonStyle(.bordered)
-                .accessoryControl()
-                .tint(lattice.isExpanded ? Color.accentColor : nil)
-                .help("Add roles and focus sources to this turn")
-                .disabled(controller.isRunning)
-
-                Toggle(isOn: $settings.planMode) {
-                    Label("Plan", systemImage: "list.bullet.clipboard")
-                }
-                .toggleStyle(.button)
-                .accessoryControl()
-                .help("Plan mode: the agent proposes a plan before any tool runs")
-
-                Toggle(isOn: $settings.showReasoning) {
-                    Label("Reasoning", systemImage: "brain.head.profile")
-                }
-                .toggleStyle(.button)
-                .accessoryControl()
-                .help("Show the model's chain-of-thought")
-            }
-            .font(.caption)
-        }
-        .padding(12)
-        .background(Theme.surface)
-        .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
-        .onChange(of: controller.isRunning) { _, running in
-            if !running { drainQueue() }
-        }
-        .onPasteCommand(of: [.png, .tiff, .jpeg, .fileURL]) { providers in
-            handlePaste(providers)
-        }
-    }
 
     /// Deepest app surface behind the transcript.
     private var surfaceBackground: Color { Theme.bg }
 
-    private var isFocused: Bool { inputFocused }
-    @State private var draft = ""
-    @State private var attachments: [ComposerAttachment] = []
-    @FocusState private var inputFocused: Bool
-    // Intent palette: collapsed by default so the single-line case is unchanged.
-    @StateObject private var lattice = LatticeModel()
-
-    // Messages typed while the agent is running are queued and sent in order
-    // as each run finishes.
-    private struct QueuedMessage: Identifiable {
-        let id = UUID()
-        let text: String
-    }
-    @State private var queue: [QueuedMessage] = []
-
-
-    private var inputDisabled: Bool {
-        controller.workspaceURL == nil
-            || !isEngineReady
-            || controller.isRunning
-            || controller.pendingApproval != nil
-            || controller.pendingQuestion != nil
-    }
-
-    private var isEngineReady: Bool {
-        if case .ready = appState.enginePhase { return true }
-        return false
-    }
-
-    private var composerPlaceholder: String {
-        if controller.workspaceURL == nil { return "Open a workspace to begin…" }
-        if !isEngineReady { return "Load a model to begin…" }
-        return "Describe a coding task…"
-    }
-
-    /// Composing is allowed whenever a workspace + engine are ready; a running
-    /// agent no longer blocks typing (messages queue instead).
-    private var canCompose: Bool {
-        controller.workspaceURL != nil
-            && isEngineReady
-            && controller.pendingApproval == nil
-            && controller.pendingQuestion == nil
-    }
-
-    private func sendMessage() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        // Slash commands execute locally — never sent to the model.
-        if controller.handleSlash(text) {
-            draft = ""
-            return
-        }
-        // While the agent runs, queue instead of interrupting.
-        if controller.isRunning {
-            queue.append(QueuedMessage(text: text))
-            draft = ""
-            return
-        }
-        let outgoing = attachments
-        let preamble = lattice.contextPreamble(
-            workspace: controller.workspaceURL,
-            attachments: outgoing,
-            draft: text,
-            contextWindow: appState.activeModel?.contextWindow)
-        let message = preamble.map { $0 + "\n\n" + text } ?? text
-        draft = ""
-        attachments = []
-        lattice.clear()
-        withAnimation(.easeInOut(duration: 0.18)) {
-            lattice.isExpanded = false
-        }
-        controller.send(message, attachments: outgoing)
-    }
-
-    /// Sends the next queued message once a run finishes.
-    private func drainQueue() {
-        guard !controller.isRunning, !queue.isEmpty else { return }
-        let next = queue.removeFirst()
-        controller.send(next.text, attachments: [])
-    }
-
-    private func phaseLabel(_ phase: AgentPhase) -> String {
-        switch phase {
-        case .idle: "Idle"
-        case .planning: "Planning…"
-        case .awaitingPlanApproval: "Awaiting plan approval"
-        case .working: "Working…"
-        case .awaitingApproval: "Awaiting approval"
-        case .awaitingQuestion: "Awaiting your answer"
-        case .verifying: "Verifying…"
-        case .finished: "Done"
-        }
-    }
-
-    private func phaseIcon(_ phase: AgentPhase) -> String {
-        switch phase {
-        case .planning, .working, .verifying: "circle.dotted"
-        case .awaitingPlanApproval, .awaitingApproval, .awaitingQuestion: "hand.raised"
-        default: "circle"
-        }
-    }
-
-    private var modelLabel: String {
-        if appState.isRemoteActive,
-           let endpoint = appState.engine.activeRemoteEndpoint {
-            return "\(endpoint.provider.displayName) · \(endpoint.model)"
-        }
-        return appState.activeModel?.displayName ?? "local"
-    }
-
-    /// Paperclip: pick files and/or images from disk.
+    /// Paperclip (kept for parity; the lattice composer has its own):
+    /// pick files and/or images from disk.
     private func attachFiles() {
         let panel = NSOpenPanel()
         panel.title = "Attach files or images"
@@ -449,7 +165,7 @@ struct ChatView: View {
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
             for url in panel.urls.prefix(8) {
-                attachments.append(ComposerAttachment(url: url))
+                latticeStore.attachments.append(ComposerAttachment(url: url))
             }
         }
     }
@@ -461,7 +177,7 @@ struct ChatView: View {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     if let url {
                         DispatchQueue.main.async {
-                            attachments.append(ComposerAttachment(url: url))
+                            latticeStore.attachments.append(ComposerAttachment(url: url))
                         }
                     }
                 }
@@ -477,7 +193,7 @@ struct ChatView: View {
                            let png = bitmap.representation(using: .png, properties: [:]) {
                             try? png.write(to: url)
                             DispatchQueue.main.async {
-                                attachments.append(ComposerAttachment(url: url, isImage: true))
+                                latticeStore.attachments.append(ComposerAttachment(url: url, isImage: true))
                             }
                         }
                     }
@@ -946,7 +662,7 @@ private struct PlanCard: View {
     }
 }
 /// A removable attachment chip above the composer.
-private struct AttachmentChip: View {
+struct AttachmentChip: View {
     let attachment: ComposerAttachment
     let onRemove: () -> Void
 

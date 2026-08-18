@@ -89,16 +89,19 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
     }
 
     /// Model presets offered in the BYOK settings UI.
+    /// Static fallback model list — shown before a live `/v1/models` fetch
+    /// succeeds. Keep to the CURRENT generation; the live fetch (triggered
+    /// automatically when a key is saved) is the source of truth.
     var suggestedModels: [String] {
         switch self {
-        case .openAI: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
+        case .openAI: ["gpt-5", "gpt-5-mini", "gpt-4.1"]
         case .deepSeek: ["deepseek-chat", "deepseek-reasoner"]
         case .longCat: ["longcat-default", "longcat-ultra"]
         case .alibaba: ["qwen-plus", "qwen-max", "qwen-turbo"]
         case .alibabaTokenPlan: ["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro", "deepseek-v4-flash-0731", "glm-5.2"]
-        case .gemini: ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"]
-        case .openRouter: ["openrouter/auto", "anthropic/claude-3.5-sonnet", "google/gemini-2.0-flash-001"]
-        case .anthropic: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-3-5-haiku-latest"]
+        case .gemini: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+        case .openRouter: ["anthropic/claude-sonnet-4.5", "google/gemini-2.5-pro", "openai/gpt-5"]
+        case .anthropic: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"]
         case .custom: []
         }
     }

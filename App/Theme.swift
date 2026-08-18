@@ -9,6 +9,34 @@ import SwiftUI
 /// a deep glassy dark, and one electric indigo-violet accent that reads as
 /// "agentic" without shouting.
 enum Theme {
+    // The active accent palette — read at DRAW time by the dynamic colors
+    // below, so a palette switch takes effect live without recreating views.
+    // Only ever mutated from the main actor via applyPalette.
+    nonisolated(unsafe) static var currentPalette: AccentPalette = .beetRed
+
+    /// Applies the user's palette choice. Called once at launch and again on
+    /// every change (mirrors `applyAppearance`).
+    @MainActor static func applyPalette(_ palette: AccentPalette) {
+        currentPalette = palette
+    }
+
+    /// Palette-driven dynamic color: resolves the CURRENT palette's hex
+    // pair for the active appearance on every draw.
+    private static func paletteColor(
+        light: KeyPath<AccentPalette.Hexes, UInt32>,
+        dark: KeyPath<AccentPalette.Hexes, UInt32>
+    ) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let hexes = currentPalette.hexes
+            let hex = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? hexes[keyPath: dark] : hexes[keyPath: light]
+            return NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                           green:   CGFloat((hex >> 8) & 0xFF) / 255,
+                           blue:    CGFloat(hex & 0xFF) / 255,
+                           alpha:   1)
+        })
+    }
+
     // Neutrals — one cohesive cool-slate hue, deepest (bg) to raised (inset).
     // Dark steps are deliberately close so bg→surface→inset reads as gentle
     // depth, never as clashing tones.
@@ -22,9 +50,11 @@ enum Theme {
     static let textSecondary = Color.dynamic(light: 0x5B616E, dark: 0x9AA1B2)
     static let textTertiary  = Color.dynamic(light: 0x8A909C, dark: 0x646B7B)
 
-    // Accent — electric indigo-violet, lifted in dark so it stays vivid on black.
-    static let accent       = Color.dynamic(light: 0x6C5CE7, dark: 0x8B7BFF)
-    static let accentBright = Color.dynamic(light: 0x5B4BE0, dark: 0x9D90FF)
+    // Accent — palette-driven. Default is Beet Red (Pantone 19-2030 TCX,
+    // #7A1F3D); switchable in Settings → Appearance. In dark mode every
+    // palette ships a same-hue lift so it stays vivid on black.
+    static var accent: Color { paletteColor(light: \.accentLight, dark: \.accentDark) }
+    static var accentBright: Color { paletteColor(light: \.brightLight, dark: \.brightDark) }
     static var accentSoft: Color { accent.opacity(0.14) }
 
     // Status — tuned per mode so they never blow out on the deep dark.
@@ -33,11 +63,13 @@ enum Theme {
     static let danger  = Color.dynamic(light: 0xDC3B4B, dark: 0xFF6B78)
     static let info    = Color.dynamic(light: 0x2B7FFF, dark: 0x5AA0FF)
 
-    /// Futuristic accent wash for the primary (user) surface and glows.
-    static let accentGradient = LinearGradient(
-        colors: [Color.dynamic(light: 0x6C5CE7, dark: 0x7C6CFF),
-                 Color.dynamic(light: 0x8E7BFF, dark: 0xB49BFF)],
-        startPoint: .topLeading, endPoint: .bottomTrailing)
+    /// Palette wash for the primary (user) surface and glows — accent to
+    // bright variant, resolved live from the current palette.
+    static var accentGradient: LinearGradient {
+        LinearGradient(
+            colors: [accent, accentBright],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
 
     /// Keep AppKit's app-wide appearance in lockstep with the user's setting so
     /// the dynamic `NSColor` providers above resolve to the *forced* scheme —

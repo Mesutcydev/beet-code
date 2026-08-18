@@ -86,9 +86,17 @@ private struct SidebarView: View {
     // the ad-hoc build raised a Keychain prompt). The list renders from
     // async-loaded state instead.
     @State private var recentSessions: [SessionRecord] = []
+    /// Sidebar list selection IS the session switch: rows are tagged with
+    /// their record id and onChange restores the picked session. Native
+    /// selection gives the rows a real selected state (plain Buttons inside
+    /// a sidebar List had no visible selection and failed silently).
+    @State private var selectedSessionID: UUID?
+    /// Shown when a picked session can't be restored (e.g. its project
+    /// folder no longer exists) instead of the old silent no-op.
+    @State private var sessionRestoreError: String?
 
     var body: some View {
-        List {
+        List(selection: $selectedSessionID) {
             Section("Workspace") {
                 Button {
                     chooseWorkspace()
@@ -157,30 +165,42 @@ private struct SidebarView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(recent)) { record in
-                        Button {
-                            // Restore this session directly: it re-points the
-                            // workspace and resumes the persisted record.
-                            _ = sessions.restore(record)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(record.title)
-                                    .font(.callout)
-                                    .lineLimit(1)
-                                // Distinguishes repeated titles: message count
-                                // + relative time, monospaced digits so rows
-                                // align and scan as a real list.
-                                Text("\(record.messages.count) msgs · \(record.updatedAt, style: .relative)")
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                    .foregroundStyle(.tertiary)
-                            }
+                        // Tagged row + List(selection:) = real selectable rows.
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(record.title)
+                                .font(.callout)
+                                .lineLimit(1)
+                            // Distinguishes repeated titles: message count
+                            // + relative time, monospaced digits so rows
+                            // align and scan as a real list.
+                            Text("\(record.messages.count) msgs · \(record.updatedAt, style: .relative)")
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(.tertiary)
                         }
-                        .buttonStyle(.borderless)
+                        .tag(record.id)
+                        // Missing workspace: row stays visible (the session
+                        // exists) but is marked and explained on click.
+                        .disabled(!SessionStore.shared.validateWorkspaceBinding(record))
+                        .help(SessionStore.shared.validateWorkspaceBinding(record)
+                              ? "Restore this session"
+                              : "Project folder missing: \(record.workspacePath)")
                     }
+                }
+                if let restoreError = sessionRestoreError {
+                    Label(restoreError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Theme.warning)
+                        .lineLimit(3)
                 }
             }
         }
         .listStyle(.sidebar)
+        // Selection IS the restore: picking a tagged row switches to that
+        // session (and reports why when it can't — no more silent no-ops).
+        .onChange(of: selectedSessionID) { _, newValue in
+            selectSession(newValue)
+        }
         // Off-main load + reload whenever a session is saved (controller
         // publishes transcript/session changes through objectWillChange).
         .task { await reloadSessions() }
@@ -203,6 +223,42 @@ private struct SidebarView: View {
         }.value
         needsKeychainUnlock = SessionCrypto.needsInteractiveUnlock
         recentSessions = loaded
+        // Keep the highlight honest: the controller owns the active session;
+        // a restore (or a run) elsewhere should show up here too.
+        if let active = sessions.activeSessionID, selectedSessionID != active,
+           recentSessions.contains(where: { $0.id == active }) {
+            selectedSessionID = active
+        }
+    }
+
+    /// Restore the picked session. Reports failure instead of no-op'ing so a
+    /// click always has a visible outcome.
+    private func selectSession(_ id: UUID?) {
+        sessionRestoreError = nil
+        guard let id else { return }
+        // Snap-back after a failed restore re-fires selection with the
+        // already-active session — don't rebuild its transcript twice.
+        guard id != sessions.activeSessionID else { return }
+        guard let record = recentSessions.first(where: { $0.id == id }) else { return }
+        guard SessionStore.shared.validateWorkspaceBinding(record) else {
+            sessionRestoreError = "Project folder no longer exists: \(record.workspacePath)"
+            selectedSessionID = sessions.activeSessionID
+            return
+        }
+        if sessions.restore(record) {
+            // Persist so a relaunch lands back on this session too.
+            var preferences = AppPreferencesStore.shared.current
+            preferences.lastSessionID = record.id
+            preferences.lastWorkspacePath = record.workspacePath
+            AppPreferencesStore.shared.save(preferences)
+            // A stale load error from the previous workspace is not this one's.
+            if case .failed = appState.enginePhase {
+                appState.enginePhase = .idle
+            }
+        } else {
+            sessionRestoreError = "Could not restore \"\(record.title)\"."
+            selectedSessionID = sessions.activeSessionID
+        }
     }
 
     private func chooseWorkspace() {

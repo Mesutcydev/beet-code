@@ -27,6 +27,14 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
     private nonisolated(unsafe) var loadedID: String?
     private nonisolated(unsafe) var statsState = EngineStats()
     private nonisolated(unsafe) var loading = false
+    /// Conversation replayed in full on every generation. ChatSession's KV
+    /// reuse across calls is deliberately NOT used: the agent loop re-feeds
+    /// assistant turns the session already generated (thinking-stripped), so
+    /// incremental rendering would duplicate content and corrupt the chat
+    /// template. Full replay — the same contract the remote and GGUF engines
+    /// implement — keeps the context provably correct at the cost of a
+    /// re-prefill per turn.
+    private nonisolated(unsafe) var history: [ChatTurn] = []
 
     public var loadedModelID: String? {
         get async { try? await gate.run { self.loadedID } }
@@ -63,6 +71,7 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
                     generateParameters: MLXEngine.makeParameters(temperature: 0.6, maxTokens: nil))
                 self.loadedID = modelID
                 self.statsState = EngineStats()
+                self.history.removeAll()
 
                 // Page the weights in now so the first token isn't slow.
                 try await self.session?.synchronize()
@@ -89,6 +98,7 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
 
     public func reset() async {
         _ = try? await gate.run {
+            self.history.removeAll()
             await self.session?.clear()
         }
     }
@@ -104,7 +114,12 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
                     try await self.gate.run {
                         guard let session = self.session else { throw EngineError.notLoaded }
 
-                        let messages = turns.map { turn -> Chat.Message in
+                        // Full replay (see `history`): fresh KV, complete
+                        // conversation rendered through the chat template.
+                        self.history.append(contentsOf: turns)
+                        await session.clear()
+
+                        let messages = self.history.map { turn -> Chat.Message in
                             switch turn.role {
                             case .system: return Chat.Message.system(turn.content)
                             case .user: return Chat.Message.user(turn.content)
@@ -119,10 +134,24 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
 
                         var tokens = 0
                         let started = Date()
-                        for try await chunk in session.streamResponse(to: messages) {
+                        // streamDetails, NOT streamResponse: MLXLMCommon parses
+                        // `<tool_call>` blocks (and bare {"name":…} JSON) into
+                        // `.toolCall` generations whose `chunk` is nil —
+                        // streamResponse drops them silently, so the agent's
+                        // ToolParser never saw local tool calls at all. Here
+                        // they are re-serialized into the wire text the
+                        // ToolParser recognizes.
+                        for try await generation in session.streamDetails(to: messages) {
                             if Task.isCancelled { break }
-                            continuation.yield(chunk)
-                            tokens += 1
+                            switch generation {
+                            case .chunk(let chunk):
+                                continuation.yield(chunk)
+                                tokens += 1
+                            case .toolCall(let call):
+                                continuation.yield(MLXEngine.serializeToolCall(call))
+                            case .info:
+                                break
+                            }
                         }
 
                         let elapsed = Date().timeIntervalSince(started)
@@ -175,7 +204,26 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
     private static func makeParameters(temperature: Double, maxTokens: Int?) -> GenerateParameters {
         var params = GenerateParameters()
         params.temperature = Float(temperature)
+        // Qwen-recommended sampling for the local catalog: nucleus + top-k
+        // with a light repetition penalty keeps small 4-bit models off the
+        // rambling/repetition tails that plain temperature sampling invites
+        // (defaults are topP 1.0 / topK 0 — unbounded).
+        if temperature > 0 {
+            params.topP = 0.95
+            params.topK = 20
+            params.repetitionPenalty = 1.05
+        }
         params.maxTokens = maxTokens
         return params
+    }
+
+    /// Re-serializes a parsed tool call into the `<tool_call>` wire text the
+    /// agent's `ToolParser` recognizes (the inverse of parsing — see
+    /// `ToolCallText`).
+    private static func serializeToolCall(_ call: ToolCall) -> String {
+        let object = call.function.arguments.mapValues { $0.anyValue }
+        let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let argumentsJSON = data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        return ToolCallText.serialize(name: call.function.name, argumentsJSON: argumentsJSON)
     }
 }

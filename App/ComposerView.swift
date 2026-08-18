@@ -13,7 +13,8 @@ import SwiftUI
 /// - Enter sends, Shift+Enter inserts a newline, ⌘↩ sends too, Esc stops a
 ///   running agent (the only `.cancelAction` owner in the window).
 /// - Send morphs into Stop while the agent runs.
-/// - The signature gradient underline tracks idle → focused → streaming.
+/// - The signature gradient border traces the card's full perimeter and
+///   tracks idle → focused → streaming.
 struct ComposerView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var controller: AgentSessionController
@@ -36,7 +37,7 @@ struct ComposerView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             if !store.selection.isEmpty {
                 intentStrip
             }
@@ -48,22 +49,26 @@ struct ComposerView: View {
                 hintRow(hint)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 10)
+        // The same centered 760pt-max column as the transcript above, so
+        // the input sits directly under the conversation it belongs to.
+        .frame(maxWidth: 760, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Spacing.xl)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
         .background(Theme.bg)
     }
 
     // MARK: Card
 
     private var card: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             editor
             accessoryRow
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .modifier(ComposerBorder(
             flow: settings.composerFlow,
             phase: phase,
@@ -73,9 +78,9 @@ struct ComposerView: View {
     private var editor: some View {
         TextField("Describe a coding task…", text: Bindable(store).prompt, axis: .vertical)
             .textFieldStyle(.plain)
-            .font(.system(size: 13.5))
+            .font(.system(size: 14))
             .foregroundStyle(Theme.textPrimary)
-            .lineLimit(1...8)
+            .lineLimit(1...12)
             .focused($editorFocused)
             .padding(.horizontal, 2)
             .padding(.vertical, 2)
@@ -101,7 +106,7 @@ struct ComposerView: View {
     // MARK: Accessory row
 
     private var accessoryRow: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.sm) {
             attachButton
             ModelSelectionPill()
                 .environmentObject(appState)
@@ -131,19 +136,17 @@ struct ComposerView: View {
             attachFiles()
         } label: {
             Image(systemName: "paperclip")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+                .font(.system(size: 11, weight: .medium))
+                .lfComposerPill(active: false)
         }
         .buttonStyle(.plain)
-        .lfHoverLift()
         .help("Attach files or images — files are quoted into the message, images are described by the vision provider")
         .accessibilityLabel("Attach files")
     }
 
     private var intentButton: some View {
         let count = store.selection.count
+        let active = count > 0 || showIntentPicker
         return Button {
             showIntentPicker.toggle()
         } label: {
@@ -151,26 +154,16 @@ struct ComposerView: View {
                 Image(systemName: "target")
                     .font(.system(size: 11, weight: .medium))
                 Text("Intent")
-                    .font(.caption.weight(.medium))
                 if count > 0 {
+                    // A plain accent count — no badge-in-badge capsule.
                     Text("\(count)")
                         .font(.caption2.weight(.semibold).monospacedDigit())
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Theme.accent.opacity(0.18), in: Capsule())
+                        .foregroundStyle(Theme.accent)
                 }
             }
-            .foregroundStyle(count > 0 ? Theme.accent : Theme.textSecondary)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(count > 0 ? Theme.accentSoft : Color.clear, in: Capsule())
-            .overlay(Capsule().strokeBorder(
-                showIntentPicker ? Theme.accent.opacity(0.6)
-                    : count > 0 ? Theme.accent.opacity(0.5) : Theme.hairline,
-                lineWidth: 1))
+            .lfComposerPill(active: active)
         }
         .buttonStyle(.plain)
-        .lfHoverLift()
         .help("Intent — pick the agent's roles and context sources for this turn")
         .popover(isPresented: $showIntentPicker, arrowEdge: .top) {
             IntentPicker(store: store)
@@ -182,18 +175,14 @@ struct ComposerView: View {
         isOn: Binding<Bool>, isActive: Bool, help: String
     ) -> some View {
         Button { isOn.wrappedValue.toggle() } label: {
-            Label(title, systemImage: glyph)
-                .font(.caption.weight(.medium))
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(isActive ? Theme.accent : Theme.textSecondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(isActive ? Theme.accentSoft : Color.clear, in: Capsule())
-                .overlay(Capsule().strokeBorder(
-                    isActive ? Theme.accent.opacity(0.5) : Theme.hairline, lineWidth: 1))
+            HStack(spacing: 5) {
+                Image(systemName: glyph)
+                    .font(.system(size: 11, weight: .medium))
+                Text(title)
+            }
+            .lfComposerPill(active: isActive)
         }
         .buttonStyle(.plain)
-        .lfHoverLift()
         .help(help)
         .accessibilityValue(isActive ? "On" : "Off")
     }
@@ -203,12 +192,18 @@ struct ComposerView: View {
     @ViewBuilder
     private var estimateLabel: some View {
         let estimate = store.estimate
-        if estimate.totalTokens > 0 {
-            Text(estimateText(estimate))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(estimateTint(estimate))
-                .help(estimateHelp(estimate))
+        Group {
+            if estimate.totalTokens > 0 {
+                Text(estimateText(estimate))
+                    .foregroundStyle(estimateTint(estimate))
+                    .help(estimateHelp(estimate))
+            }
         }
+        .font(.caption2.monospacedDigit())
+        // A reserved lane: monospaced digits + a fixed minimum width, so the
+        // send button never shifts as the estimate appears, disappears or
+        // grows.
+        .frame(minWidth: 88, alignment: .trailing)
     }
 
     private func estimateText(_ estimate: ComposerStore.TokenEstimate) -> String {
@@ -285,7 +280,7 @@ struct ComposerView: View {
     /// be injected, without opening the picker.
     private var intentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.sm) {
                 ForEach(store.selection.orderedRoles) { role in
                     intentChip(
                         label: role.label, glyph: role.glyph, tint: Theme.accent,
@@ -326,7 +321,7 @@ struct ComposerView: View {
             Button(action: onRemove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(tint.opacity(0.8))
+                    .foregroundStyle(tint)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Remove \(label)")
@@ -334,14 +329,14 @@ struct ComposerView: View {
         .foregroundStyle(tint)
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
-        .background(tint.opacity(0.10), in: Capsule())
-        .overlay(Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 1))
+        .background(Theme.wash(tint), in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.washBorder(tint), lineWidth: 1))
         .help(help)
     }
 
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.sm) {
                 ForEach(store.attachments) { attachment in
                     AttachmentChip(attachment: attachment) {
                         store.attachments.removeAll { $0.id == attachment.id }

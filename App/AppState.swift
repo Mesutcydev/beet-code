@@ -136,8 +136,11 @@ final class AppState: ObservableObject {
         }
 
         // Downloads: manifest scan already populated paused states; resume
-        // only when the user opted in.
-        if preferences.autoResumeDownloads {
+        // only when the user opted in. Never under a test host: the app's
+        // real Application Support is live there, and an auto-resumed
+        // download would hit the network mid-suite and starve fixture runs.
+        if preferences.autoResumeDownloads,
+           ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
             for modelID in downloadManager.resumableModelIDs {
                 guard let model = ModelCatalog.model(id: modelID) else { continue }
                 startDownload(of: model)
@@ -224,9 +227,9 @@ final class AppState: ObservableObject {
             return
         }
         // An interrupted/corrupt download can leave a directory without its
-        // config.json; surface that as a re-download prompt, not an MLX error.
+        // weights; surface that as a re-download prompt, not an engine error.
         guard modelStore.hasConfiguration(installed) else {
-            enginePhase = .failed("\(model.displayName) is incomplete (missing config.json). Remove it and download again.")
+            enginePhase = .failed("\(model.displayName) is incomplete (missing weight files). Remove it and download again.")
             return
         }
         // An active agent must fully stop before its engine is swapped:
@@ -243,7 +246,11 @@ final class AppState: ObservableObject {
         let directory = modelStore.directory(for: installed)
         enginePhase = .loading(model.displayName)
         do {
-            try await engine.load(directory: directory, modelID: model.id, diskBytes: installed.sizeBytes)
+            // The format is detected from what's actually on disk (a GGUF
+            // download has no config.json), so user-imported models route
+            // correctly too.
+            let format = modelStore.detectedFormat(installed)
+            try await engine.load(directory: directory, modelID: model.id, diskBytes: installed.sizeBytes, format: format)
             activeModelID = model.id
             enginePhase = .ready(model.displayName)
             // Persist the selection only after a successful load.

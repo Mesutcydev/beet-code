@@ -311,6 +311,21 @@ actor AgentLoop {
                 // 2. Parse tool calls.
                 let calls = ToolParser.parse(visible)
 
+                // 2z. Empty after thinking-stripping means the token ceiling
+                // cut the generation off mid-thought. Never surface an empty
+                // bubble or plan card — hand the model a protocol observation
+                // and let it answer directly on the next turn.
+                if calls.isEmpty, visible.isEmpty {
+                    let notice = "error: empty reply — the token budget ran out before any answer or tool call. "
+                        + "Reply now with the answer or exactly one tool block, without a reasoning section."
+                    record.messages.append(
+                        SessionMessage(role: .toolResult, content: notice, toolName: "protocol", timestamp: Date()))
+                    history.append(ChatTurn(role: .tool, content: notice))
+                    eventContinuation?.yield(.protocolError(notice))
+                    await compactIfNeeded()
+                    continue
+                }
+
                 // 2a. Plan mode: replies are plans, not actions, until one
                 // is approved. Strip tool blocks, present the plan, and wait
                 // for approval before any tool may execute.

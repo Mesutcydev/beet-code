@@ -64,6 +64,13 @@ enum Theme {
     static let danger  = Color.dynamic(light: 0xDC3B4B, dark: 0xFF6B78)
     static let info    = Color.dynamic(light: 0x2B7FFF, dark: 0x5AA0FF)
 
+    // Tint washes — the ONLY opacities views may use for tinted fills and
+    // borders, so "washed" surfaces read identically everywhere in the app.
+    // (0.07/0.10/0.12/0.14/0.16/0.18/0.30/0.35/0.38 all used to appear.)
+    static func wash(_ tint: Color) -> Color { tint.opacity(0.10) }
+    static func washStrong(_ tint: Color) -> Color { tint.opacity(0.16) }
+    static func washBorder(_ tint: Color) -> Color { tint.opacity(0.35) }
+
     /// Palette wash for the primary (user) surface and glows — accent to
     // bright variant, resolved live from the current palette.
     static var accentGradient: LinearGradient {
@@ -89,6 +96,15 @@ enum Radius {
     static let sm: CGFloat = 7
     static let md: CGFloat = 11
     static let lg: CGFloat = 15
+    static let xl: CGFloat = 20
+}
+
+/// Spacing — 4pt grid. Use these instead of ad-hoc padding literals.
+enum Spacing {
+    static let xs: CGFloat = 4
+    static let sm: CGFloat = 8
+    static let md: CGFloat = 12
+    static let lg: CGFloat = 16
     static let xl: CGFloat = 20
 }
 
@@ -134,9 +150,9 @@ extension View {
 
     /// Semantic accent-washed card (approval / question / plan / error).
     func lfWashCard(_ tint: Color, radius: CGFloat = Radius.lg) -> some View {
-        background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        background(Theme.wash(tint), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(tint.opacity(0.38), lineWidth: 1))
+                .strokeBorder(Theme.washBorder(tint), lineWidth: 1))
     }
 
     /// Native Liquid Glass surface, ported from the Vamp Mac client recipe

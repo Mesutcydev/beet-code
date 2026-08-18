@@ -1,8 +1,9 @@
 import Foundation
 
-/// A chat turn as the engine sees it. The engine maintains its own KV cache
-/// across calls: turns passed to `stream` are *appended* to the session, not
-/// replayed from scratch. Call `reset` between unrelated tasks.
+/// A chat turn as the engine sees it. Engines accumulate the turns they are
+/// handed and replay the full conversation per generation (remote APIs are
+/// stateless; local engines re-render for context correctness). Call `reset`
+/// between unrelated tasks.
 public struct ChatTurn: Sendable, Equatable {
     public enum Role: String, Sendable {
         case system

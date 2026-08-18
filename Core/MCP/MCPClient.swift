@@ -1,15 +1,65 @@
 import Foundation
 
-/// One MCP server configuration entry (stdio transport). Mirrors the
+/// One MCP server configuration entry. Two transport shapes, mirroring the
 /// Claude Code / OpenCode convention so existing configs mostly work:
 ///
 /// ```json
-/// { "mcpServers": { "fs": { "command": "mcp-fs", "args": ["--root", "."], "env": {} } } }
+/// { "mcpServers": {
+///     "fs":      { "command": "mcp-fs", "args": ["--root", "."], "env": {} },
+///     "remote":  { "url": "https://mcp.example.com/v1" },
+///     "gated":   { "url": "https://mcp.example.com/v1",
+///                  "oauth": { "clientId": "…", "clientSecret": "…" },
+///                  "headers": { "X-Team": "ops" } }
+/// } }
 /// ```
+///
+/// A `command` entry is stdio; a `url` entry is Streamable-HTTP (with SSE
+/// response carriage). Entries with both prefer `command`.
 struct MCPServerConfig: Codable, Equatable, Sendable {
-    var command: String
+    var command: String?
     var args: [String] = []
     var env: [String: String] = [:]
+    var url: String?
+    var headers: [String: String] = [:]
+    var oauth: OAuthConfig?
+
+    private enum CodingKeys: String, CodingKey {
+        case command, args, env, url, headers, oauth
+    }
+
+    init(command: String? = nil, args: [String] = [], env: [String: String] = [:],
+         url: String? = nil, headers: [String: String] = [:], oauth: OAuthConfig? = nil) {
+        self.command = command
+        self.args = args
+        self.env = env
+        self.url = url
+        self.headers = headers
+        self.oauth = oauth
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        command = try c.decodeIfPresent(String.self, forKey: .command)
+        args = try c.decodeIfPresent([String].self, forKey: .args) ?? []
+        env = try c.decodeIfPresent([String: String].self, forKey: .env) ?? [:]
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        headers = try c.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+        oauth = try c.decodeIfPresent(OAuthConfig.self, forKey: .oauth)
+    }
+
+    struct OAuthConfig: Codable, Equatable, Sendable {
+        var clientId: String?
+        var clientSecret: String?
+    }
+
+    enum Transport: Equatable {
+        case stdio
+        case http
+    }
+
+    var transport: Transport {
+        command?.isEmpty == false ? .stdio : (url != nil ? .http : .stdio)
+    }
 }
 
 struct MCPConfigFile: Codable, Equatable, Sendable {
@@ -44,8 +94,11 @@ enum MCPConfig {
                 let data = try Data(contentsOf: url)
                 let decoded = try JSONDecoder().decode(MCPConfigFile.self, from: data)
                 for (name, config) in decoded.mcpServers {
-                    guard !config.command.isEmpty else {
-                        errors.append("\(label) config: server '\(name)' has an empty command")
+                    // A server needs EITHER a stdio command or an HTTP url.
+                    let hasCommand = config.command?.isEmpty == false
+                    let hasURL = config.url != nil && URL(string: config.url ?? "") != nil
+                    guard hasCommand || hasURL else {
+                        errors.append("\(label) config: server '\(name)' has neither a command nor a valid url")
                         continue
                     }
                     merged[name] = config
@@ -65,7 +118,7 @@ enum MCPConfig {
 /// Security posture: every tool exposed by a server runs through the normal
 /// PermissionGate as `.execute` risk — an MCP server can never bypass the
 /// approval flow.
-actor MCPConnection {
+actor MCPConnection: MCPTransport {
 
     enum MCPError: Error, LocalizedError, Equatable {
         case spawnFailed(String)
@@ -142,7 +195,11 @@ actor MCPConnection {
     /// best-effort (the agent still runs with built-in tools).
     func connect() async throws -> [ToolDefinition] {
         let child = Process()
-        child.executableURL = Self.resolveExecutable(config.command)
+        // The registry only routes stdio transport when a command is set.
+        guard let command = config.command, !command.isEmpty else {
+            throw MCPError.spawnFailed("no command configured")
+        }
+        child.executableURL = Self.resolveExecutable(command)
         child.arguments = config.args
         var environment = ProcessInfo.processInfo.environment
         for (key, value) in config.env { environment[key] = value }

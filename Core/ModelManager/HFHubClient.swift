@@ -197,7 +197,7 @@ struct HFHubClient: Sendable, HubServing {
             // Nested files (e.g. `onnx/…`) are not needed for MLX inference.
             return false
         }
-        let allowedExtensions = ["safetensors", "json", "txt", "jinja", "model", "tiktoken"]
+        let allowedExtensions = ["safetensors", "json", "txt", "jinja", "model", "tiktoken", "gguf"]
         if allowedExtensions.contains((name as NSString).pathExtension.lowercased()) { return true }
         return name.hasPrefix("tokenizer") || name == "vocab"
     }

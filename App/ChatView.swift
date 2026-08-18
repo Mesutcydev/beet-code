@@ -51,10 +51,12 @@ struct ChatView: View {
                     }
                     if !controller.streamingText.isEmpty {
                         StreamingCard(text: controller.streamingText)
+                    } else if controller.isReasoningVisible && controller.isRunning {
+                        ReasoningIndicator()
                     }
                     if let approval = controller.pendingApproval {
-                        ApprovalCard(request: approval) { approved in
-                            controller.approve(approved)
+                        ApprovalCard(request: approval) { approved, always in
+                            controller.approve(approved, always: always)
                         }
                     }
                     if let question = controller.pendingQuestion {
@@ -111,7 +113,11 @@ struct ChatView: View {
                             .font(.caption)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(.regularMaterial, in: Capsule())
+                            // Opaque capsule + hairline, same voice as the
+                            // suggestion chips — no floating material.
+                            .background(Theme.surface, in: Capsule())
+                            .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
                     }
                     .buttonStyle(.borderless)
                     .padding(12)
@@ -347,9 +353,9 @@ private struct UserBubble: View {
                     .foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    .background(Theme.wash(Theme.accent), in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                        .strokeBorder(Theme.accent.opacity(0.30), lineWidth: 1))
+                        .strokeBorder(Theme.washBorder(Theme.accent), lineWidth: 1))
                     .frame(maxWidth: 520, alignment: .trailing)
                     .textSelection(.enabled)
             }
@@ -513,7 +519,7 @@ private struct ToolStepsCard: View {
                 .padding(12)
             }
         }
-        .background(Theme.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
             .strokeBorder(Theme.hairline, lineWidth: 1))
     }
@@ -593,7 +599,7 @@ private struct StepRow: View {
                         .foregroundStyle(Theme.textSecondary)
                         .textSelection(.enabled)
                         .padding(8)
-                        .background(Theme.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .background(Theme.wash(Theme.accent), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
                 }
             }
         default:
@@ -641,7 +647,7 @@ private struct DiagnosticsCard: View {
                             .foregroundStyle(Theme.danger)
                     }
                     .padding(6)
-                    .background(Theme.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                    .background(Theme.wash(Theme.danger), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
                 }
 
                 ForEach(grouped.keys.sorted(), id: \.self) { file in
@@ -702,7 +708,14 @@ private struct DiagnosticsCard: View {
 
 private struct ApprovalCard: View {
     let request: ApprovalRequest
-    let onDecision: (Bool) -> Void
+    let onDecision: (Bool, Bool) -> Void
+
+    /// Which "Always approve" scope this request belongs to — commands and
+    /// edits widen different policy lanes, so the button says exactly what
+    /// it will enable. Reads never ask, so they never appear here.
+    private var isCommand: Bool {
+        request.invocation.name == "run_command" || request.invocation.name == "build_diagnostics"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -733,9 +746,18 @@ private struct ApprovalCard: View {
             HStack {
                 // Approve is a deliberate act: Command-Return, never bare
                 // Return (which could fire while typing elsewhere).
-                Button("Approve ⌘↩") { onDecision(true) }
+                Button("Approve ⌘↩") { onDecision(true, false) }
                     .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
-                Button("Decline", role: .destructive) { onDecision(false) }
+                Button("Decline", role: .destructive) { onDecision(false, false) }
+                Button {
+                    onDecision(true, true)
+                } label: {
+                    Label(isCommand ? "Always Approve Safe Commands" : "Always Approve Edits",
+                          systemImage: "checkmark.seal")
+                }
+                .help(isCommand
+                    ? "Approve this and auto-approve policy-safe commands for this run and future runs"
+                    : "Approve this and auto-approve file edits for this run and future runs")
                 Spacer()
                 if request.invocation.name == "run_command" {
                     Text("The command runs in the workspace after approval — never silently.")
@@ -848,14 +870,16 @@ private struct StreamingCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             AssistantAvatar()
-            HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
                 MarkdownText(text: text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 // Caret: blinks while generating (solid under Reduce Motion).
-                Text("▍")
-                    .font(.callout)
-                    .foregroundStyle(Theme.accent)
-                    .opacity(caretVisible ? 1 : 0)
+                HStack(alignment: .top, spacing: 0) {
+                    Text("▍")
+                        .font(.callout)
+                        .foregroundStyle(Theme.accent)
+                        .opacity(caretVisible ? 1 : 0)
+                }
             }
             .textSelection(.enabled)
         }
@@ -866,6 +890,36 @@ private struct StreamingCard: View {
                 caretVisible.toggle()
             }
         }
+    }
+}
+
+/// Shown when the model is reasoning but has produced no visible text yet:
+/// a proper animated indicator instead of raw filler ("thinking thinking…").
+/// Reduce Motion: static text, no pulse.
+private struct ReasoningIndicator: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            AssistantAvatar()
+            HStack(spacing: 6) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 12))
+                Text("Reasoning…")
+                    .font(.callout)
+            }
+            .foregroundStyle(Theme.textSecondary)
+            .opacity(reduceMotion ? 1 : (pulse ? 1 : 0.55))
+            .task {
+                guard !reduceMotion else { return }
+                while !Task.isCancelled {
+                    withAnimation(.easeInOut(duration: 0.7)) { pulse.toggle() }
+                    try? await Task.sleep(for: .milliseconds(700))
+                }
+            }
+        }
+        .accessibilityLabel("The model is reasoning")
     }
 }
 /// Plan-mode card: the agent's proposed plan with Approve / Revise.

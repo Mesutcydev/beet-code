@@ -36,8 +36,8 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .padding(16)
-            .padding(.bottom, 4)
+            .padding(Spacing.lg)
+            .padding(.bottom, Spacing.xs)
 
             Divider().overlay(Theme.hairline)
 
@@ -66,10 +66,10 @@ private struct SettingsCard<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             Label {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
             } icon: {
                 Image(systemName: icon)
@@ -77,7 +77,7 @@ private struct SettingsCard<Content: View>: View {
                     .foregroundStyle(Theme.accent)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Spacing.md) {
                 content
             }
 
@@ -88,9 +88,11 @@ private struct SettingsCard<Content: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(16)
+        .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .lfGlass()
+        // Opaque elevated card — matches the main window's surfaces; the
+        // translucent lfGlass look is reserved for overlay chrome.
+        .lfCard()
     }
 }
 
@@ -101,7 +103,7 @@ private struct SettingRow<Control: View>: View {
     @ViewBuilder var control: Control
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.md) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(label)
                     .font(.callout)
@@ -122,14 +124,30 @@ private struct SettingRow<Control: View>: View {
     }
 }
 
+/// Boolean setting rendered as a SettingRow — label left, switch right — so
+/// every toggle in the window aligns with the picker/stepper rows around it.
+/// All settings toggles use the switch style (no mixed checkboxes).
+private struct SettingToggle: View {
+    let label: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        SettingRow(label: label) {
+            Toggle(label, isOn: $isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+        }
+    }
+}
+
 /// Accent palette picker rendered as color swatches. Each swatch shows the
-/// palette's light-mode accent; selection draws a focus ring. Every swatch
+/// palette's light-mode accent; selection draws an accent ring. Every swatch
 /// carries a tooltip and VoiceOver label naming the palette.
 private struct PaletteSwatchPicker: View {
     @Binding var selection: AccentPalette
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Spacing.md) {
             ForEach(AccentPalette.allCases) { palette in
                 swatch(for: palette)
             }
@@ -149,7 +167,7 @@ private struct PaletteSwatchPicker: View {
                     .frame(width: 22, height: 22)
                     .overlay(
                         Circle()
-                            .strokeBorder(isSelected ? Theme.textPrimary : Color.clear, lineWidth: 2)
+                            .strokeBorder(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
                     )
                 if isSelected {
                     Image(systemName: "checkmark")
@@ -162,6 +180,7 @@ private struct PaletteSwatchPicker: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .lfHoverLift()
         .help(palette.label)
         .accessibilityLabel("\(palette.label) palette")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -182,10 +201,10 @@ private struct TabScroll<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(spacing: Spacing.lg) {
                 content
             }
-            .padding(16)
+            .padding(Spacing.lg)
         }
         .background(Theme.bg)
     }
@@ -212,50 +231,48 @@ private struct GeneralTab: View {
                     }
                     .labelsHidden()
                 }
-                Toggle("Animated border", isOn: $settings.composerBorderAnimation)
+                SettingToggle(label: "Animated border", isOn: $settings.composerBorderAnimation)
             }
 
             SettingsCard(title: "Appearance", icon: "paintbrush", footer: "Light is the default. Choose System to follow macOS, or Dark to force dark mode.") {
-                Picker("Appearance", selection: $settings.appearance) {
-                    ForEach(AppAppearance.allCases) { appearance in
-                        Text(appearance.label).tag(appearance)
+                SettingRow(label: "Appearance") {
+                    Picker("Appearance", selection: $settings.appearance) {
+                        ForEach(AppAppearance.allCases) { appearance in
+                            Text(appearance.label).tag(appearance)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
 
-                HStack(spacing: 12) {
-                    Text("Accent palette")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                    Spacer()
+                SettingRow(label: "Accent palette", value: settings.accentPalette.label) {
                     PaletteSwatchPicker(selection: Binding(
                         get: { settings.accentPalette },
                         set: { settings.accentPalette = $0 }))
                 }
-                .accessibilityElement(children: .contain)
             }
 
             SettingsCard(title: "Launch", icon: "power", footer: "Downloads that were interrupted by quitting resume automatically next launch. When off, they appear paused in the Model Manager for explicit resume.") {
-                Toggle("Auto-resume interrupted downloads", isOn: Binding(
+                SettingToggle(label: "Auto-resume interrupted downloads", isOn: Binding(
                     get: { AppPreferencesStore.shared.current.autoResumeDownloads },
                     set: { newValue in
                         var preferences = AppPreferencesStore.shared.current
                         preferences.autoResumeDownloads = newValue
                         AppPreferencesStore.shared.save(preferences)
                     }))
-                .toggleStyle(.switch)
             }
 
             SettingsCard(title: "Hugging Face", icon: "arrow.down.circle", footer: "Stored in the Keychain, never synced. Required for gated repos; recommended for faster downloads.") {
                 SecureField("Access token (hf_…)", text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
-                HStack(spacing: 8) {
+                HStack(spacing: Spacing.sm) {
                     Button("Save") {
                         tokenStore.saveToken(tokenDraft)
                         validationMessage = "Saved to Keychain."
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                     .disabled(tokenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
 
                     Button("Validate") {
@@ -274,6 +291,7 @@ private struct GeneralTab: View {
                             }
                         }
                     }
+                    .buttonStyle(.bordered)
                     .disabled(isValidating || tokenDraft.isEmpty)
 
                     if tokenStore.hasToken {
@@ -282,6 +300,7 @@ private struct GeneralTab: View {
                             tokenDraft = ""
                             validationMessage = "Token removed."
                         }
+                        .buttonStyle(.bordered)
                     }
                     Spacer()
                     if isValidating { ProgressView().controlSize(.small) }
@@ -295,17 +314,16 @@ private struct GeneralTab: View {
             }
 
             SettingsCard(title: "Local API Server", icon: "network", footer: "Exposes the loaded model as an OpenAI-compatible endpoint on 127.0.0.1 — loopback only, nothing outside this Mac can reach it. Point Codex (--oss), Claude Code, Aider, or any OpenAI-format client at the base URL. The served model is whatever BeetCode has active; requests carry the full conversation, so the endpoint is stateless.") {
-                Toggle("Enable local API server", isOn: $settings.apiServerEnabled)
-                    .toggleStyle(.switch)
+                SettingToggle(label: "Enable local API server", isOn: $settings.apiServerEnabled)
                 SettingRow(label: "Port") {
                     TextField("1234", value: $settings.apiServerPort, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 90)
                         .monospacedDigit()
                 }
-                HStack(spacing: 8) {
+                HStack(spacing: Spacing.sm) {
                     Circle()
-                        .fill(appState.apiServerRunning ? Color.green : Color.secondary.opacity(0.5))
+                        .fill(appState.apiServerRunning ? Theme.success : Theme.textTertiary)
                         .frame(width: 8, height: 8)
                     if appState.apiServerRunning {
                         Text("Serving at \(appState.apiServerBaseURL)")
@@ -331,6 +349,7 @@ private struct GeneralTab: View {
                             """,
                             forType: .string)
                     }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(!appState.apiServerRunning)
                 }
@@ -348,22 +367,27 @@ private struct AgentTab: View {
     var body: some View {
         TabScroll {
             SettingsCard(title: "Autonomy", icon: "shield.lefthalf.filled", footer: "Reads are always automatic. Every write shows a diff preview and asks first unless file edits are auto-approved. Auto-approving commands is a safe-command policy, not a shell bypass: only exact invocations of known read-only executables (swift, xcodebuild, ls, git status, rg, …) with arguments inside the workspace are admitted; shell operators, substitutions, redirections, backgrounding, and any path outside the workspace always require an approval card.") {
-                Toggle("Auto-approve file edits", isOn: $settings.autoApproveEdits)
-                Toggle("Auto-approve safe commands", isOn: $settings.autoApproveCommands)
+                SettingToggle(label: "Auto-approve file edits", isOn: $settings.autoApproveEdits)
+                SettingToggle(label: "Auto-approve safe commands", isOn: $settings.autoApproveCommands)
             }
 
             SettingsCard(title: "Generation", icon: "slider.horizontal.3", footer: "Thermal policy caps these automatically when the Mac gets hot.") {
-                SettingRow(label: "Max agent turns", value: "\(settings.maxTurns)") {
-                    Stepper("Max agent turns", value: $settings.maxTurns, in: 5...100)
-                        .labelsHidden()
+                SettingRow(label: "Max agent turns") {
+                    stepperControl(label: "Max agent turns", value: $settings.maxTurns, range: 5...100, step: 1)
                 }
-                SettingRow(label: "Max tokens per turn", value: "\(settings.maxTokensPerTurn)") {
-                    Stepper("Max tokens per turn", value: $settings.maxTokensPerTurn, in: 256...8192, step: 256)
-                        .labelsHidden()
+                SettingRow(label: "Max tokens per turn") {
+                    stepperControl(label: "Max tokens per turn", value: $settings.maxTokensPerTurn, range: 256...8192, step: 256)
                 }
-                SettingRow(label: "Temperature", value: String(format: "%.2f", settings.temperature)) {
-                    Slider(value: $settings.temperature, in: 0...1.5, step: 0.05)
-                        .frame(width: 240)
+                SettingRow(label: "Temperature") {
+                    HStack(spacing: Spacing.sm) {
+                        Slider(value: $settings.temperature, in: 0...1.5, step: 0.05)
+                            .frame(width: 220)
+                        // Fixed-width value label so the slider never reflows.
+                        Text(String(format: "%.2f", settings.temperature))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(Theme.textPrimary)
+                            .frame(width: 36, alignment: .trailing)
+                    }
                 }
             }
 
@@ -384,14 +408,32 @@ private struct AgentTab: View {
                     }
                     .labelsHidden()
                 }
-                Toggle("Plan mode (approve plan before tools run)", isOn: $settings.planMode)
-                Toggle("Show model reasoning (think blocks)", isOn: $settings.showReasoning)
+                SettingToggle(label: "Plan mode (approve plan before tools run)", isOn: $settings.planMode)
+                SettingToggle(label: "Show model reasoning (think blocks)", isOn: $settings.showReasoning)
             }
 
             SettingsCard(title: "Safety", icon: "checkmark.seal", footer: "Snapshots the working tree before each approved edit batch so any agent action can be undone. Verification runs build diagnostics after each successful edit — through the same approval card as any other command, never silently.") {
-                Toggle("Git checkpoints before edits", isOn: $settings.checkpointingEnabled)
-                Toggle("Verify edits with a build", isOn: $settings.verifyAfterEdits)
+                SettingToggle(label: "Git checkpoints before edits", isOn: $settings.checkpointingEnabled)
+                SettingToggle(label: "Verify edits with a build", isOn: $settings.verifyAfterEdits)
             }
+        }
+    }
+
+    /// Value + stepper cluster shared by both numeric rows: the current value
+    /// stays visible inside the control, right-aligned and monospaced.
+    private func stepperControl(
+        label: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        step: Int
+    ) -> some View {
+        HStack(spacing: Spacing.sm) {
+            Text("\(value.wrappedValue)")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(Theme.textPrimary)
+                .frame(minWidth: 40, alignment: .trailing)
+            Stepper(label, value: value, in: range, step: step)
+                .labelsHidden()
         }
     }
 }
@@ -430,16 +472,17 @@ private struct ProvidersTab: View {
 
     private var keyRestoreBanner: some View {
         SettingsCard(title: "Keys from LocalForge found", icon: "key.fill") {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Spacing.md) {
                 Text("Your saved API keys are still in the Keychain under the old LocalForge app, but macOS requires one authorization to move them. Your keys were never deleted.")
                     .font(.callout)
                     .foregroundStyle(Theme.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 10) {
+                HStack(spacing: Spacing.md) {
                     Button("Restore Keys…") {
                         restoreKeys()
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                     if let restoreResult {
                         Text(restoreResult)
                             .font(.callout)
@@ -504,27 +547,17 @@ private struct ProviderCard: View {
     private var keyless: Bool { provider.keyOptional && !hasKey }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             // Header: name + status badges
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.sm) {
                 Text(provider.displayName)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
                 if hasKey || (provider.keyOptional && provider.openAICompatibleBaseURL != nil) {
-                    Label("Configured", systemImage: "checkmark.seal.fill")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Theme.success)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Theme.success.opacity(0.12)))
+                    badge("Configured", systemImage: "checkmark.seal.fill", tint: Theme.success)
                 }
                 if provider.supportsVision {
-                    Label("Vision", systemImage: "eye")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Theme.info)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Theme.info.opacity(0.12)))
+                    badge("Vision", systemImage: "eye", tint: Theme.info)
                 }
                 Spacer()
                 if hasKey {
@@ -533,6 +566,7 @@ private struct ProviderCard: View {
                         keyDraft = ""
                         testState = .idle
                     }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
             }
@@ -545,7 +579,7 @@ private struct ProviderCard: View {
 
             // Custom provider: base URL first — everything hangs off it.
             if provider == .custom {
-                HStack(spacing: 8) {
+                HStack(spacing: Spacing.sm) {
                     TextField("Base URL — e.g. http://127.0.0.1:11434/v1", text: $baseURDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.callout.monospaced())
@@ -556,6 +590,8 @@ private struct ProviderCard: View {
                         AppPreferencesStore.shared.save(prefs)
                         testState = .idle
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                     .disabled(baseURDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 Text("Works with any OpenAI-compatible server: Ollama, LM Studio, vLLM, llama.cpp, Groq, Together, corporate proxies. Key is optional for local servers.")
@@ -564,7 +600,7 @@ private struct ProviderCard: View {
             }
 
             // Key input
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.sm) {
                 SecureField(
                     hasKey ? "API key (replace)" : (keyless ? "API key (optional)" : "API key"),
                     text: $keyDraft)
@@ -582,13 +618,17 @@ private struct ProviderCard: View {
                     // source of truth — fetch it as soon as a key lands.
                     if resolvedKey.isEmpty == false { refreshModels() }
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
                 .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty && modelUnchanged && baseURUnchanged)
             }
 
-            // Model choice — live list first, static fallbacks below.
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    if !modelOptions.isEmpty {
+            // Model choice — stacked: the picker gets its own full-width row,
+            // the free-form model id + actions sit on the row below so
+            // neither control fights for width.
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                if !modelOptions.isEmpty {
+                    SettingRow(label: "Model") {
                         Picker("Model", selection: $modelDraft) {
                             if !liveModels.isEmpty {
                                 Section("Live from \(provider.displayName)") {
@@ -608,9 +648,10 @@ private struct ProviderCard: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(minWidth: 300, maxWidth: 420)
                     }
+                }
 
+                HStack(spacing: Spacing.sm) {
                     TextField("Model id", text: $modelDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.callout.monospaced())
@@ -624,12 +665,15 @@ private struct ProviderCard: View {
                             Image(systemName: "arrow.clockwise")
                         }
                     }
+                    .buttonStyle(.bordered)
                     .help("Fetch the provider's live model list")
                     .disabled(refreshingModels || (resolvedKey.isEmpty && !provider.keyOptional))
 
                     Button("Test") { runTest() }
+                        .buttonStyle(.bordered)
                         .disabled(testState == .running || (resolvedKey.isEmpty && !provider.keyOptional))
                 }
+
                 if !liveModels.isEmpty {
                     Text("Model list fetched live from \(provider.displayName) — \(liveModels.count) available.")
                         .font(.caption)
@@ -641,42 +685,40 @@ private struct ProviderCard: View {
                 }
             }
 
-            // Test result line — always present so the card never jumps.
-            HStack(spacing: 6) {
-                switch testState {
-                case .idle:
-                    Text(hasKey
-                         ? "Test sends a tiny non-streaming completion to verify key + model."
-                         : "Paste a key, then Test.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textTertiary)
-                case .running:
-                    ProgressView().controlSize(.mini)
-                    Text("Contacting \(provider.displayName)…")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
-                case .ok(let detail):
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Theme.success)
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(Theme.success)
-                        .lineLimit(3)
-                case .failed(let detail):
-                    Image(systemName: "xmark.octagon.fill")
-                        .foregroundStyle(Theme.danger)
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(Theme.danger)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+            // Test result — only rendered once a test is underway or done,
+            // so an idle card stays compact (no reserved empty line).
+            if testState != .idle {
+                HStack(spacing: Spacing.xs) {
+                    switch testState {
+                    case .idle:
+                        EmptyView()
+                    case .running:
+                        ProgressView().controlSize(.mini)
+                        Text("Contacting \(provider.displayName)…")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                    case .ok(let detail):
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Theme.success)
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(Theme.success)
+                            .lineLimit(3)
+                    case .failed(let detail):
+                        Image(systemName: "xmark.octagon.fill")
+                            .foregroundStyle(Theme.danger)
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(Theme.danger)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
-            .frame(minHeight: 16, alignment: .leading)
         }
-        .padding(16)
+        .padding(Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .lfGlass()
+        .lfCard()
         .onAppear {
             modelDraft = AppPreferencesStore.shared.current.remoteModel[provider.rawValue]
                 ?? provider.defaultModel
@@ -684,6 +726,18 @@ private struct ProviderCard: View {
                 baseURDraft = AppPreferencesStore.shared.current.customBaseURL ?? ""
             }
         }
+    }
+
+    /// Status pill in the card header — washed fill + border from the tint
+    /// so badges read identically to the rest of the app's tinted surfaces.
+    private func badge(_ title: String, systemImage: String, tint: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Theme.wash(tint), in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.washBorder(tint), lineWidth: 1))
     }
 
     /// Suggested models, any saved draft, plus whatever the provider's live

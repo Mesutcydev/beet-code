@@ -128,6 +128,32 @@ final class ToolParserTests: XCTestCase {
     }
 }
 
+final class ToolCallTextTests: XCTestCase {
+
+    /// The wire serializer (engines that receive structured tool-call events)
+    /// must emit text the parser reads back as the same call.
+    func testSerializeParsesBack() {
+        let text = ToolCallText.serialize(
+            name: "read_file",
+            argumentsJSON: #"{"path":"Sources/App.swift"}"#)
+        let calls = ToolParser.parse(text)
+        XCTAssertEqual(calls.count, 1)
+        guard let call = calls.first else { return }
+        XCTAssertEqual(call.name, "read_file")
+        XCTAssertEqual(call.string("path"), "Sources/App.swift")
+    }
+
+    func testSerializeEmptyArguments() {
+        let calls = ToolParser.parse(ToolCallText.serialize(name: "build_diagnostics", argumentsJSON: "{}"))
+        XCTAssertEqual(calls.map(\.name), ["build_diagnostics"])
+    }
+
+    func testSerializeEscapesQuotesInName() {
+        let calls = ToolParser.parse(ToolCallText.serialize(name: #"we"ird"#, argumentsJSON: "{}"))
+        XCTAssertEqual(calls.first?.name, #"we"ird"#)
+    }
+}
+
 final class TolerantJSONTests: XCTestCase {
 
     func testCommentsStripped() {

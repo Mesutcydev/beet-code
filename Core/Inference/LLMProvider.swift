@@ -81,7 +81,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .longCat: "longcat-default"
         case .alibaba: "qwen-plus"
         case .alibabaTokenPlan: "qwen3.8-max"
-        case .gemini: "gemini-2.0-flash"
+        case .gemini: "gemini-3.6-flash"
         case .openRouter: "openrouter/auto"
         case .anthropic: "claude-sonnet-4-5"
         case .custom: ""  // user must type the model id served by their endpoint
@@ -99,7 +99,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .longCat: ["longcat-default", "longcat-ultra"]
         case .alibaba: ["qwen-plus", "qwen-max", "qwen-turbo"]
         case .alibabaTokenPlan: ["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro", "deepseek-v4-flash-0731", "glm-5.2"]
-        case .gemini: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+        case .gemini: ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-flash-latest", "gemini-pro-latest"]
         case .openRouter: ["anthropic/claude-sonnet-4.5", "google/gemini-2.5-pro", "openai/gpt-5"]
         case .anthropic: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"]
         case .custom: []

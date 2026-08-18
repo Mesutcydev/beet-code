@@ -1,46 +1,31 @@
 import SwiftUI
 
+/// The Model Manager sheet. One scrolling column of cards: local catalog
+/// models first, then remote (BYOK) providers. Each card surfaces the model's
+/// identity, fit verdict and specs at a glance, with exactly one prominent
+/// action and everything destructive tucked into an overflow menu.
 struct ModelManagerView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            List(ModelCatalog.all) { model in
-                ModelRow(model: model)
-            }
-            .listStyle(.inset)
-        }
-        .background(.ultraThinMaterial)
-        .safeAreaInset(edge: .bottom) {
-            RemoteSection()
-                .environmentObject(appState)
-                .padding(.horizontal)
-                .padding(.vertical, 6)
-                .background(.bar)
-        }
-        .onChange(of: appState.downloadManager.states) { _, _ in
-            // Completion is handled reactively in ModelRow via onChange.
-        }
-    }
+            ManagerHeaderView(
+                freeBytes: appState.availableBudget,
+                totalBytes: MemoryAdvisor.physicalMemory,
+                onImport: importModel,
+                onDone: { dismiss() })
 
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Models").font(.title2.bold())
-                Text("RAM budget: \(ByteFormatter.bytes(appState.availableBudget)) free of \(ByteFormatter.bytes(MemoryAdvisor.physicalMemory)) total")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Spacing.lg) {
+                    LocalModelsSection()
+                    RemoteSection()
+                        .environmentObject(appState)
+                }
+                .padding(Spacing.lg)
             }
-            Spacer()
-            Button("Import…") { importModel() }
-                .help("Import a local MLX model folder (must contain config.json + .safetensors)")
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.defaultAction)
         }
-        .padding()
+        .background(Theme.bg)
     }
 
     /// Pick a local model directory and register it as a user-catalog model.
@@ -127,7 +112,95 @@ struct ModelManagerView: View {
     }
 }
 
-private struct ModelRow: View {
+// MARK: - Header
+
+/// Title row + a live RAM-budget gauge, so the user sees headroom at a
+/// glance instead of parsing a caption.
+private struct ManagerHeaderView: View {
+    let freeBytes: UInt64
+    let totalBytes: UInt64
+    let onImport: () -> Void
+    let onDone: () -> Void
+
+    private var usedFraction: Double {
+        guard totalBytes > 0 else { return 0 }
+        return min(1, max(0, 1 - Double(freeBytes) / Double(totalBytes)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Models")
+                    .font(.title2.bold())
+                Spacer()
+                Button("Import…", action: onImport)
+                    .help("Import a local MLX model folder (must contain config.json + .safetensors)")
+                Button("Done", action: onDone)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+            }
+
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                HStack {
+                    Label("RAM budget", systemImage: "memorychip")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                    Text("\(ByteFormatter.bytes(freeBytes)) free of \(ByteFormatter.bytes(totalBytes))")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Theme.surfaceInset)
+                        Capsule()
+                            .fill(Theme.accentGradient)
+                            .frame(width: max(4, proxy.size.width * usedFraction))
+                    }
+                }
+                .frame(height: 5)
+            }
+        }
+        .padding(Spacing.lg)
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+    }
+}
+
+// MARK: - Local models
+
+private struct LocalModelsSection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            SectionHeader(title: "On this Mac", systemImage: "cpu")
+            ForEach(ModelCatalog.all) { model in
+                ModelCard(model: model)
+            }
+        }
+    }
+}
+
+/// Small uppercase section label with a glyph.
+private struct SectionHeader: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.textTertiary)
+            .textCase(.uppercase)
+            .padding(.leading, Spacing.xs)
+    }
+}
+
+// MARK: - Model card
+
+private struct ModelCard: View {
     @EnvironmentObject private var appState: AppState
     let model: CatalogModel
 
@@ -135,153 +208,295 @@ private struct ModelRow: View {
         appState.downloadManager.state(for: model.id)
     }
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(model.displayName).font(.headline)
-                    Text(model.family).font(.caption).padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                    verdictBadge
-                    if isActive { Label("Active", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(Theme.success) }
-                }
-                // Installed models show their REAL measured size; the catalog
-                // estimate (~) only applies to not-yet-downloaded entries.
-                Text(sizeLine).font(.callout).foregroundStyle(.secondary)
-                Text("\(model.contextWindow / 1024)K context · min \(model.minRAMGB) GB RAM · recommends \(model.recommendedRAMGB) GB")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                if !model.notes.isEmpty {
-                    Text(model.notes).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-                if case .wontFit(let reason) = budget.verdict {
-                    Text(reason).font(.caption).foregroundStyle(Theme.danger).lineLimit(3)
-                }
-                downloadProgressView
-            }
-            Spacer()
-            actions
-        }
-        .padding(.vertical, 6)
-        // Download completion is handled by AppState (idempotent even when
-        // this sheet is closed); rows only render state.
-    }
-
     private var budget: MemoryAdvisor.Budget { appState.budget(for: model) }
 
     private var isActive: Bool { appState.activeModelID == model.id }
 
-    /// Parameters · quantization · size. Installed rows use the measured
-    /// on-disk size; the catalog estimate (~) only labels pending downloads.
-    private var sizeLine: String {
-        if let installed = appState.modelStore.installedModel(id: model.id),
-           appState.modelStore.isInstalled(catalogModel: model) {
-            return "\(model.parameters) · \(model.quantization) · \(ByteFormatter.bytes(installed.sizeBytes))"
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            ModelGlyph(format: model.format, isActive: isActive)
+
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                titleRow
+                sizeLine
+                specChips
+                if !model.notes.isEmpty {
+                    Text(model.notes)
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(2)
+                }
+                if case .wontFit(let reason) = budget.verdict {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(Theme.danger)
+                        .lineLimit(3)
+                }
+                DownloadStatusView(state: downloadState)
+            }
+
+            Spacer(minLength: Spacing.sm)
+
+            ModelActions(model: model, isActive: isActive, downloadState: downloadState, budget: budget)
         }
-        return model.subtitle
+        .padding(Spacing.md)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                .strokeBorder(isActive ? Theme.washBorder(Theme.accent) : Theme.hairline,
+                              lineWidth: isActive ? 1.5 : 1))
     }
 
+    private var titleRow: some View {
+        HStack(spacing: Spacing.sm) {
+            Text(model.displayName)
+                .font(.headline)
+            Text(model.family)
+                .font(.caption)
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Theme.wash(Theme.accent), in: Capsule())
+            VerdictBadge(verdict: budget.verdict, projectedFootprint: budget.projectedFootprint)
+            if isActive {
+                Label("Active", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.accent)
+            }
+        }
+    }
+
+    /// Parameters · quantization · size. Installed rows use the measured
+    /// on-disk size; the catalog estimate (~) only labels pending downloads.
     @ViewBuilder
-    private var downloadProgressView: some View {
-        switch downloadState {
+    private var sizeLine: some View {
+        if let installed = appState.modelStore.installedModel(id: model.id),
+           appState.modelStore.isInstalled(catalogModel: model) {
+            Text("\(model.parameters) · \(model.quantization) · \(ByteFormatter.bytes(installed.sizeBytes))")
+                .font(.callout)
+                .foregroundStyle(Theme.textSecondary)
+        } else {
+            Text(model.subtitle)
+                .font(.callout)
+                .foregroundStyle(Theme.textSecondary)
+        }
+    }
+
+    private var specChips: some View {
+        HStack(spacing: Spacing.xs) {
+            SpecChip(text: "\(model.contextWindow / 1024)K context")
+            SpecChip(text: "min \(model.minRAMGB) GB")
+            SpecChip(text: "rec \(model.recommendedRAMGB) GB")
+        }
+    }
+}
+
+/// Leading icon tile for a model card.
+private struct ModelGlyph: View {
+    let format: CatalogModel.Format
+    let isActive: Bool
+
+    var body: some View {
+        Image(systemName: format == .gguf ? "shippingbox" : "cpu")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(isActive ? Theme.accent : Theme.textSecondary)
+            .frame(width: 38, height: 38)
+            .background(isActive ? Theme.accentSoft : Theme.surfaceInset,
+                        in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+    }
+}
+
+/// Tiny capsule for one spec (context window, RAM floors).
+private struct SpecChip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(Theme.textTertiary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Theme.surfaceInset, in: Capsule())
+    }
+}
+
+/// Fit verdict as a tinted capsule so it scans like a status light.
+private struct VerdictBadge: View {
+    let verdict: MemoryAdvisor.Verdict
+    let projectedFootprint: UInt64
+
+    var body: some View {
+        let (label, icon, tint): (String, String, Color) = {
+            switch verdict {
+            case .fits:     return ("Fits", "checkmark.circle.fill", Theme.success)
+            case .marginal: return ("Marginal", "exclamationmark.triangle.fill", Theme.warning)
+            case .wontFit:  return ("Won't fit", "xmark.octagon.fill", Theme.danger)
+            }
+        }()
+        return Label(label, systemImage: icon)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Theme.wash(tint), in: Capsule())
+            .help("Projected peak: \(ByteFormatter.bytes(projectedFootprint))")
+    }
+}
+
+/// Download lifecycle status under the card text — preparing spinner,
+/// progress bar, paused note or failure message.
+private struct DownloadStatusView: View {
+    let state: ModelDownloadManager.State
+
+    var body: some View {
+        switch state {
         case .preparing:
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.sm) {
                 ProgressView().controlSize(.small)
-                Text("Contacting Hugging Face…").font(.caption).foregroundStyle(.secondary)
+                Text("Contacting Hugging Face…")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
             }
         case .downloading(let progress):
             VStack(alignment: .leading, spacing: 2) {
                 ProgressView(value: progress.fraction)
+                    .tint(Theme.accent)
                     .frame(maxWidth: 320)
                 Text("\(ByteFormatter.bytes(progress.completedBytes)) of \(ByteFormatter.bytes(progress.totalBytes)) — \(progress.currentFile)")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
             }
         case .paused(let progress):
             VStack(alignment: .leading, spacing: 2) {
                 ProgressView(value: progress.fraction)
+                    .tint(Theme.warning)
                     .frame(maxWidth: 320)
                 Text("Paused at \(ByteFormatter.bytes(progress.completedBytes)) — resumes from here")
-                    .font(.caption).foregroundStyle(Theme.warning)
+                    .font(.caption)
+                    .foregroundStyle(Theme.warning)
             }
         case .failed(let message):
-            Text(message).font(.caption).foregroundStyle(Theme.danger).lineLimit(2)
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(Theme.danger)
+                .lineLimit(2)
         default:
             EmptyView()
         }
     }
+}
 
-    private var verdictBadge: some View {
-        Group {
-            switch budget.verdict {
-            case .fits:
-                Label("Fits", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(Theme.success)
-            case .marginal:
-                Label("Marginal", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Theme.warning)
-            case .wontFit:
-                Label("Won't fit", systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(Theme.danger)
-            }
+// MARK: - Card actions
+
+/// Exactly one prominent action plus an overflow menu for destructive or
+/// secondary commands, so the card never shows a jagged stack of buttons.
+private struct ModelActions: View {
+    @EnvironmentObject private var appState: AppState
+    let model: CatalogModel
+    let isActive: Bool
+    let downloadState: ModelDownloadManager.State
+    let budget: MemoryAdvisor.Budget
+
+    private var isInstalled: Bool {
+        appState.modelStore.isInstalled(catalogModel: model)
+    }
+
+    var body: some View {
+        HStack(spacing: Spacing.xs) {
+            primaryAction
+            overflowMenu
         }
-        .font(.caption)
-        .help("Projected peak: \(ByteFormatter.bytes(budget.projectedFootprint))")
+        // One button voice across every card: caption, medium weight.
+        .font(.caption.weight(.medium))
     }
 
     @ViewBuilder
-    private var actions: some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            if appState.modelStore.isInstalled(catalogModel: model) {
-                if isActive {
-                    Button("Unload") {
-                        Task { await appState.deactivate() }
-                    }
-                } else {
-                    Button("Load") {
-                        Task { await appState.activate(model: model) }
-                    }
-                    .disabled(budget.verdict.fitsLoad == false)
+    private var primaryAction: some View {
+        if isInstalled {
+            if isActive {
+                Button("Unload") {
+                    Task { await appState.deactivate() }
                 }
-                Button("Remove…", role: .destructive) {
-                    removeInstalled()
-                }
-                .font(.caption)
+                .buttonStyle(.bordered)
             } else {
-                switch downloadState {
-                case .preparing, .downloading:
-                    Button("Pause") {
-                        appState.pauseDownload(of: model)
-                    }
-                    Button("Cancel", role: .destructive) {
-                        appState.cancelDownload(of: model)
-                    }
-                    .font(.caption)
-                case .paused:
-                    Button("Resume") {
-                        appState.startDownload(of: model)
-                    }
-                    Button("Cancel", role: .destructive) {
-                        appState.cancelDownload(of: model)
-                    }
-                    .font(.caption)
-                case .failed:
-                    Button("Retry") {
-                        appState.startDownload(of: model)
-                    }
-                case .completed:
-                    ProgressView().controlSize(.small)
-                case .idle:
-                    // RAM gates LOADING, not downloading: the user may be
-                    // storing the model for later or for another machine.
-                    Button("Download") {
-                        appState.startDownload(of: model)
-                    }
-                    .help("Resumable download with integrity checks")
+                Button("Load") {
+                    Task { await appState.activate(model: model) }
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .disabled(budget.verdict.fitsLoad == false)
+            }
+        } else {
+            switch downloadState {
+            case .preparing, .downloading:
+                Button("Pause") {
+                    appState.pauseDownload(of: model)
+                }
+                .buttonStyle(.bordered)
+            case .paused:
+                Button("Resume") {
+                    appState.startDownload(of: model)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+            case .failed:
+                Button("Retry") {
+                    appState.startDownload(of: model)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+            case .completed:
+                ProgressView().controlSize(.small)
+            case .idle:
+                // RAM gates LOADING, not downloading: the user may be
+                // storing the model for later or for another machine.
+                Button("Download") {
+                    appState.startDownload(of: model)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .help("Resumable download with integrity checks")
             }
         }
-        .buttonStyle(.bordered)
+    }
+
+    @ViewBuilder
+    private var overflowMenu: some View {
+        if isInstalled {
+            Menu {
+                Button("Remove…", role: .destructive, action: removeInstalled)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More actions")
+        } else {
+            switch downloadState {
+            case .preparing, .downloading, .paused:
+                Menu {
+                    Button("Cancel Download", role: .destructive) {
+                        appState.cancelDownload(of: model)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More actions")
+            default:
+                EmptyView()
+            }
+        }
     }
 
     private func removeInstalled() {
@@ -303,6 +518,9 @@ private struct ModelRow: View {
         }
     }
 }
+
+// MARK: - Remote (BYOK)
+
 /// BYOK remote providers — activate one to run the agent without a local
 /// model download. Rendered as a proper legible panel: a real header row,
 /// full-size provider rows, and a bounded scroll region so many configured
@@ -317,46 +535,49 @@ private struct RemoteSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "cloud.fill")
-                    .foregroundStyle(Theme.accent)
-                Text("Remote (BYOK)")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                if !configured.isEmpty {
-                    Text("\(configured.count) configured")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
-                }
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            SectionHeader(title: "Remote (BYOK)", systemImage: "cloud")
 
-            if configured.isEmpty {
-                Text("Add an API key in Settings → Providers to run the agent on a remote model.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(configured) { provider in
-                            providerRow(provider)
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                if configured.isEmpty {
+                    HStack(spacing: Spacing.md) {
+                        Image(systemName: "key")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Theme.textSecondary)
+                            .frame(width: 38, height: 38)
+                            .background(Theme.surfaceInset,
+                                        in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("No providers configured")
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(Theme.textPrimary)
+                            Text("Add an API key in Settings → Providers to run the agent on a remote model.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                } else {
+                    ScrollView {
+                        VStack(spacing: Spacing.xs) {
+                            ForEach(configured) { provider in
+                                providerRow(provider)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
                 }
-                .frame(maxHeight: 180)
             }
+            .padding(Spacing.md)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                    .strokeBorder(Theme.hairline, lineWidth: 1))
         }
-        .padding(12)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1))
     }
 
     private func providerRow(_ provider: LLMProvider) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.sm) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(provider.displayName)
                     .font(.callout)
@@ -369,7 +590,7 @@ private struct RemoteSection: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Spacing.md)
             if appState.isRemoteActive,
                appState.engine.activeRemoteEndpoint?.provider == provider {
                 Label("Active", systemImage: "checkmark.circle.fill")
@@ -378,9 +599,10 @@ private struct RemoteSection: View {
                 Button("Use local") {
                     appState.deactivateRemote()
                 }
-                .font(.caption)
-                .controlSize(.small)
+                .buttonStyle(.bordered)
             } else {
+                // Same rule as the model cards: the forward action is the
+                // single prominent button, tinted with the accent.
                 Button("Use remote") {
                     let endpoint = RemoteEndpoint(
                         provider: provider,
@@ -389,11 +611,12 @@ private struct RemoteSection: View {
                         _ = await appState.activateRemote(endpoint: endpoint)
                     }
                 }
-                .font(.caption)
-                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
             }
         }
-        .padding(.horizontal, 8)
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, Spacing.sm)
         .padding(.vertical, 6)
         .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
     }

@@ -4,6 +4,11 @@ import Foundation
 /// curated for Apple Silicon RAM tiers; users can add arbitrary HF repos,
 /// which land in the user catalog file with defaults filled in.
 struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
+    enum Format: String, Codable, Sendable {
+        case mlx
+        case gguf
+    }
+
     var id: String
     var repo: String
     var displayName: String
@@ -15,6 +20,9 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
     var minRAMGB: Int
     var recommendedRAMGB: Int
     var notes: String
+    /// Weights format — decides which engine runs it. MLX safetensors run
+    /// in-process; GGUF runs through llama.cpp's `llama-server`.
+    var format: Format = .mlx
 
     var subtitle: String {
         "\(parameters) · \(quantization) · ~\(ByteFormatter.bytes(diskBytes))"
@@ -23,9 +31,10 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
 
 enum ModelCatalog {
 
-    /// Files fetched when downloading a repo snapshot.
+    /// Files fetched when downloading a repo snapshot. Covers both MLX
+    /// (safetensors + tokenizer artifacts) and GGUF (single .gguf file) repos.
     static let downloadGlobs = [
-        "*.safetensors", "*.json", "tokenizer*", "*.txt", "*.jinja",
+        "*.safetensors", "*.json", "tokenizer*", "*.txt", "*.jinja", "*.gguf",
     ]
 
     static let bundled: [CatalogModel] = [
@@ -101,6 +110,47 @@ enum ModelCatalog {
             minRAMGB: 24,
             recommendedRAMGB: 32,
             notes: "Mixture-of-experts: 30B quality at near-8B speed. The pick for 24 GB+."),
+
+        // GGUF (llama.cpp) — the widest quantization/architecture coverage.
+        CatalogModel(
+            id: "qwen2.5-coder-7b-gguf-q4",
+            repo: "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+            displayName: "Qwen2.5 Coder 7B (GGUF)",
+            family: "Qwen2.5 Coder",
+            parameters: "7B",
+            quantization: "Q4_K_M",
+            diskBytes: 4_700_000_000,
+            contextWindow: 32_768,
+            minRAMGB: 12,
+            recommendedRAMGB: 16,
+            notes: "llama.cpp build — needs llama-server installed (brew install llama.cpp). Broadest quantization choice.",
+            format: .gguf),
+        CatalogModel(
+            id: "qwen3-4b-gguf-q4",
+            repo: "unsloth/Qwen3-4B-GGUF",
+            displayName: "Qwen3 4B (GGUF)",
+            family: "Qwen3",
+            parameters: "4B",
+            quantization: "Q4_K_M",
+            diskBytes: 2_500_000_000,
+            contextWindow: 32_768,
+            minRAMGB: 8,
+            recommendedRAMGB: 12,
+            notes: "Fast GGUF generalist for 8–12 GB Macs. Runs via llama-server.",
+            format: .gguf),
+        CatalogModel(
+            id: "qwen3-8b-gguf-q4",
+            repo: "unsloth/Qwen3-8B-GGUF",
+            displayName: "Qwen3 8B (GGUF)",
+            family: "Qwen3",
+            parameters: "8B",
+            quantization: "Q4_K_M",
+            diskBytes: 4_900_000_000,
+            contextWindow: 32_768,
+            minRAMGB: 12,
+            recommendedRAMGB: 16,
+            notes: "GGUF variant of the Qwen3 8B generalist. Runs via llama-server.",
+            format: .gguf),
     ]
 
     private static var userCatalogURL: URL {

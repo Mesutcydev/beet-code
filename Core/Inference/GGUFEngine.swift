@@ -1,0 +1,319 @@
+import Darwin
+import Foundation
+
+/// GGUF engine: runs llama.cpp's `llama-server` as a localhost child process
+/// against the model's `.gguf` file and streams through the same
+/// OpenAI-compatible client used for BYOK servers. This gives Beet Code the
+/// full GGUF quantization universe (Q2–Q8, every architecture llama.cpp
+/// supports) without vendoring the C++ runtime — llama.cpp already has
+/// first-class Apple Silicon Metal support.
+///
+/// Lifecycle mirrors the MLX engine: admission goes through `MemoryAdvisor`,
+/// generation is serialized on the pool's shared `GenerationGate`, and unload
+/// terminates the server process.
+final class GGUFEngine: LLMEngine, @unchecked Sendable {
+
+    enum GGUFError: Error, LocalizedError, Equatable {
+        case noGGUFFile
+        case serverBinaryMissing(String)
+        case serverFailedToStart(String)
+        case notLoaded
+
+        var errorDescription: String? {
+            switch self {
+            case .noGGUFFile:
+                return "No .gguf weight file found in the model directory."
+            case .serverBinaryMissing(let hint):
+                return hint
+            case .serverFailedToStart(let detail):
+                return "llama-server failed to start: \(detail)"
+            case .notLoaded:
+                return "No GGUF model is loaded."
+            }
+        }
+    }
+
+    /// Pure decisions — deterministic and unit-testable.
+    enum Planner {
+
+        /// The weight file to serve: the LARGEST `.gguf` in the directory
+        /// (multi-file splits are rare; the biggest shard is the real model).
+        static func selectGGUF(named fileNames: [String]) -> String? {
+            let candidates = fileNames.filter { $0.lowercased().hasSuffix(".gguf") }
+            return candidates.max { a, b in
+                if a.count != b.count { return a.count < b.count }
+                return quantizationLevel(a) < quantizationLevel(b)
+            }
+        }
+
+        /// Numeric -q<digits> marker ("model-q8.gguf" -> 8); 0 when absent.
+        private static func quantizationLevel(_ name: String) -> Int {
+            let lower = name.lowercased()
+            guard let dot = lower.range(of: ".gguf") else { return 0 }
+            let stem = String(lower[lower.startIndex..<dot.lowerBound])
+            guard let qRange = stem.range(of: "-q") else { return 0 }
+            let rest = stem[qRange.upperBound...]
+            let digits = rest.prefix(while: { $0.isNumber })
+            guard digits.count > 0 else { return 0 }
+            return Int(digits) ?? 0
+        }
+
+        /// Server launch arguments: loopback-only, no web UI, GPU-offloaded.
+        static func serverArguments(modelPath: String, port: Int, contextSize: Int = 8192) -> [String] {
+            [
+                "--model", modelPath,
+                "--host", "127.0.0.1",
+                "--port", String(port),
+                "--ctx-size", String(contextSize),
+                "--n-gpu-layers", "99",
+                "--alias", "beetcode",
+                "--no-webui",
+            ]
+        }
+
+        /// True when the health response body indicates the model is ready.
+        static func isHealthy(responseBody: String) -> Bool {
+            responseBody.contains("\"data\"") || responseBody.contains("beetcode")
+        }
+    }
+
+    // MARK: State
+
+    private let lock = NSLock()
+    private var process: Process?
+    private var port: Int = 0
+    private var loadedID: String?
+    private var statsState = EngineStats()
+    /// Stateless replay buffer — identical semantics to RemoteLLMEngine:
+    /// llama-server slots are not guaranteed across requests, so every call
+    /// sends the full conversation.
+    private var accumulated: [ChatTurn] = []
+
+    init() {}
+
+    var loadedModelID: String? {
+        get async { withLock { loadedID } }
+    }
+
+    var stats: EngineStats {
+        get async { withLock { statsState } }
+    }
+
+    // MARK: Lifecycle
+
+    func load(directory: URL, modelID: String, diskBytes: Int64) async throws {
+        // Same admission authority as every other engine: the GGUF weights
+        // inflate the child's footprint just like MLX's mmap does.
+        try MemoryAdvisor.admitLoad(diskBytes: diskBytes)
+
+        let fileNames = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        guard let ggufName = Planner.selectGGUF(named: fileNames) else {
+            throw GGUFError.noGGUFFile
+        }
+        let modelPath = directory.appendingPathComponent(ggufName).path
+        let binary = try Self.resolveServerBinary()
+
+        let serverPort = Self.freePort()
+        let child = Process()
+        child.executableURL = binary
+        child.arguments = Planner.serverArguments(modelPath: modelPath, port: serverPort)
+        child.environment = ShellRunner.sanitizedEnvironment()
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+
+        do {
+            try child.run()
+        } catch {
+            throw GGUFError.serverFailedToStart(error.localizedDescription)
+        }
+
+        // Wait for the HTTP health endpoint (model page-in can take a while).
+        let healthy = await waitForHealthy(port: serverPort, process: child, timeout: 120)
+        guard healthy else {
+            child.terminate()
+            throw GGUFError.serverFailedToStart("no response from llama-server within 120s")
+        }
+
+        withLock {
+            self.process = child
+            self.port = serverPort
+            self.loadedID = modelID
+            self.statsState = EngineStats()
+            self.accumulated.removeAll()
+        }
+        child.terminationHandler = { [weak self] _ in
+            guard let self else { return }
+            self.withLock {
+                self.process = nil
+                self.loadedID = nil
+            }
+        }
+        Log.engine.info("GGUF server ready: \(modelID, privacy: .public) on port \(serverPort)")
+    }
+
+    func unload() async {
+        let child = withLock { () -> Process? in
+            let p = process
+            process = nil
+            port = 0
+            loadedID = nil
+            statsState = EngineStats()
+            accumulated.removeAll()
+            return p
+        }
+        guard let child, child.isRunning else { return }
+        child.terminate()
+        // Graceful → forced: never leak a model server.
+        let deadline = Date().addingTimeInterval(3)
+        while child.isRunning && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        if child.isRunning {
+            kill(child.processIdentifier, SIGKILL)
+        }
+    }
+
+    func reset() async {
+        withLock { accumulated.removeAll() }
+    }
+
+    // MARK: Generation
+
+    func stream(
+        adding turns: [ChatTurn],
+        maxTokens: Int?,
+        temperature: Double?
+    ) -> AsyncThrowingStream<String, Error> {
+        let allTurns = withLock { () -> [ChatTurn] in
+            accumulated.append(contentsOf: turns)
+            return accumulated
+        }
+        let baseURL = withLock { URL(string: "http://127.0.0.1:\(port)/v1")! }
+        let inner = RemoteLLMClient.streamOpenAICompatible(
+            provider: .custom,
+            baseURL: baseURL,
+            apiKey: "",
+            model: "beetcode",
+            turns: allTurns,
+            temperature: temperature ?? 0.6,
+            maxTokens: maxTokens)
+
+        // Relay while measuring throughput (same stats contract as the other
+        // engines).
+        return AsyncThrowingStream { continuation in
+            let task = Task { [weak self] in
+                var tokens = 0
+                let started = Date()
+                do {
+                    for try await chunk in inner {
+                        if Task.isCancelled { break }
+                        continuation.yield(chunk)
+                        tokens += 1
+                    }
+                    let elapsed = Date().timeIntervalSince(started)
+                    if elapsed > 0.2 {
+                        let newStats = EngineStats(
+                            tokensPerSecond: Double(tokens) / elapsed,
+                            generatedTokens: tokens)
+                        // NSLock lives inside the synchronous withLock
+                        // helper — never raw lock/unlock in async contexts.
+                        if let self {
+                            self.withLock { self.statsState = newStats }
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func cancelGeneration() async {
+        // In-flight HTTP generation stops when the caller cancels the stream;
+        // nothing queued exists on the local server.
+    }
+
+    @discardableResult
+    func dumpIfResident() async -> Bool {
+        let wasLoaded = withLock { loadedID != nil }
+        if wasLoaded {
+            await unload()
+            Log.memory.warning("GGUF model dumped by memory pressure")
+        }
+        return wasLoaded
+    }
+
+    // MARK: Helpers
+
+    /// Polls the server's model endpoint until it answers or the deadline /
+    /// process death arrives.
+    private func waitForHealthy(port: Int, process: Process, timeout: TimeInterval) async -> Bool {
+        let url = URL(string: "http://127.0.0.1:\(port)/v1/models")!
+        let session = URLSession(configuration: .ephemeral)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !process.isRunning { return false }
+            if let (_, response) = try? await session.data(from: url),
+               let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                session.finishTasksAndInvalidate()
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        session.finishTasksAndInvalidate()
+        return false
+    }
+
+    /// Locates `llama-server`: PATH first (Homebrew installs link it), then
+    /// the canonical Homebrew prefix. Absence is reported with install
+    /// guidance instead of a cryptic spawn error.
+    nonisolated static func resolveServerBinary() throws -> URL {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin"
+        for dir in path.split(separator: ":") {
+            let candidate = URL(fileURLWithPath: String(dir)).appendingPathComponent("llama-server")
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        let homebrew = URL(fileURLWithPath: "/opt/homebrew/bin/llama-server")
+        if FileManager.default.isExecutableFile(atPath: homebrew.path) {
+            return homebrew
+        }
+        throw GGUFError.serverBinaryMissing(
+            "llama-server not found. Install llama.cpp (brew install llama.cpp) to run GGUF models.")
+    }
+
+    /// An ephemeral loopback port: bind port 0, read the assignment, close.
+    nonisolated static func freePort() -> Int {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return 8901 }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bindResult = withUnsafePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else { return 8901 }
+        var actual = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &actual) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                getsockname(fd, sa, &length)
+            }
+        }
+        guard nameResult == 0 else { return 8901 }
+        return Int(UInt16(bigEndian: actual.sin_port))
+    }
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}

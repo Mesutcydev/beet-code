@@ -122,9 +122,11 @@ final class MCPTests: XCTestCase {
             name: "fake",
             config: MCPServerConfig(command: "/usr/bin/python3", args: [serverScript.path]))
         let tools = try await connection.connect()
-        let adapter = MCPToolAdapter(serverName: "fake", definition: tools[0], connection: connection)
+        let shared = MCPToolDefinition(
+            name: tools[0].name, description: tools[0].description, schemaJSON: tools[0].schemaJSON)
+        let adapter = MCPToolAdapter(serverName: "fake", definition: shared, transport: connection)
         XCTAssertEqual(adapter.name, "mcp__fake__echo")
-        XCTAssertEqual(adapter.risk, .execute, "MCP tools must always require approval")
+        XCTAssertEqual(adapter.risk, ToolRisk.execute, "MCP tools must always require approval")
         XCTAssertTrue(adapter.schemaText.contains("string"))
 
         let context = ToolContext(workspace: Workspace(root: tempDir))

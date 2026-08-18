@@ -23,6 +23,10 @@ final class AgentSessionController: ObservableObject {
 
     @Published private(set) var transcript: [TranscriptItem] = []
     @Published private(set) var streamingText = ""
+    /// True while the model is inside a reasoning block (`<think>…</think>`
+    /// or a repetition filler loop) — the transcript shows a proper
+    /// "Reasoning…" indicator instead of raw filler text.
+    @Published private(set) var isReasoningVisible = false
     @Published private(set) var isRunning = false
     @Published private(set) var pendingApproval: ApprovalRequest?
     @Published private(set) var pendingQuestion: String?
@@ -38,6 +42,8 @@ final class AgentSessionController: ObservableObject {
     private var eventTask: Task<Void, Never>?
     /// Live MCP servers for the current run; disconnected when it ends.
     private let mcpRegistry = MCPRegistry()
+    /// Live approval overrides for the current run ("Always approve" taps).
+    private(set) var approvalOverrides: ApprovalOverrides?
     /// Identifies the current run; events from a cancelled older run are
     /// rejected so they can never mutate a newer run's UI state.
     private var runID = UUID()
@@ -46,6 +52,9 @@ final class AgentSessionController: ObservableObject {
     /// re-layout for no visible gain.
     private var pendingTokenBuffer = ""
     private var tokenFlushTask: Task<Void, Never>?
+    /// Unfiltered stream accumulator — the source for display filtering
+    /// (think-block removal happens on the accumulated text, not deltas).
+    private var rawStreamingText = ""
 
     /// Supplies the active model ID (AppState owns that truth).
     var activeModelIDHandler: () -> String = { "" }
@@ -115,10 +124,15 @@ final class AgentSessionController: ObservableObject {
         let checkpointingEnabled = settings.checkpointingEnabled
         let showReasoning = settings.showReasoning
         let planMode = settings.planMode
+        // Per-run live overrides: "Always approve" on an approval card flips
+        // these, taking effect immediately for THIS running loop.
+        let runOverrides = ApprovalOverrides()
         let permissions = PermissionGate(
             autoApproveEdits: autoApproveEdits,
             autoApproveCommands: autoApproveCommands,
-            workspace: workspaceScope)
+            workspace: workspaceScope,
+            overrides: runOverrides)
+        approvalOverrides = runOverrides
 
         // Long-term memory is per-workspace; built when the setting is on.
 
@@ -187,6 +201,8 @@ final class AgentSessionController: ObservableObject {
         transcript = []
         finishReason = nil
         streamingText = ""
+        rawStreamingText = ""
+        isReasoningVisible = false
         if let latest = SessionStore.shared.loadAll()
             .first(where: { $0.workspacePath == url.path }) {
             _ = restore(latest)
@@ -216,6 +232,8 @@ final class AgentSessionController: ObservableObject {
         isRunning = false
         dropTokenBuffer()
         streamingText = ""
+        rawStreamingText = ""
+        isReasoningVisible = false
     }
 
     /// The stream ended without a .finished event (cancel path): clear the
@@ -227,6 +245,8 @@ final class AgentSessionController: ObservableObject {
         isRunning = false
         dropTokenBuffer()
         streamingText = ""
+        rawStreamingText = ""
+        isReasoningVisible = false
         clearPending()
     }
 
@@ -253,8 +273,14 @@ final class AgentSessionController: ObservableObject {
         tokenFlushTask?.cancel()
         tokenFlushTask = nil
         guard !pendingTokenBuffer.isEmpty else { return }
-        streamingText += pendingTokenBuffer
+        rawStreamingText += pendingTokenBuffer
         pendingTokenBuffer = ""
+        // Display filtering: hide raw `…` blocks and repetition
+        // filler ("thinking thinking thinking…") — show a proper
+        // Reasoning indicator instead of the model's raw noise.
+        let (visible, reasoning) = StreamDisplayFilter.display(raw: rawStreamingText)
+        streamingText = visible
+        isReasoningVisible = reasoning
     }
 
     /// Drops buffered deltas without publishing (run cleanup paths only).
@@ -289,6 +315,8 @@ final class AgentSessionController: ObservableObject {
         finishReason = nil
         dropTokenBuffer()
         streamingText = ""
+        rawStreamingText = ""
+        isReasoningVisible = false
         workspaceURL = URL(fileURLWithPath: record.workspacePath)
 
         var rebuilt: [TranscriptItem] = []
@@ -508,17 +536,49 @@ final class AgentSessionController: ObservableObject {
     // MARK: Interactive responses
 
     func approve(_ approved: Bool) {
+        approve(approved, always: false)
+    }
+
+    /// Decides a pending approval. `always: true` additionally widens
+    /// approval for the rest of this run AND future runs (persisted):
+    /// - a write tool (edit/write) enables auto-approve file edits
+    /// - run_command enables auto-approve for policy-safe commands
+    /// Reads never ask, so they never reach this path. The widening keeps
+    /// every existing safety rail: command approval remains gated by the
+    /// allowlist policy in PermissionGate.
+    func approve(_ approved: Bool, always: Bool) {
         guard let request = pendingApproval else { return }
         pendingApproval = nil
         if approved {
             transcript.append(
                 TranscriptItem(id: UUID(), kind: .notice("Approved: \(request.invocation.name)")))
+            if always {
+                applyAlwaysApproval(for: request)
+            }
         } else {
             transcript.append(
                 TranscriptItem(id: UUID(), kind: .notice("Declined: \(request.invocation.name)")))
         }
         if let loop {
             Task { await loop.resolve(requestID: request.id, approved: approved) }
+        }
+    }
+
+    private func applyAlwaysApproval(for request: ApprovalRequest) {
+        let isCommand = request.invocation.name == "run_command"
+            || request.invocation.name == "build_diagnostics"
+        if isCommand {
+            approvalOverrides?.allowCommands()
+            SettingsStore.shared.autoApproveCommands = true
+            transcript.append(TranscriptItem(
+                id: UUID(),
+                kind: .notice("Always approve enabled for safe commands (this run + future runs)")))
+        } else {
+            approvalOverrides?.allowEdits()
+            SettingsStore.shared.autoApproveEdits = true
+            transcript.append(TranscriptItem(
+                id: UUID(),
+                kind: .notice("Always approve enabled for file edits (this run + future runs)")))
         }
     }
 
@@ -540,6 +600,8 @@ final class AgentSessionController: ObservableObject {
         case .taskStarted:
             flushTokens()
             streamingText = ""
+            rawStreamingText = ""
+            isReasoningVisible = false
 
         case .tokenDelta(let chunk):
             pendingTokenBuffer += chunk
@@ -548,11 +610,15 @@ final class AgentSessionController: ObservableObject {
         case .assistantMessage(let text):
             flushTokens()
             streamingText = ""
+            rawStreamingText = ""
+            isReasoningVisible = false
             transcript.append(TranscriptItem(id: UUID(), kind: .assistant(text)))
 
         case .toolCallStarted(let invocation):
             flushTokens()
             streamingText = ""
+            rawStreamingText = ""
+            isReasoningVisible = false
             transcript.append(TranscriptItem(id: UUID(), kind: .toolCall(invocation)))
 
         case .awaitingApproval(let request):
@@ -597,6 +663,8 @@ final class AgentSessionController: ObservableObject {
         case .finished(let reason):
             flushTokens()
             streamingText = ""
+            rawStreamingText = ""
+            isReasoningVisible = false
             isRunning = false
             finishReason = reason
             clearPending()

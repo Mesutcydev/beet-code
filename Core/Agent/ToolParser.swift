@@ -197,3 +197,16 @@ enum ToolParser {
 private extension ParsedToolCall {
     var signature: String { name + "|" + argumentsJSON }
 }
+
+/// Wire-format serializer for tool calls — the inverse of `ToolParser.parse`.
+/// Engines that receive tool calls as structured events instead of text
+/// (MLXLMCommon's `.toolCall` generations) use this to hand the agent loop
+/// text its parser recognizes.
+enum ToolCallText {
+    static func serialize(name: String, argumentsJSON: String) -> String {
+        let safeName = name
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "<tool_call>\n{\"name\": \"\(safeName)\", \"arguments\": \(argumentsJSON)}\n</tool_call>"
+    }
+}

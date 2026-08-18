@@ -55,25 +55,28 @@ final class ThermalMonitor: ObservableObject {
     // MARK: Kernel thermal state
 
     private func stateDidChange() {
-        let fresh = ProcessInfo.processInfo.thermalState
-        systemThermalState = fresh
-        guard fresh != effectiveState else {
+        systemThermalState = ProcessInfo.processInfo.thermalState
+        // The effective state is always the max of kernel and CPU-load
+        // proxy: a kernel cool-down must not mask a hot proxy, and a kernel
+        // heat-up applies even when the proxy is calm.
+        let target = mergedState()
+        guard target != effectiveState else {
             pendingState = nil
             applyTask?.cancel()
             return
         }
 
         // Critical is a safety stop — apply immediately.
-        if fresh == .critical {
+        if target == .critical {
             applyTask?.cancel()
             pendingState = nil
-            transition(to: fresh)
+            transition(to: target)
             return
         }
 
-        pendingState = fresh
+        pendingState = target
         applyTask?.cancel()
-        let isHeating = rank(fresh) > rank(effectiveState)
+        let isHeating = rank(target) > rank(effectiveState)
         let delay = isHeating ? heatUpDelay : coolDownDelay
         applyTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))

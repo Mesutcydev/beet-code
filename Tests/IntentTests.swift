@@ -186,7 +186,13 @@ final class ComposerStoreTests: XCTestCase {
     private var workspace: TempWorkspace!
     private var gitRepo: GitRepo!
 
+    private var savedPlanMode: Bool?
+
     override func setUp() {
+        // Pin loop settings so real developer preferences can't leak in.
+        let defaults = UserDefaults.standard
+        savedPlanMode = defaults.object(forKey: "planMode") as? Bool
+        defaults.set(false, forKey: "planMode")
         appSupport = TempWorkspace()
         ModelStore.shared.overrideModelsDir = appSupport.url(for: "Models")
         SessionStore.shared.overrideSessionsDir = appSupport.url(for: "Sessions")
@@ -201,6 +207,12 @@ final class ComposerStoreTests: XCTestCase {
     }
 
     override func tearDown() {
+        if let savedPlanMode {
+            UserDefaults.standard.set(savedPlanMode, forKey: "planMode")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "planMode")
+        }
+        savedPlanMode = nil
         ComposerStore.overrideDraftsDir = nil
         ModelStore.shared.overrideModelsDir = nil
         SessionStore.shared.overrideSessionsDir = nil

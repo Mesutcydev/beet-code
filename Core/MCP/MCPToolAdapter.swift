@@ -1,13 +1,28 @@
 import Foundation
 
+/// Shared tool shape across MCP transports (stdio + HTTP/SSE).
+struct MCPToolDefinition: Sendable, Equatable {
+    var name: String
+    var description: String
+    var schemaJSON: String
+}
+
+/// What every MCP transport must offer the registry: connect, call, drop.
+/// Both `MCPConnection` (stdio) and `MCPHTTPConnection` (Streamable-HTTP)
+/// conform.
+protocol MCPTransport: Actor, Sendable {
+    func callTool(_ toolName: String, argumentsJSON: String, timeout: TimeInterval) async throws -> String
+    func disconnect() async
+}
+
 /// Adapts one MCP server tool to the AgentTool protocol. MCP tools always
 /// run through the PermissionGate as `.execute` risk — a remote server can
 /// never bypass the approval flow, regardless of what it claims.
 struct MCPToolAdapter: AgentTool {
 
     let serverName: String
-    let definition: MCPConnection.ToolDefinition
-    let connection: MCPConnection
+    let definition: MCPToolDefinition
+    let transport: any MCPTransport
 
     /// Tool names must be globally unique in the executor registry; prefix
     /// with the server name (namespaced like OpenCode does).
@@ -30,7 +45,7 @@ struct MCPToolAdapter: AgentTool {
     func execute(_ call: ParsedToolCall, in context: ToolContext) async throws -> String {
         // Errors (MCPError or otherwise) propagate: the executor maps any
         // thrown error to a typed [error] observation the model can react to.
-        try await connection.callTool(definition.name, argumentsJSON: call.argumentsJSON)
+        try await transport.callTool(definition.name, argumentsJSON: call.argumentsJSON, timeout: 60)
     }
 }
 
@@ -45,41 +60,76 @@ actor MCPRegistry {
         var errors: [String] = []
     }
 
-    private var connections: [MCPConnection] = []
+    private var transports: [any MCPTransport] = []
 
     /// Connects every configured server and returns their tools. Each server
-    /// gets its own bounded connect attempt; timeouts are 30s total.
+    /// gets its own bounded connect attempt; timeouts are bounded internally.
+    /// stdio entries spawn a child process; `url` entries speak
+    /// Streamable-HTTP (JSON body or SSE response carriage) with optional
+    /// OAuth 2.0 (PKCE + refresh) when the entry carries an `oauth` block.
     func start(workspaceRoot: URL) async -> Result {
         let (servers, configErrors) = MCPConfig.load(workspaceRoot: workspaceRoot)
         var result = Result()
         result.errors = configErrors
         guard !servers.isEmpty else { return result }
 
-        await withTaskGroup(of: (String, MCPConnection, [MCPConnection.ToolDefinition]?, String?).self) { group in
+        await withTaskGroup(of: (String, (any MCPTransport)?, [MCPToolDefinition]?, String?).self) { group in
             for (name, config) in servers.sorted(by: { $0.key < $1.key }) {
                 group.addTask {
-                    let connection = MCPConnection(name: name, config: config)
-                    do {
-                        let tools = try await connection.connect()
-                        return (name, connection, tools, nil)
-                    } catch {
-                        return (name, connection, nil, error.localizedDescription)
+                    switch config.transport {
+                    case .stdio:
+                        let connection = MCPConnection(name: name, config: config)
+                        do {
+                            let tools = try await connection.connect()
+                            let shared = tools.map {
+                                MCPToolDefinition(
+                                    name: $0.name, description: $0.description, schemaJSON: $0.schemaJSON)
+                            }
+                            return (name, connection, shared, nil)
+                        } catch {
+                            return (name, nil, nil, error.localizedDescription)
+                        }
+                    case .http:
+                        guard let urlString = config.url, let url = URL(string: urlString) else {
+                            return (name, nil, nil, "invalid url")
+                        }
+                        // OAuth is opt-in per server entry (an `oauth` block,
+                        // possibly empty) so plain servers never trigger an
+                        // unexpected browser login.
+                        let auth: MCPOAuthProvider? = config.oauth != nil
+                            ? MCPOAuthProvider(
+                                serverName: name,
+                                clientID: config.oauth?.clientId,
+                                clientSecret: config.oauth?.clientSecret)
+                            : nil
+                        let connection = MCPHTTPConnection(
+                            name: name, url: url, headers: config.headers, auth: auth)
+                        do {
+                            let tools = try await connection.connect()
+                            let shared = tools.map {
+                                MCPToolDefinition(
+                                    name: $0.name, description: $0.description, schemaJSON: $0.schemaJSON)
+                            }
+                            return (name, connection, shared, nil)
+                        } catch {
+                            await connection.disconnect()
+                            return (name, nil, nil, error.localizedDescription)
+                        }
                     }
                 }
             }
-            for await (name, connection, tools, failure) in group {
-                if let tools {
-                    connections.append(connection)
+            for await (name, transport, tools, failure) in group {
+                if let tools, let transport {
+                    transports.append(transport)
                     result.connectedServers.append(name)
                     for tool in tools {
                         result.tools.append(MCPToolAdapter(
                             serverName: name,
                             definition: tool,
-                            connection: connection))
+                            transport: transport))
                     }
                 } else {
                     result.errors.append("MCP server '\(name)': \(failure ?? "unknown failure")")
-                    await connection.disconnect()
                 }
             }
         }
@@ -88,9 +138,9 @@ actor MCPRegistry {
 
     /// Disconnects every live server (session teardown).
     func stop() async {
-        for connection in connections {
-            await connection.disconnect()
+        for transport in transports {
+            await transport.disconnect()
         }
-        connections.removeAll()
+        transports.removeAll()
     }
 }

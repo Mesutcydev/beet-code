@@ -248,10 +248,16 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
     }
 
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws {
+        try await load(directory: directory, modelID: modelID, diskBytes: diskBytes, format: .mlx)
+    }
+
+    /// Format-aware load: the pool instantiates the right engine (MLX
+    /// in-process vs GGUF llama-server) per model.
+    func load(directory: URL, modelID: String, diskBytes: Int64, format: CatalogModel.Format) async throws {
         if let pool {
             // Multi-resident: keeps other loaded models warm, evicting LRU
             // idle residents only when the memory budget requires it.
-            try await pool.activate(directory: directory, modelID: modelID, diskBytes: diskBytes)
+            try await pool.activate(directory: directory, modelID: modelID, diskBytes: diskBytes, format: format)
             return
         }
         try await local.load(directory: directory, modelID: modelID, diskBytes: diskBytes)

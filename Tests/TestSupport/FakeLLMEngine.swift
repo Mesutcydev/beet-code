@@ -34,6 +34,8 @@ final class FakeLLMEngine: LLMEngine, @unchecked Sendable {
     private var holdContinuation: CheckedContinuation<Void, Never>?
     private var loadedID: String?
     private var statsState = EngineStats()
+    private var loadCounter = 0
+    private var wasUnloaded = false
 
     // MARK: Scripting (test side) — all sync, safe from any context
 
@@ -68,6 +70,17 @@ final class FakeLLMEngine: LLMEngine, @unchecked Sendable {
         withLock { streamCount }
     }
 
+    /// How many times load(...) was invoked (pool warm-switch tests assert
+    /// exactly one load per resident engine).
+    var loadCount: Int {
+        withLock { loadCounter }
+    }
+
+    /// True once unload() has been called (eviction tests).
+    var unloaded: Bool {
+        withLock { wasUnloaded }
+    }
+
     var resetCallCount: Int {
         withLock { resetCount }
     }
@@ -96,13 +109,17 @@ final class FakeLLMEngine: LLMEngine, @unchecked Sendable {
     }
 
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws {
-        withLock { loadedID = modelID }
+        withLock {
+            loadedID = modelID
+            loadCounter += 1
+        }
     }
 
     func unload() async {
         withLock {
             loadedID = nil
             statsState = EngineStats()
+            wasUnloaded = true
         }
     }
 

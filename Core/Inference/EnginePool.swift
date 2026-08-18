@@ -54,7 +54,7 @@ actor EnginePool {
     private var residents: [String: Resident] = [:]
     private(set) var activeModelID: String?
     private let maxResident: Int
-    private var engineFactory: @Sendable (GenerationGate) -> any LLMEngine
+    private var engineFactory: @Sendable (CatalogModel.Format, GenerationGate) -> any LLMEngine
 
     /// Test seam: swap the admission authority (tests inject a fixed budget).
     var admitLoad: @Sendable (_ diskBytes: Int64) throws -> Void = { diskBytes in
@@ -64,13 +64,26 @@ actor EnginePool {
     init(gate: GenerationGate = GenerationGate(), maxResident: Int = 4) {
         self.gate = gate
         self.maxResident = maxResident
-        self.engineFactory = { gate in MLXEngine(gate: gate) }
+        // Default: MLX safetensors run in-process on the shared gate; GGUF
+        // runs through llama.cpp's llama-server subprocess (its Metal work is
+        // serialized inside that child, not in our process).
+        self.engineFactory = { format, sharedGate in
+            switch format {
+            case .mlx: return MLXEngine(gate: sharedGate)
+            case .gguf: return GGUFEngine()
+            }
+        }
     }
 
     /// Test seam: inject a fake engine factory (deterministic suites never
     /// touch MLX).
-    func setEngineFactory(_ factory: @escaping @Sendable (GenerationGate) -> any LLMEngine) {
+    func setEngineFactory(_ factory: @escaping @Sendable (CatalogModel.Format, GenerationGate) -> any LLMEngine) {
         engineFactory = factory
+    }
+
+    /// Test seam: swap the admission authority (actor-safe setter).
+    func setAdmitLoad(_ block: @escaping @Sendable (_ diskBytes: Int64) throws -> Void) {
+        admitLoad = block
     }
 
     // MARK: Queries
@@ -101,7 +114,10 @@ actor EnginePool {
     ///   engines when necessary, then load a fresh engine on the shared gate.
     /// Throws `EngineError` / `MemoryAdvisor.AdmissionError` when the model
     /// cannot be admitted even after evicting every idle resident.
-    func activate(directory: URL, modelID: String, diskBytes: Int64) async throws {
+    func activate(
+        directory: URL, modelID: String, diskBytes: Int64,
+        format: CatalogModel.Format = .mlx
+    ) async throws {
         touch(modelID)
         if engines[modelID] != nil {
             activeModelID = modelID
@@ -122,7 +138,7 @@ actor EnginePool {
         // Final hard admission — never bypass the advisor's safety stops.
         try admitLoad(diskBytes)
 
-        let engine = engineFactory(gate)
+        let engine = engineFactory(format, gate)
         do {
             try await engine.load(directory: directory, modelID: modelID, diskBytes: diskBytes)
         } catch {

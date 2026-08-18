@@ -9,7 +9,20 @@ final class EndToEndTests: XCTestCase {
 
     private var appSupport: TempWorkspace!
 
+    private var savedPlanMode: Bool?
+    private var savedAutoApproveEdits: Bool?
+    private var savedAutoApproveCommands: Bool?
+
     override func setUpWithError() throws {
+        // Pin agent loop settings so a developer's real preferences (plan mode
+        // on, approvals manual) cannot leak into the test process.
+        let defaults = UserDefaults.standard
+        savedPlanMode = defaults.object(forKey: "planMode") as? Bool
+        savedAutoApproveEdits = defaults.object(forKey: "autoApproveEdits") as? Bool
+        savedAutoApproveCommands = defaults.object(forKey: "autoApproveCommands") as? Bool
+        defaults.set(false, forKey: "planMode")
+        defaults.set(true, forKey: "autoApproveEdits")
+        defaults.set(true, forKey: "autoApproveCommands")
         // Isolate persistence from the developer's real Application Support.
         appSupport = TempWorkspace()
         ModelStore.shared.overrideModelsDir = appSupport.url(for: "Models")
@@ -23,6 +36,16 @@ final class EndToEndTests: XCTestCase {
         preferences.lastSessionID = nil
         preferences.autoResumeDownloads = false
         AppPreferencesStore.shared.save(preferences)
+    }
+
+    override func tearDown() {
+        let defaults = UserDefaults.standard
+        if let savedPlanMode { defaults.set(savedPlanMode, forKey: "planMode") } else { defaults.removeObject(forKey: "planMode") }
+        if let savedAutoApproveEdits { defaults.set(savedAutoApproveEdits, forKey: "autoApproveEdits") } else { defaults.removeObject(forKey: "autoApproveEdits") }
+        if let savedAutoApproveCommands { defaults.set(savedAutoApproveCommands, forKey: "autoApproveCommands") } else { defaults.removeObject(forKey: "autoApproveCommands") }
+        savedPlanMode = nil
+        savedAutoApproveEdits = nil
+        savedAutoApproveCommands = nil
     }
 
     func testDownloadFinalizeActivateThenAgentRun() async throws {
@@ -134,6 +157,11 @@ final class EndToEndTests: XCTestCase {
         repo.write("original", to: "file.txt")
         let git = GitRepo(in: repo)
         git.commitAll(message: "base")
+
+        // This test exercises the approval path explicitly, so re-enable
+        // manual approvals (setUp pins them on by default).
+        UserDefaults.standard.set(false, forKey: "autoApproveEdits")
+        UserDefaults.standard.set(false, forKey: "autoApproveCommands")
 
         let engine = FakeLLMEngine()
         let appState = AppState(engine: EngineRouter(local: engine))

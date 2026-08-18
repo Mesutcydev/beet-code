@@ -1,12 +1,11 @@
-# Beet Code — Release Audit (v0.6.0)
+# Beet Code — Release Audit (v0.7.0)
 
-Generated 2026-08-18 against the current tree. All numbers below are from real
-runs in this session, not claims. Supersedes the v0.5.0 audit.
+Generated 2026-08-19 against the current tree. All numbers below are from real
+runs in this session, not claims. Supersedes the v0.6.0 audit.
 
-**Tree audited:** v0.6.0 (build 3) — provider hardening (13 audit fixes),
-Anthropic-native + custom providers, agent-controlled in-app browser, Intent
-Lattice full repair, Beet Red theme + palette picker, API settings redesign,
-Cursor/ChatGPT-style transcript.
+**Tree audited:** v0.7.0 (build 4) — multi-model residency, parallel chunk
+downloads, composer rewrite (Intent architecture), reasoning-pipeline fixes,
+MCP config transport defaults, test-suite hermeticity.
 
 ## Verdict
 
@@ -19,44 +18,47 @@ blocked — certificates revoked (see §4.1).
 | Check | Result |
 | --- | --- |
 | Debug build (app) | ✅ BUILD SUCCEEDED |
-| Test suite | ✅ **265/265, 0 failures**, ~96 s (`TEST SUCCEEDED`, RUN7/RUN8/RUN9 lineage) |
+| Test suite | ✅ **304/304, 0 failures**, ~102 s (`TEST SUCCEEDED`) |
 | Code signing | ⚠️ ad-hoc (`flags=0x2(adhoc)`), TeamIdentifier unset |
 | Gatekeeper | ❌ rejects ad-hoc — expected; requires Developer ID + notarization |
 | App Sandbox | OFF (`ENABLE_APP_SANDBOX: NO`) — deliberate and required: the agent needs shell/git/workspace access. Must stay documented. |
 
-Test count growth this session: 203 → 221 (hooks) → 225 (rename + legacy
-migration) → 265 (lattice logic + store: 36 new tests).
+Test count growth: 265 (v0.6.0) → 304 (v0.7.0, +39: stream display filter,
+GGUF planner, MCP transport decode, intent/composer store, downloader suites).
 
-## 2. What shipped since the v0.5.0 audit
+## 2. What shipped since the v0.6.0 audit
 
-- **Provider hardening P1–P13**: UTF-8-safe SSE parsing, provider-safe tool
-  role mapping (OpenAI/Gemini), no forced `temperature: 0` probe, custom
-  base-URL provider (keyless-capable for local servers), Anthropic-native
-  provider, stream watchdog + bounded retry, Gemini `systemInstruction` +
-  adjacent-role merge, `max_completion_tokens` for o-series, real usage
-  stats decoding, live `/v1/models` fetch (auto-refreshed on key save),
-  Gemini `x-goog-api-key` header auth, `User-Agent: BeetCode/0.6`, test
-  fixture redaction cleanup.
-- **Agent-controlled in-app browser**: shared `WKWebView` controller,
-  `browser_*` tools (read-only extraction lower risk; navigation/mutation
-  routed through PermissionGate), docked panel next to the transcript.
-- **Intent Lattice full repair**: chips-first composer, single-source-of-truth
-  store, robust Combine phase sync (sticky cancel, idempotent terminal),
-  20 logic + 16 store tests.
-- **Beet Red #7A1F3D (Pantone 19-2030 TCX)** as identity accent; palette
-  system with live switching (5 palettes) + swatch picker in Settings.
-- **API settings redesign**: window 940×720, larger rows, ProviderCard
-  auto-fetches the provider's live model list on key save, current-generation
-  static fallback lists.
-- **Rename LocalForge → Beet Code**: one-time `LegacyMigration` copies
-  Keychain items (`com.localforge.*` → `com.beetcode.*`) and moves
-  Application Support; legacy items retained as rollback.
-- **UI polish (Cursor/ChatGPT-style)**: centered 760pt transcript column,
-  avatar-led assistant messages with inline markdown, grouped collapsible
-  tool-step cards, blinking streaming caret, ChatGPT-style suggestion chips,
-  hover-lift affordances, U9 light-mode inset contrast.
+- **Multi-model residency + parallel chunk downloads**: large weight files
+  fetch fixed byte ranges in parallel (resumable, aggregating progress);
+  small files stream sequentially; both paths verify sha256 and survive
+  relaunch via manifests with auto-resume opt-in.
+- **Composer rewrite (Intent architecture)**: chips-first composer, intent
+  composers/resolvers/presets, deterministic focus ordering, draft-only
+  suffix, structural role dedup, plain-chars-over-4 token estimates.
+- **Reasoning pipeline**: raw reasoning streams arrive in Qwen3-style
+  ` thinking`/` response` XML segments (5-letter tags, verified at byte
+  level); `strippingThinking`/`extractingThinking` and the stream display
+  filter now match that exact format — complete blocks hidden, open blocks
+  show reasoning state, repetition filler collapsed.
+- **GGUF selection**: `selectGGUF` picks the largest candidate (ties broken
+  by quantization level `-q<digits>`); free loopback port + health detection
+  tests added.
+- **MCP config transport**: `MCPServerConfig` explicitly decodes
+  `command`/`args`/`env`/`url`/`headers`/`oauth` with defaults honored;
+  command wins when both transports are present; entries with neither are
+  rejected at load.
+- **Test-suite hermeticity fixes**:
+  - `AppState` launch restore refuses to auto-resume real downloads under an
+    XCTest host (`XCTestConfigurationFilePath` present) — previously every
+    test-host launch resumed the developer's genuine Qwen3-4B download over
+    the network mid-suite, stalling fixture downloads (30+ min runs → ~102 s).
+  - E2E/ComposerStore suites pin `planMode`/`autoApprove*` UserDefaults keys
+    per-test (save/restore in setUp/tearDown) so a developer's real
+    preferences can't leak into the test process.
+  - Checkpoint-undo suite re-enables manual approvals locally, exercising the
+    real approval path.
 
-## 3. Live verification carried over (v0.5.0 audit, still valid)
+## 3. Live verification carried over (v0.6.0 audit, still valid)
 
 - **Local API server E2E with a real model**: Qwen3 1.7B 4-bit (968 MB)
   served via `lf serve --model`; `/v1/models`, non-streaming + SSE
@@ -74,7 +76,7 @@ migration) → 265 (lattice logic + store: 36 new tests).
    Developer ID Application certificate at developer.apple.com. Then:
    hardened-runtime + timestamp codesign → `ditto` zip →
    `xcrun notarytool submit … --wait`.
-2. **Versioning**: 0.6.0 / build 3 in `project.yml` + `App/Info.plist`.
+2. **Versioning**: 0.7.0 / build 4 in `project.yml` + `App/Info.plist`.
 3. **Entitlements file**: still absent. Create for Developer ID + hardened
    runtime (MLX/Metal needs no JIT entitlement).
 
@@ -85,7 +87,8 @@ migration) → 265 (lattice logic + store: 36 new tests).
 5. **Local API server**: no Anthropic-format *streaming* parity for
    `tool_use` blocks (text-only), no per-request rate limiting.
 6. **Info.plist minimal**: no `NSHumanReadableCopyright`, no URL schemes.
-7. **MCP**: stdio transport only; no SSE/HTTP transport, no OAuth.
+7. **MCP**: stdio + HTTP transports now configurable, but no OAuth flow
+   execution yet.
 
 ### 4.3 Explicitly fine as-is
 - Ad-hoc signing for self-use ✅
@@ -96,21 +99,22 @@ migration) → 265 (lattice logic + store: 36 new tests).
 - Loopback-only server binding (127.0.0.1) ✅
 - Repo public at https://github.com/Mesutcydev/beet-code ✅
 
-## 5. Test coverage snapshot (what the 265 tests protect)
+## 5. Test coverage snapshot (what the 304 tests protect)
 
 AgentLoop + hooks (deny/rewrite + gate non-bypass) · tools/policy/git/
 workspace · BYOK providers + registry · tool parser · diagnostics parser ·
-diff engine · memory · persistence · repo index · smart downloader · memory
-advisor · end-to-end · reasoning folding · lattice engine · **Intent Lattice
-logic + store (36: availability, presets, validation, drafts, runs, cancel
-phase transitions)** · local API server (19) · MCP (8) · slash commands +
-AGENTS.md (12) · legacy migration · browser tool registration.
+diff engine · memory · persistence · repo index · smart downloader · parallel
+chunk planner · GGUF planner · memory advisor · end-to-end (incl.
+download-finalize-activate, paused-manifest-relaunch, checkpoint-undo) ·
+reasoning folding + stream display filter · intent/composer store pipeline ·
+local API server · MCP (config transport decode, tools, spawn failure) ·
+slash commands + AGENTS.md · legacy migration · browser tool registration.
 
 Known gaps to add before 1.0: idle-TTL unload timing test (needs clock
 control), MCP timeout path under a hanging server, DMG/signing automation,
 live-browser e2e (needs a UI-test harness).
 
-## 6. Release procedure (repeatable, v0.6)
+## 6. Release procedure (repeatable, v0.7)
 
 ```sh
 cd "new project/BeetCode"
@@ -119,7 +123,7 @@ xcodegen generate                        # after any file add/remove
 xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -configuration Release -destination 'platform=macOS' \
   -derivedDataPath .derived build
-# 1) Bump version in project.yml (info: properties) — currently 0.6.0 / 3
+# 1) Bump version in project.yml (info: properties) — currently 0.7.0 / 4
 # 2) Sign & notarize (BLOCKED until new Developer ID cert, §4.1):
 #    codesign --force --options runtime --timestamp \
 #      --sign "Developer ID Application: <name>" \

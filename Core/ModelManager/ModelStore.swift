@@ -118,26 +118,46 @@ final class ModelStore: ObservableObject {
     /// downloads register as "not downloaded" so the UI offers a re-download
     /// instead of a cryptic MLX `keyNotFound` crash when the loader can't find
     /// `lm_head.weight` in a truncated checkpoint.
+    /// A downloaded model is loadable when its weight files are complete.
+    /// Two layouts:
+    /// - **MLX**: `config.json` + ≥1 `.safetensors` (the historical layout)
+    /// - **GGUF**: ≥1 `.gguf` file (llama.cpp; no config.json in the repo)
+    /// A leftover `.incomplete` file always means the download never finished.
     func hasConfiguration(_ model: InstalledModel) -> Bool {
         let dir = directory(for: model)
-        guard fileManager.fileExists(atPath: dir.appendingPathComponent("config.json").path) else {
-            return false
-        }
         guard let names = try? fileManager.contentsOfDirectory(atPath: dir.path) else {
             return false
         }
-        // Any leftover `.incomplete` file means the download never finished.
         if names.contains(where: { $0.hasSuffix(".incomplete") }) {
             return false
         }
-        // Weight files must actually exist: a directory holding only
-        // config/tokenizer files (interrupted before the weights arrived, or
-        // with the sidecar cleaned away) would otherwise crash the loader
-        // with `keyNotFound(lm_head.weight)`.
+        // GGUF first: a single-file format, complete iff the .gguf exists.
+        if names.contains(where: { $0.lowercased().hasSuffix(".gguf") }) {
+            return true
+        }
+        // MLX: config.json plus real weight files (a directory holding only
+        // config/tokenizer files — interrupted before the weights arrived —
+        // would otherwise crash the loader with `keyNotFound(lm_head.weight)`).
+        guard fileManager.fileExists(atPath: dir.appendingPathComponent("config.json").path) else {
+            return false
+        }
         let hasWeights = names.contains(where: {
             $0.hasSuffix(".safetensors") || $0.hasSuffix(".weight")
         })
         return hasWeights
+    }
+
+    /// Detects the weights format present on disk for an installed model.
+    /// GGUF directories carry a `.gguf` file; everything else is MLX.
+    func detectedFormat(_ model: InstalledModel) -> CatalogModel.Format {
+        let dir = directory(for: model)
+        guard let names = try? fileManager.contentsOfDirectory(atPath: dir.path) else {
+            return .mlx
+        }
+        if names.contains(where: { $0.lowercased().hasSuffix(".gguf") }) {
+            return .gguf
+        }
+        return .mlx
     }
 
     func isInstalled(catalogModel: CatalogModel) -> Bool {

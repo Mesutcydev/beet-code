@@ -113,11 +113,6 @@ final class ModelStore: ObservableObject {
         return modelsDirectory.appendingPathComponent(model.directoryName, isDirectory: true)
     }
 
-    /// A model is only loadable when its config.json is present AND every
-    /// weight file is complete (no `.incomplete` sidecars remain). Half-finished
-    /// downloads register as "not downloaded" so the UI offers a re-download
-    /// instead of a cryptic MLX `keyNotFound` crash when the loader can't find
-    /// `lm_head.weight` in a truncated checkpoint.
     /// A downloaded model is loadable when its weight files are complete.
     /// Two layouts:
     /// - **MLX**: `config.json` + ≥1 `.safetensors` (the historical layout)
@@ -128,6 +123,13 @@ final class ModelStore: ObservableObject {
         guard let names = try? fileManager.contentsOfDirectory(atPath: dir.path) else {
             return false
         }
+        return Self.isCompleteSnapshot(dirNames: names)
+    }
+
+    /// Shared completeness check for `hasConfiguration` and `scanFromDisk` —
+    /// the two must agree or a model shows as installed in one place and as
+    /// "Download" in another.
+    nonisolated static func isCompleteSnapshot(dirNames names: [String]) -> Bool {
         if names.contains(where: { $0.hasSuffix(".incomplete") }) {
             return false
         }
@@ -138,13 +140,10 @@ final class ModelStore: ObservableObject {
         // MLX: config.json plus real weight files (a directory holding only
         // config/tokenizer files — interrupted before the weights arrived —
         // would otherwise crash the loader with `keyNotFound(lm_head.weight)`).
-        guard fileManager.fileExists(atPath: dir.appendingPathComponent("config.json").path) else {
-            return false
-        }
-        let hasWeights = names.contains(where: {
+        guard names.contains("config.json") else { return false }
+        return names.contains(where: {
             $0.hasSuffix(".safetensors") || $0.hasSuffix(".weight")
         })
-        return hasWeights
     }
 
     /// Detects the weights format present on disk for an installed model.
@@ -213,10 +212,10 @@ final class ModelStore: ObservableObject {
         try? data.write(to: registryURL, options: .atomic)
     }
 
-    /// Pure directory scan, safe off the main actor. Only directories with a
-    /// complete snapshot (config.json + no `.incomplete` leftovers) count as
-    /// installed — half-downloaded models must surface as downloads, not as
-    /// loadable models.
+    /// Pure directory scan, safe off the main actor. Only directories holding
+    /// a complete snapshot (MLX or GGUF — the same check `hasConfiguration`
+    /// uses) count as installed; half-downloaded models must surface as
+    /// downloads, not as loadable models.
     nonisolated static func scanFromDisk(modelsDirectory baseURL: URL?) -> [InstalledModel] {
         guard let baseURL,
               let names = try? FileManager.default.contentsOfDirectory(atPath: baseURL.path)
@@ -225,14 +224,51 @@ final class ModelStore: ObservableObject {
             guard let catalog = ModelCatalog.all.first(where: { $0.id == name }) else { return nil }
             let dir = baseURL.appendingPathComponent(name, isDirectory: true)
             guard let dirNames = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
-                  dirNames.contains("config.json"),
-                  !dirNames.contains(where: { $0.hasSuffix(".incomplete") }),
-                  dirNames.contains(where: { $0.hasSuffix(".safetensors") })
+                  isCompleteSnapshot(dirNames: dirNames)
             else { return nil }
             let size = (try? sizeOfDirectory(dir)) ?? catalog.diskBytes
             return InstalledModel(
                 id: name, repo: catalog.repo, addedAt: Date(), sizeBytes: size,
                 basePath: baseURL.path)
+        }
+    }
+
+    /// Re-syncs the registry with what's actually on disk: discovers models
+    /// copied/imported outside the app (or registered by an interrupted
+    /// import) and drops entries whose directories vanished. Existing entries
+    /// keep their `addedAt`; discoveries in the managed folder get
+    /// `basePath: nil` so uninstall deletes their files like any download.
+    /// Called when the Model Manager appears — cheap (directory listings,
+    /// sizing off-main), and it keeps the UI honest after external changes.
+    func rescanFromDisk() {
+        let base = modelsBaseURL
+        let extras = Self.extraScanDirectories
+        Task.detached(priority: .utility) {
+            var scanned = Self.scanFromDisk(modelsDirectory: base)
+            for extra in extras {
+                scanned.append(contentsOf: Self.scanFromDisk(modelsDirectory: extra))
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                var changed = false
+                // Drop entries whose directories vanished or went incomplete.
+                let before = self.installed.count
+                self.installed.removeAll { model in
+                    !self.fileManager.fileExists(atPath: self.directory(for: model).path)
+                        || !self.hasConfiguration(model)
+                }
+                if self.installed.count != before { changed = true }
+                // Discover new directories.
+                for var found in scanned where !self.installed.contains(where: { $0.id == found.id }) {
+                    if found.basePath == base.path { found.basePath = nil }
+                    self.installed.append(found)
+                    changed = true
+                }
+                if changed {
+                    self.installed.sort { $0.addedAt > $1.addedAt }
+                    self.saveRegistry()
+                }
+            }
         }
     }
 

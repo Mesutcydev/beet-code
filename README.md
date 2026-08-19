@@ -36,6 +36,38 @@ no model weights or Metal needed):
 
 Manual acceptance checklist: [`docs/ACCEPTANCE-v0.2.md`](docs/ACCEPTANCE-v0.2.md).
 
+## Workspace Intelligence
+
+A deterministic, UI-independent intelligence layer (`Core/Intelligence/`) —
+no LLM in retrieval, every fact provenance-labeled:
+
+- **Workspace core**: move-safe workspace IDs, real git state, nested
+  `.gitignore`, SHA-256 content hashing, snapshot deltas (rename-aware).
+- **Symbol graph**: Swift parser → SQLite nodes/edges; edges form only on
+  unambiguous name resolution. SourceKit-LSP can *upgrade* provenance, never
+  invent symbols.
+- **Incremental indexing**: delta-driven updates, FSEvents watching,
+  invalidation journal; 1,000-file repo indexes in ~1.8 s, updates in ~0.1 s.
+- **Context compiler**: budgeted `ContextPacket` (capsule ≤ 800 tokens,
+  per-section caps) with per-item *why / confidence / freshness / cost*.
+- **Knowledge**: evidence-gated durable knowledge with secret + injection
+  scanning, conflict detection, and hash-based staleness.
+- **Sessions**: branch-scoped working state and deterministic handoff
+  packets.
+- **Impact & claims**: graph-derived impact reports and structural claim
+  verification (`callExists`, `testCoversSymbol`, …) with evidence.
+- **Framework semantics**: SwiftUI/SwiftData entity detection (screens,
+  providers, models, permissions, entitlements, endpoints…).
+- **Surfaces**: in-app Context Inspector (status bar pill), `lf intel …`
+  CLI, a 12-tool MCP server (`lf intel serve-mcp`), and the
+  `WorkspaceIntelligence` Swift facade.
+
+Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
+[`CONTEXT_COMPILER.md`](docs/CONTEXT_COMPILER.md) ·
+[`KNOWLEDGE_MODEL.md`](docs/KNOWLEDGE_MODEL.md) ·
+[`SDK.md`](docs/SDK.md) · [`BENCHMARKS.md`](docs/BENCHMARKS.md) ·
+[`SECURITY.md`](docs/SECURITY.md)
+
 ## v0.3 — BYOK, simulator, memory, reasoning
 
 - **BYOK remote engines**: OpenAI, DeepSeek, LongCat, Alibaba DashScope,

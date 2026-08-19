@@ -9,6 +9,14 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
         case gguf
     }
 
+    /// What the model is FOR. Chat models are loadable as the agent's engine;
+    /// vision models are sidecars the app uses automatically to describe
+    /// image attachments (never loadable as the chat engine).
+    enum Role: String, Codable, Sendable {
+        case chat
+        case vision
+    }
+
     var id: String
     var repo: String
     var displayName: String
@@ -23,6 +31,47 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
     /// Weights format — decides which engine runs it. MLX safetensors run
     /// in-process; GGUF runs through llama.cpp's `llama-server`.
     var format: Format = .mlx
+    var role: Role = .chat
+
+    /// Tolerant decoding: catalog files written by older builds lack
+    /// `format`/`role` — fill defaults instead of dropping the file.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        repo = try c.decode(String.self, forKey: .repo)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        family = try c.decode(String.self, forKey: .family)
+        parameters = try c.decode(String.self, forKey: .parameters)
+        quantization = try c.decode(String.self, forKey: .quantization)
+        diskBytes = try c.decode(Int64.self, forKey: .diskBytes)
+        contextWindow = try c.decode(Int.self, forKey: .contextWindow)
+        minRAMGB = try c.decode(Int.self, forKey: .minRAMGB)
+        recommendedRAMGB = try c.decode(Int.self, forKey: .recommendedRAMGB)
+        notes = try c.decode(String.self, forKey: .notes)
+        format = try c.decodeIfPresent(Format.self, forKey: .format) ?? .mlx
+        role = try c.decodeIfPresent(Role.self, forKey: .role) ?? .chat
+    }
+
+    init(
+        id: String, repo: String, displayName: String, family: String,
+        parameters: String, quantization: String, diskBytes: Int64,
+        contextWindow: Int, minRAMGB: Int, recommendedRAMGB: Int,
+        notes: String, format: Format = .mlx, role: Role = .chat
+    ) {
+        self.id = id
+        self.repo = repo
+        self.displayName = displayName
+        self.family = family
+        self.parameters = parameters
+        self.quantization = quantization
+        self.diskBytes = diskBytes
+        self.contextWindow = contextWindow
+        self.minRAMGB = minRAMGB
+        self.recommendedRAMGB = recommendedRAMGB
+        self.notes = notes
+        self.format = format
+        self.role = role
+    }
 
     var subtitle: String {
         "\(parameters) · \(quantization) · ~\(ByteFormatter.bytes(diskBytes))"
@@ -151,6 +200,36 @@ enum ModelCatalog {
             recommendedRAMGB: 16,
             notes: "GGUF variant of the Qwen3 8B generalist. Runs via llama-server.",
             format: .gguf),
+
+        // Vision sidecars (SmolVLM2, MLX VLM) — never loadable as the chat
+        // engine; the app runs them automatically to describe image
+        // attachments and simulator screenshots.
+        CatalogModel(
+            id: "smolvlm2-500m-mlx",
+            repo: "mlx-community/SmolVLM2-500M-Video-Instruct-mlx",
+            displayName: "SmolVLM2 500M",
+            family: "SmolVLM2",
+            parameters: "500M",
+            quantization: "bf16",
+            diskBytes: 1_020_000_000,
+            contextWindow: 16_384,
+            minRAMGB: 4,
+            recommendedRAMGB: 6,
+            notes: "Tiny vision sidecar. Describes screenshots and image attachments alongside any chat model.",
+            role: .vision),
+        CatalogModel(
+            id: "smolvlm2-2.2b-mlx",
+            repo: "mlx-community/SmolVLM2-2.2B-Instruct-mlx",
+            displayName: "SmolVLM2 2.2B",
+            family: "SmolVLM2",
+            parameters: "2.2B",
+            quantization: "bf16",
+            diskBytes: 4_500_000_000,
+            contextWindow: 16_384,
+            minRAMGB: 8,
+            recommendedRAMGB: 12,
+            notes: "Stronger vision sidecar — better UI/document reading. Needs real headroom next to a chat model.",
+            role: .vision),
     ]
 
     private static var userCatalogURL: URL {

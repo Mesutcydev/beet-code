@@ -1,24 +1,93 @@
 import Foundation
 
-/// Vision support (v0.3):
-/// - `VisionProvider` abstracts image understanding.
-/// - BYOK providers with `supportsVision` (OpenAI, Gemini, OpenRouter)
-///   implement it over their chat-completions APIs with image parts.
-/// - A local SmolVLM engine can be plugged in behind the same protocol once
-///   mlx-swift-lm upstreams VLM support (tracked in mlx-swift-examples PR
-///   #206); the tool interface will not change.
+/// Vision support:
+/// - Local first: an installed SmolVLM2 sidecar (catalog role `.vision`)
+///   runs in-process via `VisionEngine` — works fully offline.
+/// - BYOK fallback: providers with `supportsVision` (OpenAI, Gemini,
+///   OpenRouter) describe the image over their chat-completions APIs.
+/// - `VisionProvider` abstracts image understanding for the composer
+///   attachment flow, the `describe_image` tool, and simulator screenshots.
 enum VisionProvider {
 
+    /// Everything the engine needs to run a local vision describe.
+    struct LocalResolution: Sendable {
+        let model: CatalogModel
+        let directory: URL
+        let diskBytes: Int64
+    }
+
+    /// The installed local vision model to use, if any. Prefers the larger
+    /// (higher-quality) sidecar when several are downloaded. MainActor hop:
+    /// ModelStore is main-isolated.
+    static func resolveLocal() async -> LocalResolution? {
+        await MainActor.run {
+            let store = ModelStore.shared
+            return pickVisionModel(
+                from: ModelCatalog.all,
+                isInstalled: { store.installedModel(id: $0) != nil })
+                .flatMap { model in
+                    store.installedModel(id: model.id).map {
+                        LocalResolution(
+                            model: model,
+                            directory: store.directory(for: $0),
+                            diskBytes: $0.sizeBytes)
+                    }
+                }
+        }
+    }
+
+    /// Pure picker: vision-role catalog entries, largest first, first one
+    /// that is installed. Extracted for hermetic tests.
+    static func pickVisionModel(
+        from catalog: [CatalogModel],
+        isInstalled: (String) -> Bool
+    ) -> CatalogModel? {
+        catalog
+            .filter { $0.role == .vision }
+            .sorted { $0.diskBytes > $1.diskBytes }
+            .first { isInstalled($0.id) }
+    }
+
+    /// Test seam: replaces local resolution (the real one reads the
+    /// main-isolated ModelStore and the host's Downloads).
+    nonisolated(unsafe) static var localResolver:
+        @Sendable () async -> LocalResolution? = { await resolveLocal() }
+
+    /// Test seam: replaces the local describe (the hermetic suite never
+    /// touches MLX).
+    nonisolated(unsafe) static var localDescribe:
+        @Sendable (LocalResolution, URL, String) async throws -> String = { resolution, url, prompt in
+            try await VisionEngine.shared.describe(
+                imageAt: url, prompt: prompt,
+                model: resolution.model, directory: resolution.directory,
+                diskBytes: resolution.diskBytes)
+        }
+
     static var isAvailable: Bool {
+        get async {
+            if await localResolver() != nil { return true }
+            return byokAvailable
+        }
+    }
+
+    private static var byokAvailable: Bool {
         for provider in LLMProvider.allCases where provider.supportsVision {
             if APIKeyStore.key(provider: provider) != nil { return true }
         }
         return false
     }
 
-    /// Describes an image at `fileURL` using the first configured
-    /// vision-capable BYOK provider.
+    /// Describes an image at `fileURL`: local SmolVLM2 sidecar first,
+    /// falling back to the first configured vision-capable BYOK provider.
     static func describe(imageAt fileURL: URL, prompt: String) async throws -> String {
+        if let resolution = await localResolver() {
+            do {
+                return try await localDescribe(resolution, fileURL, prompt)
+            } catch {
+                Log.engine.error(
+                    "Local vision describe failed, falling back to BYOK: \(String(describing: error), privacy: .public)")
+            }
+        }
         for provider in LLMProvider.allCases where provider.supportsVision {
             guard let apiKey = APIKeyStore.key(provider: provider) else { continue }
             let model = AppPreferencesStore.shared.current.remoteModel[provider.rawValue]
@@ -45,7 +114,7 @@ enum VisionProvider {
         var errorDescription: String? {
             switch self {
             case .noProvider:
-                return "No vision-capable BYOK provider configured (OpenAI, Gemini, or OpenRouter with an API key in Settings)."
+                return "No vision model available. Download SmolVLM2 in the Model Manager (⇧⌘M) or add a vision-capable API key (OpenAI, Gemini, OpenRouter) in Settings."
             case .badImage:
                 return "The image could not be read or encoded."
             }
@@ -170,12 +239,12 @@ enum VisionProvider {
     }
 }
 
-/// Agent tool: describe an image inside the workspace using a vision-capable
-/// BYOK provider. This is the seam where a local SmolVLM engine will plug in
-/// once mlx-swift-lm ships VLM support.
+/// Agent tool: describe an image inside the workspace. Uses the local
+/// SmolVLM2 sidecar when one is downloaded, otherwise a vision-capable BYOK
+/// provider (OpenAI, Gemini, OpenRouter).
 struct DescribeImageTool: AgentTool {
     let name = "describe_image"
-    let summary = "Describe an image file using a vision-capable BYOK provider (OpenAI, Gemini, OpenRouter)"
+    let summary = "Describe an image file using the local SmolVLM2 vision model or a vision-capable BYOK provider"
     let risk = ToolRisk.read
 
     let schemaText = """

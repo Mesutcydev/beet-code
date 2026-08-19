@@ -94,112 +94,49 @@ private struct SidebarView: View {
     /// Shown when a picked session can't be restored (e.g. its project
     /// folder no longer exists) instead of the old silent no-op.
     @State private var sessionRestoreError: String?
+    /// Which history the list shows: BeetCode's own sessions or chats
+    /// imported from Claude / Codex / Cursor.
+    @State private var sidebarTab: HistoryTab = .sessions
+    @State private var isImporting = false
+    @State private var importSummary: String?
+    @State private var hasAutoImported = false
+
+    private enum HistoryTab {
+        case sessions, imported
+    }
 
     var body: some View {
-        List(selection: $selectedSessionID) {
-            Section("Workspace") {
-                Button {
-                    chooseWorkspace()
-                } label: {
-                    Label(
-                        sessions.workspaceURL?.lastPathComponent ?? "Open Project Folder…",
-                        systemImage: sessions.workspaceURL == nil
-                            ? "folder.badge.plus" : "folder.fill")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            Picker("History", selection: $sidebarTab) {
+                Text("Sessions").tag(HistoryTab.sessions)
+                Text("Imported").tag(HistoryTab.imported)
             }
-            Section("Repository") {
-                if sessions.workspaceURL == nil {
-                    Text("Open a workspace to use git controls.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+
+            List(selection: $selectedSessionID) {
+                if sidebarTab == .sessions {
+                    ownSections
                 } else {
-                    HStack(spacing: 8) {
-                        Button("Status") { sessions.gitStatus() }
-                            .controlSize(.small)
-                        Button("Diff") { sessions.gitDiff() }
-                            .controlSize(.small)
-                        Button("Undo") { sessions.undoLastCheckpoint() }
-                            .controlSize(.small)
-                    }
-                    if let output = sessions.gitOutput {
-                        ScrollView {
-                            Text(output)
-                                .font(.caption2.monospaced())
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxHeight: 140)
-                        .padding(6)
-                        .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                    }
-                    Text("Undo restores the latest agent checkpoint — git index state is preserved.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    importedSections
                 }
             }
-            Section("Active Model") {
-                ActiveModelRow()
-            }
-            Section("Recent Sessions") {
-                // Keychain re-authorization (ad-hoc re-signed builds): one
-                // visible, bounded unlock instead of a silent hang.
-                if needsKeychainUnlock {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Session history is locked.")
-                            .font(.caption)
-                            .foregroundStyle(Theme.warning)
-                        Button("Unlock") {
-                            if SessionCrypto.unlockInteractively() {
-                                needsKeychainUnlock = false
-                                Task { await reloadSessions() }
-                            }
-                        }
-                        .controlSize(.small)
-                    }
-                }
-                let recent = recentSessions.prefix(10)
-                if recent.isEmpty, !needsKeychainUnlock {
-                    Text("Sessions appear here once you run a task.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(recent)) { record in
-                        // Tagged row + List(selection:) = real selectable rows.
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(record.title)
-                                .font(.callout)
-                                .lineLimit(1)
-                            // Distinguishes repeated titles: message count
-                            // + relative time, monospaced digits so rows
-                            // align and scan as a real list.
-                            Text("\(record.messages.count) msgs · \(record.updatedAt, style: .relative)")
-                                .font(.caption2)
-                                .monospacedDigit()
-                                .foregroundStyle(.tertiary)
-                        }
-                        .tag(record.id)
-                        // Missing workspace: row stays visible (the session
-                        // exists) but is marked and explained on click.
-                        .disabled(!SessionStore.shared.validateWorkspaceBinding(record))
-                        .help(SessionStore.shared.validateWorkspaceBinding(record)
-                              ? "Restore this session"
-                              : "Project folder missing: \(record.workspacePath)")
-                    }
-                }
-                if let restoreError = sessionRestoreError {
-                    Label(restoreError, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(Theme.warning)
-                        .lineLimit(3)
-                }
-            }
+            .listStyle(.sidebar)
         }
-        .listStyle(.sidebar)
         // Selection IS the restore: picking a tagged row switches to that
         // session (and reports why when it can't — no more silent no-ops).
         .onChange(of: selectedSessionID) { _, newValue in
             selectSession(newValue)
+        }
+        // First visit to the Imported tab runs one automatic import; later
+        // visits are free until the user presses re-import.
+        .onChange(of: sidebarTab) { _, newTab in
+            if newTab == .imported && !hasAutoImported {
+                hasAutoImported = true
+                runImport()
+            }
         }
         // Off-main load + reload whenever a session is saved (controller
         // publishes transcript/session changes through objectWillChange).
@@ -214,12 +151,193 @@ private struct SidebarView: View {
         }
     }
 
+    // MARK: Own sessions
+
+    @ViewBuilder
+    private var ownSections: some View {
+        Section("Workspace") {
+            Button {
+                chooseWorkspace()
+            } label: {
+                Label(
+                    sessions.workspaceURL?.lastPathComponent ?? "Open Project Folder…",
+                    systemImage: sessions.workspaceURL == nil
+                        ? "folder.badge.plus" : "folder.fill")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        Section("Repository") {
+            if sessions.workspaceURL == nil {
+                Text("Open a workspace to use git controls.")
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondary)
+            } else {
+                HStack(spacing: 8) {
+                    Button("Status") { sessions.gitStatus() }
+                        .controlSize(.small)
+                    Button("Diff") { sessions.gitDiff() }
+                        .controlSize(.small)
+                    Button("Undo") { sessions.undoLastCheckpoint() }
+                        .controlSize(.small)
+                }
+                if let output = sessions.gitOutput {
+                    ScrollView {
+                        Text(output)
+                            .font(.caption2.monospaced())
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 140)
+                    .padding(6)
+                    .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                }
+                Text("Undo restores the latest agent checkpoint — git index state is preserved.")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+        }
+        Section("Active Model") {
+            ActiveModelRow()
+        }
+        Section("Recent Sessions") {
+            // Keychain re-authorization (ad-hoc re-signed builds): one
+            // visible, bounded unlock instead of a silent hang.
+            if needsKeychainUnlock {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Session history is locked.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.warning)
+                    Button("Unlock") {
+                        if SessionCrypto.unlockInteractively() {
+                            needsKeychainUnlock = false
+                            Task { await reloadSessions() }
+                        }
+                    }
+                    .controlSize(.small)
+                }
+            }
+            let recent = recentSessions.filter { $0.source == .app }.prefix(10)
+            if recent.isEmpty, !needsKeychainUnlock {
+                Text("Sessions appear here once you run a task.")
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondary)
+            } else {
+                ForEach(Array(recent)) { record in
+                    sessionRow(record, subtitle: nil)
+                }
+            }
+            if let restoreError = sessionRestoreError {
+                Label(restoreError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.warning)
+                    .lineLimit(3)
+            }
+        }
+    }
+
+    // MARK: Imported history
+
+    @ViewBuilder
+    private var importedSections: some View {
+        Section {
+            HStack(spacing: Spacing.sm) {
+                Button(isImporting ? "Importing…" : "Import Chat History") {
+                    runImport()
+                }
+                .disabled(isImporting)
+                if isImporting {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            Text("Reads Claude (~/.claude), Codex (~/.codex) and Cursor workspace histories. Everything stays on this Mac — imported sessions are encrypted exactly like your own.")
+                .font(.caption2)
+                .foregroundStyle(Theme.textTertiary)
+            if let importSummary {
+                Text(importSummary)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        } header: {
+            Label("Import", systemImage: "square.and.arrow.down")
+        }
+
+        let imported = recentSessions.filter { $0.source != .app }
+        if imported.isEmpty {
+            Section {
+                Text("Nothing imported yet — run the import above.")
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        } else {
+            ForEach(SessionSource.allCases.filter { $0 != .app }, id: \.self) { source in
+                let group = imported.filter { $0.source == source }
+                if !group.isEmpty {
+                    Section {
+                        ForEach(group) { record in
+                            sessionRow(record, subtitle: source.label)
+                        }
+                    } header: {
+                        Label("\(source.label) · \(group.count)", systemImage: source.systemImage)
+                    }
+                }
+            }
+        }
+    }
+
+    /// One session row — tagged for List selection, marked and explained
+    /// when its project folder is gone. `subtitle` prefixes the metadata
+    /// line (used to badge the import source).
+    private func sessionRow(_ record: SessionRecord, subtitle: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(record.title)
+                .font(.callout)
+                .lineLimit(1)
+            // Distinguishes repeated titles: message count + relative time,
+            // monospaced digits so rows align and scan as a real list.
+            Text("\(subtitle.map { $0 + " · " } ?? "")\(record.messages.count) msgs · \(record.updatedAt, style: .relative)")
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(Theme.textTertiary)
+        }
+        .tag(record.id)
+        // Missing workspace: row stays visible (the session exists) but is
+        // marked and explained on click.
+        .disabled(!SessionStore.shared.validateWorkspaceBinding(record))
+        .help(SessionStore.shared.validateWorkspaceBinding(record)
+              ? "Restore this session"
+              : "Project folder missing: \(record.workspacePath)")
+    }
+
+    // MARK: Import
+
+    private func runImport() {
+        guard !isImporting else { return }
+        isImporting = true
+        importSummary = nil
+        Task.detached(priority: .utility) {
+            let report = ExternalHistoryImporter.importAll()
+            await MainActor.run {
+                isImporting = false
+                if report.imported == 0 && report.upToDate == 0 && report.skipped == 0 {
+                    importSummary = "No Claude, Codex or Cursor histories found on this Mac."
+                } else {
+                    var parts: [String] = []
+                    if report.imported > 0 { parts.append("\(report.imported) imported") }
+                    if report.upToDate > 0 { parts.append("\(report.upToDate) up to date") }
+                    importSummary = parts.joined(separator: " · ")
+                }
+                Task { await reloadSessions() }
+            }
+        }
+    }
+
     @State private var lastSessionReload = Date.distantPast
     @State private var needsKeychainUnlock = false
 
     private func reloadSessions() async {
+        // More than the visible ten: the Imported tab browses the same cache.
         let loaded = await Task.detached(priority: .utility) {
-            Array(SessionStore.shared.loadAll().prefix(10))
+            Array(SessionStore.shared.loadAll().prefix(60))
         }.value
         needsKeychainUnlock = SessionCrypto.needsInteractiveUnlock
         recentSessions = loaded

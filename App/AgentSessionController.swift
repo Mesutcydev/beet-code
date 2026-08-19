@@ -107,7 +107,7 @@ final class AgentSessionController: ObservableObject {
 
         // Prepared turn: the transcript shows the user's clean message; the
         // MODEL receives bounded attachment context. The two never mix.
-        let modelText = Self.expand(attachments: attachments, message: message)
+        let modelText = await Self.expand(attachments: attachments, message: message)
         let displayText = attachments.isEmpty ? message : message + "  ·  " + Self.attachmentSummary(attachments)
         transcript.append(TranscriptItem(id: UUID(), kind: .user(displayText)))
 
@@ -678,8 +678,10 @@ final class AgentSessionController: ObservableObject {
     static let defaultTools: [any AgentTool] = [
         ReadFileTool(),
         WriteFileTool(),
+        MoveFileTool(),
         ListDirectoryTool(),
         SearchTool(),
+        FindFilesTool(),
         ApplyPatchTool(),
         RunCommandTool(),
         BuildDiagnosticsTool(),
@@ -714,15 +716,20 @@ final class AgentSessionController: ObservableObject {
         else { return nil }
         return record
     }
-    private static func expand(attachments: [ComposerAttachment], message: String) -> String {
+    /// Async: local VLM first load can take seconds (weights page-in), and a
+    /// BYOK describe is a network call — a synchronous bridge with a fixed
+    /// timeout here used to misreport slow-but-working vision as missing.
+    private static func expand(attachments: [ComposerAttachment], message: String) async -> String {
         guard !attachments.isEmpty else { return message }
         var blocks: [String] = []
         for attachment in attachments {
             if attachment.isImage {
-                if let description = Self.describeImage(attachment) {
+                if let description = try? await VisionProvider.describe(
+                    imageAt: attachment.url,
+                    prompt: "Describe this image concisely for a coding agent.") {
                     blocks.append("Image \(attachment.name): \(description)")
                 } else {
-                    blocks.append("Image attached: \(attachment.name) (\(attachment.url.path)) — no vision provider configured to describe it.")
+                    blocks.append("Image attached: \(attachment.name) (\(attachment.url.path)) — no vision model available to describe it (download SmolVLM2 in the Model Manager or add a vision API key in Settings).")
                 }
             } else if let data = try? Data(contentsOf: attachment.url),
                       data.count < 16_384 {
@@ -744,37 +751,4 @@ final class AgentSessionController: ObservableObject {
         return "\(attachments.count) attachments"
     }
 
-    private static func describeImage(_ attachment: ComposerAttachment) -> String? {
-        // Synchronous bridge: the vision call is async; fetch it before
-        // send() builds the message. Detached so the main actor (blocked on
-        // the semaphore below) is never needed to finish the call.
-        let semaphore = DispatchSemaphore(value: 0)
-        let box = SendableBox<String?>(nil)
-        Task.detached {
-            do {
-                box.value = try await VisionProvider.describe(
-                    imageAt: attachment.url,
-                    prompt: "Describe this image concisely for a coding agent.")
-            } catch {
-                box.value = nil
-            }
-            semaphore.signal()
-        }
-        _ = semaphore.wait(timeout: .now() + 15)
-        return box.value
-    }
-
-}
-
-/// A tiny thread-safe box for bridging async results into sync code.
-private final class SendableBox<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: T
-
-    init(_ value: T) { storage = value }
-
-    var value: T {
-        get { lock.lock(); defer { lock.unlock() }; return storage }
-        set { lock.lock(); storage = newValue; lock.unlock() }
-    }
 }

@@ -55,6 +55,12 @@ public protocol LLMEngine: AnyObject, Sendable {
     /// `MemoryAdvisor` before any weights are touched.
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws
 
+    /// Context-window-aware load. A protocol REQUIREMENT (with the default
+    /// below) so calls through `any LLMEngine` dispatch to the conformer's
+    /// witness — GGUFEngine's llama-server needs the size as a launch flag,
+    /// and an extension-only member would be statically bypassed.
+    func load(directory: URL, modelID: String, diskBytes: Int64, contextSize: Int?) async throws
+
     func unload() async
 
     func reset() async
@@ -69,10 +75,17 @@ public protocol LLMEngine: AnyObject, Sendable {
     func cancelGeneration() async
 }
 
-extension LLMEngine {
+public extension LLMEngine {
     /// Memory-pressure response: free caches. Default: nothing (engines that
     /// maintain caches override this).
     func clearCaches() async {}
+
+    /// Context-window-aware load. Engines that size context from the model
+    /// itself (MLX reads the checkpoint config) ignore the hint; GGUF's
+    /// llama-server needs it as a launch flag.
+    func load(directory: URL, modelID: String, diskBytes: Int64, contextSize: Int?) async throws {
+        try await load(directory: directory, modelID: modelID, diskBytes: diskBytes)
+    }
 
     /// Emergency unload used by the memory-pressure coordinator. Returns true
     /// when a model was actually resident and got dumped.

@@ -78,10 +78,10 @@ struct ChatView: View {
                     }
                     Color.clear.frame(height: 8).id("bottom")
                 }
-                // Centered content column: on wide windows the transcript
-                // never stretches edge-to-edge (Cursor/ChatGPT both keep a
-                // readable measure of ~760pt centered).
-                .frame(maxWidth: 760, alignment: .leading)
+                // Centered content column: readable on ultra-wide windows,
+                // but wide enough that ordinary windows aren't left with
+                // dead space on both sides of the conversation.
+                .frame(maxWidth: ContentColumn.maxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
@@ -117,7 +117,7 @@ struct ChatView: View {
                             // suggestion chips — no floating material.
                             .background(Theme.surface, in: Capsule())
                             .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
-                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                            .shadow(color: Theme.cardShadow, radius: 6, y: 2)
                     }
                     .buttonStyle(.borderless)
                     .padding(12)
@@ -127,21 +127,24 @@ struct ChatView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            // Distinct glyph + tint per engine state: idle/setup reads as
-            // "get started" (hammer, accent); a failed load reads as a
-            // warning (triangle, danger) so the two are never confused.
+        VStack(spacing: Spacing.lg) {
+            Spacer(minLength: 0)
+
+            // A proper identity tile instead of a bare SF Symbol: gradient
+            // rounded square + white glyph + soft glow (danger variant when
+            // the last load failed, so the two states are never confused).
             if case .failed = appState.enginePhase {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 52))
-                    .foregroundStyle(Theme.danger.opacity(0.9))
-                    .shadow(color: Theme.danger.opacity(0.30), radius: 18, y: 4)
+                emptyStateTile(
+                    systemImage: "exclamationmark.triangle.fill",
+                    fill: AnyShapeStyle(Theme.danger),
+                    glow: Theme.danger)
             } else {
-                Image(systemName: "hammer.circle.fill")
-                    .font(.system(size: 52))
-                    .foregroundStyle(Theme.accentGradient)
-                    .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 4)
+                emptyStateTile(
+                    systemImage: "hammer.fill",
+                    fill: AnyShapeStyle(Theme.accentGradient),
+                    glow: Theme.accent)
             }
+
             Text(emptyTitle)
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.textPrimary)
@@ -149,7 +152,7 @@ struct ChatView: View {
                 .font(.callout)
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+                .frame(maxWidth: 560)
 
             // ChatGPT-style quick prompts: one tap drops a ready-made task
             // into the composer. Only offered when a model can actually run
@@ -161,9 +164,23 @@ struct ChatView: View {
                 }
                 .padding(.top, 6)
             }
+
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 80)
+    }
+
+    private func emptyStateTile(
+        systemImage: String, fill: AnyShapeStyle, glow: Color
+    ) -> some View {
+        RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+            .fill(fill)
+            .frame(width: 64, height: 64)
+            .overlay(
+                Image(systemName: systemImage)
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.white))
+            .shadow(color: glow.opacity(0.35), radius: 18, y: 6)
     }
 
     /// Label (chip text) + prompt (what actually goes in the composer).
@@ -400,7 +417,9 @@ struct AssistantAvatar: View {
 
 /// Inline-markdown text with a plain-text fallback. Markdown renders code,
 /// bold, and links like ChatGPT; if parsing fails (raw identifiers with
-/// stray underscores), plain text shows — never a blank bubble.
+/// stray underscores), plain text shows — never a blank bubble. Set at
+/// `.body` (not callout): the transcript is the app's primary reading
+/// surface, so prose gets the full reading size.
 struct MarkdownText: View {
     let text: String
 
@@ -409,11 +428,11 @@ struct MarkdownText: View {
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
             Text(attributed)
-                .font(.callout)
+                .font(.body)
                 .foregroundStyle(Theme.textPrimary)
         } else {
             Text(text)
-                .font(.callout)
+                .font(.body)
                 .foregroundStyle(Theme.textPrimary)
         }
     }
@@ -661,7 +680,7 @@ private struct DiagnosticsCard: View {
                                     .foregroundStyle(severityColor(diagnostic.severity))
                                 Text(location(diagnostic))
                                     .font(.caption2.monospaced())
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(Theme.textTertiary)
                                 Text(diagnostic.message)
                                     .font(.caption)
                             }
@@ -673,11 +692,11 @@ private struct DiagnosticsCard: View {
                 HStack {
                     Text("\(errors.count) errors, \(all.filter { $0.severity == .warning }.count) warnings, \(all.filter { $0.severity == .note }.count) notes")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                     Spacer()
                     Text("Raw output")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                 }
             }
         }
@@ -706,6 +725,41 @@ private struct DiagnosticsCard: View {
     }
 }
 
+/// Shared chrome for the transcript's interactive cards (approval, question,
+/// plan): a tinted icon tile + semibold title + optional monospaced detail
+/// chip — the same header language as Settings and the Model Manager.
+private struct TranscriptCardHeader: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    var detail: String? = nil
+
+    var body: some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(Theme.washStrong(tint),
+                            in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            Text(title)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(Theme.textPrimary)
+            if let detail {
+                Text(detail)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.surfaceInset, in: Capsule())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+    }
+}
+
 private struct ApprovalCard: View {
     let request: ApprovalRequest
     let onDecision: (Bool, Bool) -> Void
@@ -718,55 +772,71 @@ private struct ApprovalCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Approval needed", systemImage: "hand.raised.fill")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            TranscriptCardHeader(
+                title: "Approval needed",
+                systemImage: "hand.raised.fill",
+                tint: Theme.warning,
+                detail: request.invocation.name)
 
             switch request.preview {
             case .command(let command):
-                Text("Run command:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(command)
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Run command")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                    Text(command)
+                        .font(.caption.monospaced())
+                        .padding(Spacing.sm)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .textSelection(.enabled)
+                }
+            case .diff(let diff, let path):
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Edit \(path)")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                    DiffPreview(diff: diff)
+                }
+            case .none:
+                Text(request.invocation.summary)
                     .font(.caption.monospaced())
-                    .padding(8)
+                    .padding(Spacing.sm)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
                     .textSelection(.enabled)
-            case .diff(let diff, let path):
-                Text("Edit \(path):")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                DiffPreview(diff: diff)
-            case .none:
-                Text(request.invocation.summary)
-                    .font(.callout.monospaced())
             }
 
-            HStack {
-                // Approve is a deliberate act: Command-Return, never bare
-                // Return (which could fire while typing elsewhere).
-                Button("Approve ⌘↩") { onDecision(true, false) }
-                    .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
-                Button("Decline", role: .destructive) { onDecision(false, false) }
-                Button {
-                    onDecision(true, true)
-                } label: {
-                    Label(isCommand ? "Always Approve Safe Commands" : "Always Approve Edits",
-                          systemImage: "checkmark.seal")
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                HStack(spacing: Spacing.sm) {
+                    // Approve is a deliberate act: Command-Return, never bare
+                    // Return (which could fire while typing elsewhere).
+                    Button("Approve ⌘↩") { onDecision(true, false) }
+                        .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                    Button("Decline", role: .destructive) { onDecision(false, false) }
+                        .buttonStyle(.bordered)
+                    Button {
+                        onDecision(true, true)
+                    } label: {
+                        Label(isCommand ? "Always approve safe commands" : "Always approve edits",
+                              systemImage: "checkmark.seal")
+                    }
+                    .buttonStyle(.bordered)
+                    .help(isCommand
+                        ? "Approve this and auto-approve policy-safe commands for this run and future runs"
+                        : "Approve this and auto-approve file edits for this run and future runs")
                 }
-                .help(isCommand
-                    ? "Approve this and auto-approve policy-safe commands for this run and future runs"
-                    : "Approve this and auto-approve file edits for this run and future runs")
-                Spacer()
                 if request.invocation.name == "run_command" {
                     Text("The command runs in the workspace after approval — never silently.")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
         }
-        .padding(14)
+        .padding(Spacing.lg)
         .lfWashCard(Theme.warning)
     }
 }
@@ -775,20 +845,29 @@ private struct DiffPreview: View {
     let diff: DiffEngine.Result
 
     var body: some View {
-        ScrollView {
-            Text(diff.unified)
-                .font(.caption.monospaced())
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .padding(8)
-                .overlay(alignment: .topLeading) {
-                    Text("+\(diff.addedCount) −\(diff.removedCount)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(4)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            // The +/− counts get their own header row — as an overlay they
+            // sat on top of the diff's first lines.
+            HStack(spacing: Spacing.xs) {
+                Text("+\(diff.addedCount)")
+                    .foregroundStyle(Theme.success)
+                Text("−\(diff.removedCount)")
+                    .foregroundStyle(Theme.danger)
+                Spacer()
+            }
+            .font(.caption2.monospaced().bold())
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, 5)
+            Divider().overlay(Theme.hairline)
+            ScrollView {
+                Text(diff.unified)
+                    .font(.caption.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(Spacing.sm)
+            }
+            .frame(maxHeight: 320)
         }
-        .frame(maxHeight: 320)
         .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
         .foregroundStyle(diff.isEmpty ? Theme.textSecondary : Theme.textPrimary)
     }
@@ -801,14 +880,18 @@ private struct QuestionCard: View {
     @State private var answer = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("The agent has a question", systemImage: "questionmark.circle.fill")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            TranscriptCardHeader(
+                title: "The agent has a question",
+                systemImage: "questionmark.circle.fill",
+                tint: Theme.info)
             Text(question)
                 .font(.callout)
+                .foregroundStyle(Theme.textPrimary)
                 .textSelection(.enabled)
-            HStack {
+            HStack(spacing: Spacing.sm) {
                 TextField("Your answer…", text: $answer)
+                    .textFieldStyle(.roundedBorder)
                     .onSubmit {
                         guard !answer.isEmpty else { return }
                         onAnswer(answer)
@@ -819,10 +902,12 @@ private struct QuestionCard: View {
                     onAnswer(answer)
                     answer = ""
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
                 .disabled(answer.isEmpty)
             }
         }
-        .padding(14)
+        .padding(Spacing.lg)
         .lfWashCard(Theme.info)
     }
 }
@@ -831,31 +916,57 @@ private struct FinishBanner: View {
     let reason: AgentFinish
 
     var body: some View {
-        Group {
-            switch reason {
-            case .completed:
-                Label("Task complete", systemImage: "checkmark.seal.fill")
-                    .foregroundStyle(Theme.success)
-            case .maxTurnsReached:
-                Label("Reached the turn limit", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Theme.warning)
-            case .declined:
-                Label("Stopped — action declined", systemImage: "hand.raised.fill")
-                    .foregroundStyle(Theme.warning)
-            case .cancelled:
-                Label("Stopped", systemImage: "stop.fill")
-                    .foregroundStyle(Theme.textSecondary)
-            case .engineError(let message):
-                VStack(alignment: .leading) {
-                    Label("Error", systemImage: "exclamationmark.triangle.fill")
+        HStack {
+            Spacer(minLength: 0)
+            content
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Simple outcomes render as a tinted status pill; an engine error gets
+    /// a rounded wash card so its detail message stays legible.
+    @ViewBuilder
+    private var content: some View {
+        switch reason {
+        case .completed:
+            pill("Task complete", systemImage: "checkmark.seal.fill", tint: Theme.success)
+        case .maxTurnsReached:
+            pill("Reached the turn limit", systemImage: "exclamationmark.triangle.fill", tint: Theme.warning)
+        case .declined:
+            pill("Stopped — action declined", systemImage: "hand.raised.fill", tint: Theme.warning)
+        case .cancelled:
+            pill("Stopped", systemImage: "stop.fill", tint: Theme.textSecondary)
+        case .engineError(let message):
+            HStack(alignment: .top, spacing: Spacing.sm) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Theme.danger)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Error")
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(Theme.danger)
-                    Text(message).font(.caption).foregroundStyle(Theme.textSecondary)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .frame(maxWidth: 520, alignment: .leading)
+            .background(Theme.wash(Theme.danger), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Theme.washBorder(Theme.danger), lineWidth: 1))
         }
-        .font(.callout.bold())
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.vertical, 4)
+    }
+
+    private func pill(_ title: String, systemImage: String, tint: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, 6)
+            .background(Theme.wash(tint), in: Capsule())
+            .overlay(Capsule().strokeBorder(Theme.washBorder(tint), lineWidth: 1))
     }
 }
 /// Live streaming assistant output: avatar-led (same identity as finished
@@ -929,20 +1040,25 @@ private struct PlanCard: View {
     @State private var feedback = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Plan — approve before any tool runs", systemImage: "list.bullet.clipboard.fill")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            TranscriptCardHeader(
+                title: "Plan — approve before any tool runs",
+                systemImage: "list.bullet.clipboard.fill",
+                tint: Theme.accent)
             Text(plan)
                 .font(.callout)
-                .padding(10)
+                .foregroundStyle(Theme.textPrimary)
+                .padding(Spacing.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                 .textSelection(.enabled)
-            HStack {
+            HStack(spacing: Spacing.sm) {
                 // Command-Return only: Return must submit revision feedback,
                 // never accidentally approve and execute.
                 Button("Approve & Execute ⌘↩") { onDecision(nil) }
                     .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                 TextField("Revise: feedback…", text: $feedback)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit {
@@ -953,10 +1069,11 @@ private struct PlanCard: View {
                     guard !feedback.isEmpty else { return }
                     onDecision(feedback)
                 }
+                .buttonStyle(.bordered)
                 .disabled(feedback.isEmpty)
             }
         }
-        .padding(14)
+        .padding(Spacing.lg)
         .lfWashCard(Theme.accent)
     }
 }

@@ -35,6 +35,7 @@ targets:
         products:
           - MLXLLM
           - MLXLMCommon
+          - MLXVLM
       - package: SwiftTransformers
         products:
           - Tokenizers
@@ -74,6 +75,7 @@ targets:
         products:
           - MLXLLM
           - MLXLMCommon
+          - MLXVLM
       - package: SwiftTransformers
         products:
           - Tokenizers

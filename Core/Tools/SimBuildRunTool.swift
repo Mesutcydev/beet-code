@@ -83,7 +83,7 @@ struct SimBuildRunTool: AgentTool {
 
         // 8. Inspect via the vision provider when available.
         var inspection = "(no vision provider configured — attach the screenshot manually or use describe_image)"
-        if VisionProvider.isAvailable, let data = try? Data(contentsOf: shotURL), data.count > 0 {
+        if await VisionProvider.isAvailable, let data = try? Data(contentsOf: shotURL), data.count > 0 {
             if let description = try? await VisionProvider.describe(
                 imageAt: shotURL,
                 prompt: "Describe this iOS app screen concisely: what is visible, what state is it in, any errors on screen?") {

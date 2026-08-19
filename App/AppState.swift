@@ -58,6 +58,11 @@ final class AppState: ObservableObject {
         LegacyMigration.runOnce()
 
         self.engine = engine
+        // The vision sidecar serializes its Metal work through the same gate
+        // as every resident LLM engine (one command buffer per process).
+        if let gate = engine.enginePool?.sharedGate {
+            VisionEngine.shared.configure(gate: gate)
+        }
         self.downloadManager = ModelDownloadManager(
             tokenProvider: { HFTokenStore.currentToken() },
             hub: hubOverride)
@@ -166,6 +171,9 @@ final class AppState: ObservableObject {
                 // race the resident model leaving memory.
                 await engine.cancelGeneration()
                 await self?.sessions.stopAndWait()
+                // The vision sidecar is the cheapest thing to drop first —
+                // it holds no conversation state and reloads on demand.
+                _ = await VisionEngine.shared.dumpIfResident()
                 let dumped = await engine.dumpIfResident()
                 if dumped {
                     MemoryAdvisor.notePressureDump()
@@ -222,6 +230,15 @@ final class AppState: ObservableObject {
 
     func activate(model: CatalogModel) async {
         clearStaleLoadError()
+        // Reentrancy guard: two rapid Load clicks (or a click while a load is
+        // paging in) must not race engine swaps — the second tap is ignored.
+        if case .loading = enginePhase { return }
+        // Vision sidecars are never loadable as the chat engine — they run
+        // automatically when an image needs describing.
+        guard model.role == .chat else {
+            enginePhase = .failed("\(model.displayName) is a vision sidecar — it runs automatically for image attachments. Load a chat model instead.")
+            return
+        }
         guard let installed = modelStore.installedModel(id: model.id) else {
             enginePhase = .failed("\(model.displayName) is not downloaded yet.")
             return
@@ -250,7 +267,7 @@ final class AppState: ObservableObject {
             // download has no config.json), so user-imported models route
             // correctly too.
             let format = modelStore.detectedFormat(installed)
-            try await engine.load(directory: directory, modelID: model.id, diskBytes: installed.sizeBytes, format: format)
+            try await engine.load(directory: directory, modelID: model.id, diskBytes: installed.sizeBytes, format: format, contextSize: model.contextWindow)
             activeModelID = model.id
             enginePhase = .ready(model.displayName)
             // Persist the selection only after a successful load.

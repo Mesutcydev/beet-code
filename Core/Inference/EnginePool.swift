@@ -50,6 +50,10 @@ actor EnginePool {
     /// All resident engines share this gate: exactly one command buffer in
     /// flight for the whole process, however many models are loaded.
     private let gate: GenerationGate
+
+    /// The process-wide Metal gate, exposed so the vision sidecar
+    /// (`VisionEngine`) serializes its MLX work with every resident LLM.
+    nonisolated var sharedGate: GenerationGate { gate }
     private var engines: [String: any LLMEngine] = [:]
     private var residents: [String: Resident] = [:]
     private(set) var activeModelID: String?
@@ -116,7 +120,7 @@ actor EnginePool {
     /// cannot be admitted even after evicting every idle resident.
     func activate(
         directory: URL, modelID: String, diskBytes: Int64,
-        format: CatalogModel.Format = .mlx
+        format: CatalogModel.Format = .mlx, contextSize: Int? = nil
     ) async throws {
         touch(modelID)
         if engines[modelID] != nil {
@@ -140,7 +144,7 @@ actor EnginePool {
 
         let engine = engineFactory(format, gate)
         do {
-            try await engine.load(directory: directory, modelID: modelID, diskBytes: diskBytes)
+            try await engine.load(directory: directory, modelID: modelID, diskBytes: diskBytes, contextSize: contextSize)
         } catch {
             await engine.unload()
             throw error

@@ -142,6 +142,48 @@ struct WriteFileTool: AgentTool {
     }
 }
 
+// MARK: - move_file
+
+struct MoveFileTool: AgentTool {
+    let name = "move_file"
+    let summary = "Move or rename a file inside the workspace"
+    let risk = ToolRisk.write
+
+    let schemaText = """
+        {"type":"object","properties":{
+          "from":{"type":"string","description":"Current workspace-relative path"},
+          "to":{"type":"string","description":"New workspace-relative path (must not exist)"}
+        },"required":["from","to"]}
+        """
+
+    func execute(_ call: ParsedToolCall, in context: ToolContext) async throws -> String {
+        guard let from = call.string("from"), !from.isEmpty else {
+            throw ToolError.missingArgument("from")
+        }
+        guard let to = call.string("to"), !to.isEmpty else {
+            throw ToolError.missingArgument("to")
+        }
+        let source = try context.workspace.resolve(from, access: .write).url
+        let destination = try context.workspace.resolve(to, access: .write).url
+
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            return "error: file not found: \(from)"
+        }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            return "error: destination already exists: \(to) — refusing to overwrite"
+        }
+
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: source, to: destination)
+        // The moved file counts as read at its new location so follow-up
+        // edits pass write-after-read enforcement.
+        context.noteRead(destination)
+        return "moved \(from) → \(to)"
+    }
+}
+
 // MARK: - list_directory
 
 struct ListDirectoryTool: AgentTool {
@@ -160,10 +202,7 @@ struct ListDirectoryTool: AgentTool {
         },"required":[]}
         """
 
-    private static let skippedNames: Set<String> = [
-        ".git", "node_modules", ".build", "DerivedData", "Build", ".swiftpm",
-        ".venv", "__pycache__", ".DS_Store",
-    ]
+    private static let skippedNames = FileToolsDefaults.skippedNames
 
     func execute(_ call: ParsedToolCall, in context: ToolContext) async throws -> String {
         let path = call.string("path") ?? "."

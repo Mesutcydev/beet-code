@@ -210,6 +210,32 @@ private struct TabScroll<Content: View>: View {
     }
 }
 
+/// Slim tinted banner for tab-level explanations — deliberately NOT a
+/// SettingsCard, so a one-paragraph note doesn't read as a runt card next
+/// to the content-rich cards around it.
+private struct InfoBanner: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.info)
+                .frame(width: 30, height: 30)
+                .background(Theme.washStrong(Theme.info),
+                            in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(Spacing.md)
+        .lfWashCard(Theme.info)
+    }
+}
+
 // MARK: - General tab
 
 private struct GeneralTab: View {
@@ -328,6 +354,7 @@ private struct GeneralTab: View {
                     if appState.apiServerRunning {
                         Text("Serving at \(appState.apiServerBaseURL)")
                             .font(.caption.monospaced())
+                            .foregroundStyle(Theme.textSecondary)
                             .textSelection(.enabled)
                     } else if let error = appState.apiServerError {
                         Text(error)
@@ -453,12 +480,11 @@ private struct ProvidersTab: View {
             if pendingRestore {
                 keyRestoreBanner
             }
-            SettingsCard(title: "Bring your own key", icon: "info.circle") {
-                Text("Run the agent on a remote model instead of a local download. Keys live in the Keychain only. After saving a key, use **Test** to verify the connection, then activate the provider in the Model Manager.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // A slim tinted banner, not a SettingsCard: a full card around
+            // one paragraph read as a runt next to the provider cards.
+            InfoBanner(
+                icon: "key",
+                text: "Run the agent on a remote model instead of a local download. Keys live in the Keychain only. After saving a key, use **Test** to verify the connection, then activate the provider in the Model Manager.")
             ForEach(LLMProvider.allCases) { provider in
                 ProviderCard(provider: provider)
             }
@@ -471,11 +497,20 @@ private struct ProvidersTab: View {
     }
 
     private var keyRestoreBanner: some View {
-        SettingsCard(title: "Keys from LocalForge found", icon: "key.fill") {
-            VStack(alignment: .leading, spacing: Spacing.md) {
-                Text("Your saved API keys are still in the Keychain under the old LocalForge app, but macOS requires one authorization to move them. Your keys were never deleted.")
-                    .font(.callout)
+        HStack(alignment: .top, spacing: Spacing.md) {
+            Image(systemName: "key.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.warning)
+                .frame(width: 30, height: 30)
+                .background(Theme.washStrong(Theme.warning),
+                            in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                Text("Keys from LocalForge found")
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
+                Text("Your saved API keys are still in the Keychain under the old LocalForge app, but macOS requires one authorization to move them. Your keys were never deleted.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Spacing.md) {
                     Button("Restore Keys…") {
@@ -483,14 +518,18 @@ private struct ProvidersTab: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accent)
+                    .controlSize(.small)
                     if let restoreResult {
                         Text(restoreResult)
-                            .font(.callout)
+                            .font(.caption)
                             .foregroundStyle(Theme.success)
                     }
                 }
             }
         }
+        .padding(Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lfWashCard(Theme.warning)
     }
 
     /// Runs the interactive migration OFF the main actor — the Keychain
@@ -548,8 +587,12 @@ private struct ProviderCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
-            // Header: name + status badges
+            // Header: provider glyph + name + status badges — the same
+            // icon-header chrome every SettingsCard wears.
             HStack(spacing: Spacing.sm) {
+                Image(systemName: provider == .custom ? "server.rack" : "cloud.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
                 Text(provider.displayName)
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)

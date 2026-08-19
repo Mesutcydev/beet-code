@@ -59,15 +59,46 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         }
 
         /// Server launch arguments: loopback-only, no web UI, GPU-offloaded.
-        static func serverArguments(modelPath: String, port: Int, contextSize: Int = 8192) -> [String] {
+        static func serverArguments(modelPath: String, port: Int, contextSize: Int = defaultContextSize) -> [String] {
             [
                 "--model", modelPath,
                 "--host", "127.0.0.1",
                 "--port", String(port),
-                "--ctx-size", String(contextSize),
+                "--ctx-size", String(clampContextSize(contextSize)),
                 "--n-gpu-layers", "99",
                 "--alias", "beetcode",
                 "--no-webui",
+            ]
+        }
+
+        /// Context the server gets when the catalog says nothing.
+        static let defaultContextSize = 8_192
+        /// Hard ceiling: KV cache scales linearly with ctx (≈2–5 GB at 32 K
+        /// for a 9B GQA model) and MemoryAdvisor's admission only counts the
+        /// weights. 32 K is the largest window a 16 GB Mac can host next to
+        /// resident weights without lying about headroom.
+        static let maxContextSize = 32_768
+        static let minContextSize = 4_096
+
+        static func clampContextSize(_ requested: Int) -> Int {
+            min(max(requested, minContextSize), maxContextSize)
+        }
+
+        /// Watchdog script: kill the server when the APP dies, even on a
+        /// hard crash (SIGABRT skips applicationWillTerminate). macOS has no
+        /// parent-death signal, so a tiny /bin/sh loop polls both PIDs; it
+        /// exits as soon as either is gone, killing the server if the parent
+        /// went first. Pure function for tests.
+        static func janitorCommand(serverPID: Int32, parentPID: Int32) -> [String] {
+            [
+                "-c",
+                """
+                while kill -0 "$1" 2>/dev/null; do
+                  kill -0 "$2" 2>/dev/null || { kill "$1" 2>/dev/null; break; }
+                  sleep 3
+                done
+                """,
+                "beetcode-gguf-janitor", String(serverPID), String(parentPID),
             ]
         }
 
@@ -81,6 +112,8 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
 
     private let lock = NSLock()
     private var process: Process?
+    /// Crash-safety watchdog for `process` (see Planner.janitorCommand).
+    private var janitor: Process?
     private var port: Int = 0
     private var loadedID: String?
     private var statsState = EngineStats()
@@ -102,6 +135,18 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     // MARK: Lifecycle
 
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws {
+        try await load(directory: directory, modelID: modelID, diskBytes: diskBytes, contextSize: nil)
+    }
+
+    /// `contextSize` comes from the catalog entry (clamped by the Planner);
+    /// nil uses the 8 K default.
+    func load(directory: URL, modelID: String, diskBytes: Int64, contextSize: Int?) async throws {
+        // Defensive: loading while resident must replace the old server, not
+        // orphan it (the pool normally prevents this; the unpooled path and
+        // tests don't).
+        if withLock({ process != nil }) {
+            await unload()
+        }
         // Same admission authority as every other engine: the GGUF weights
         // inflate the child's footprint just like MLX's mmap does.
         try MemoryAdvisor.admitLoad(diskBytes: diskBytes)
@@ -116,7 +161,9 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         let serverPort = Self.freePort()
         let child = Process()
         child.executableURL = binary
-        child.arguments = Planner.serverArguments(modelPath: modelPath, port: serverPort)
+        child.arguments = Planner.serverArguments(
+            modelPath: modelPath, port: serverPort,
+            contextSize: contextSize ?? Planner.defaultContextSize)
         child.environment = ShellRunner.sanitizedEnvironment()
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice
@@ -126,22 +173,40 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         } catch {
             throw GGUFError.serverFailedToStart(error.localizedDescription)
         }
+        // Quit-safety net: if the app exits without an unload (window close,
+        // ⌘Q with a model resident), the app delegate SIGTERMs registered
+        // children — otherwise a multi-GB llama-server outlives the app.
+        ChildProcessRegistry.register(child)
+        // Crash-safety net: SIGABRT skips willTerminate, so a watchdog shell
+        // kills the server if the app process disappears (see Planner).
+        let watchdog = Process()
+        watchdog.executableURL = URL(fileURLWithPath: "/bin/sh")
+        watchdog.arguments = Planner.janitorCommand(
+            serverPID: child.processIdentifier,
+            parentPID: ProcessInfo.processInfo.processIdentifier)
+        watchdog.standardOutput = FileHandle.nullDevice
+        watchdog.standardError = FileHandle.nullDevice
+        try? watchdog.run()
 
         // Wait for the HTTP health endpoint (model page-in can take a while).
         let healthy = await waitForHealthy(port: serverPort, process: child, timeout: 120)
         guard healthy else {
             child.terminate()
+            watchdog.terminate()
+            ChildProcessRegistry.unregister(child)
             throw GGUFError.serverFailedToStart("no response from llama-server within 120s")
         }
 
         withLock {
             self.process = child
+            self.janitor = watchdog
             self.port = serverPort
             self.loadedID = modelID
             self.statsState = EngineStats()
             self.accumulated.removeAll()
         }
         child.terminationHandler = { [weak self] _ in
+            ChildProcessRegistry.unregister(child)
             guard let self else { return }
             self.withLock {
                 self.process = nil
@@ -152,15 +217,20 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     }
 
     func unload() async {
-        let child = withLock { () -> Process? in
+        let (child, watchdog) = withLock { () -> (Process?, Process?) in
             let p = process
+            let j = janitor
             process = nil
+            janitor = nil
             port = 0
             loadedID = nil
             statsState = EngineStats()
             accumulated.removeAll()
-            return p
+            return (p, j)
         }
+        // The watchdog exits on its own once the server is gone; terminate it
+        // explicitly so unload never waits on its 3 s poll.
+        if let watchdog, watchdog.isRunning { watchdog.terminate() }
         guard let child, child.isRunning else { return }
         child.terminate()
         // Graceful → forced: never leak a model server.

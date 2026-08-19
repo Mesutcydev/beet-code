@@ -50,13 +50,18 @@ struct CLI {
             await serve(port: port, modelID: modelID)
         case "status":
             status()
+        case "intel":
+            // Workspace intelligence CLI (Phase 22): index / overview /
+            // context / search / impact / verify / handoff / serve-mcp.
+            let code = await IntelligenceCLI.run(arguments: Array(arguments.dropFirst()))
+            if code != 0 { FileHandle.standardError.write(Data("exit \(code)\n".utf8)) }
         default:
             fallbackUsage()
         }
     }
 
     static func fallbackUsage() {
-        print("usage: lf download <catalog-id> | lf generate <catalog-id> <prompt> | lf serve [--port 1234] [--model <catalog-id>] | lf status")
+        print("usage: lf download <catalog-id> | lf generate <catalog-id> <prompt> | lf serve [--port 1234] [--model <catalog-id>] | lf status | lf intel <index|overview|context|search|impact|verify|handoff|serve-mcp>")
     }
 
     // MARK: Subcommands
@@ -111,7 +116,7 @@ struct CLI {
         // (A never-resumed continuation would leak — sleeping in a loop is
         // the honest async equivalent of "run until killed".)
         while true {
-            await Task.sleep(for: .seconds(3_600))
+            try? await Task.sleep(for: .seconds(3_600))
         }
     }
 

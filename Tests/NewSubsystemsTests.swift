@@ -257,8 +257,9 @@ final class GGUFPlannerTests: XCTestCase {
                           "\(model.id): GGUF repo id should point at a GGUF repository")
             XCTAssertGreaterThan(model.diskBytes, 0)
         }
-        // Default format is MLX for the historical entries.
-        XCTAssertEqual(ModelCatalog.bundled.filter { $0.format == .mlx }.count, 6)
+        // Default format is MLX for the historical chat entries (vision
+        // sidecars are MLX too but counted by role, not format).
+        XCTAssertEqual(ModelCatalog.bundled.filter { $0.format == .mlx && $0.role == .chat }.count, 6)
     }
 }
 

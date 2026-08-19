@@ -138,6 +138,12 @@ enum ShellRunner {
 
         let collected = OutputBuffer(maxBytes: maxOutputBytes)
         let readerDone = DispatchSemaphore(value: 0)
+        // Read through the PIPE'S OWN handle: wrapping readFD in a second
+        // FileHandle(closeOnDealloc: true) created two owners for one
+        // descriptor — whoever deallocated last closed an already-closed
+        // (and on modern macOS, GUARDED) fd, which is an EXC_GUARD crash,
+        // not a benign EBADF. Single owner, no double close.
+        let readHandle = pipe.fileHandleForReading
         // .userInitiated, NOT .utility: the waiting thread (runProcess's
         // caller) runs at user-initiated QoS for interactive agent commands.
         // Blocking a user-initiated thread on a utility reader is a QoS
@@ -145,9 +151,8 @@ enum ShellRunner {
         // inline symbolication of the report wedged XCTest's main run loop
         // (deterministic hang in testCancellationDuringToolExecution).
         DispatchQueue.global(qos: .userInitiated).async {
-            let handle = FileHandle(fileDescriptor: readFD, closeOnDealloc: true)
             while true {
-                let data = handle.availableData
+                let data = readHandle.availableData
                 if data.isEmpty { break }
                 collected.append(data)
             }

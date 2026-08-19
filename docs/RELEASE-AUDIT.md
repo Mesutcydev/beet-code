@@ -1,11 +1,12 @@
-# Beet Code — Release Audit (v0.7.0)
+# Beet Code — Release Audit (v0.8.0)
 
 Generated 2026-08-19 against the current tree. All numbers below are from real
-runs in this session, not claims. Supersedes the v0.6.0 audit.
+runs in this session, not claims. Supersedes the v0.7.0 audit.
 
-**Tree audited:** v0.7.0 (build 4) — multi-model residency, parallel chunk
-downloads, composer rewrite (Intent architecture), reasoning-pipeline fixes,
-MCP config transport defaults, test-suite hermeticity.
+**Tree audited:** v0.8.0 (build 5) — activity rail, chat import/export,
+Pantone-anchored Beet theme, diagnostics panel, KV-aware GGUF context, MTP
+speculative decoding, tool-call transcript sanitization, ShellRunner
+EXC_GUARD fix; hermetic suite.
 
 ## Verdict
 
@@ -17,55 +18,81 @@ blocked — certificates revoked (see §4.1).
 
 | Check | Result |
 | --- | --- |
-| Debug build (app) | ✅ BUILD SUCCEEDED |
-| Test suite | ✅ **304/304, 0 failures**, ~102 s (`TEST SUCCEEDED`) |
+| Debug build (app) | ✅ BUILD SUCCEEDED (after `xcodegen` regen for new files) |
+| Test suite | ✅ **370/370, 0 failures**, 97 s, zero runner restarts (`TEST SUCCEEDED`) |
+| Targeted re-run (filter + parser) | ✅ 19/19 (StreamDisplayFilterTests, ToolParserTests) |
 | Code signing | ⚠️ ad-hoc (`flags=0x2(adhoc)`), TeamIdentifier unset |
 | Gatekeeper | ❌ rejects ad-hoc — expected; requires Developer ID + notarization |
 | App Sandbox | OFF (`ENABLE_APP_SANDBOX: NO`) — deliberate and required: the agent needs shell/git/workspace access. Must stay documented. |
 
-Test count growth: 265 (v0.6.0) → 304 (v0.7.0, +39: stream display filter,
-GGUF planner, MCP transport decode, intent/composer store, downloader suites).
+Test count growth: 304 (v0.7.0) → 370 (v0.8.0, +66: vision agent sessions,
+GGUF metadata/context, workspace history, import/export-adjacent suites,
+engine pool, diagnostics-adjacent coverage).
 
-## 2. What shipped since the v0.6.0 audit
+**Full-suite flake — root-caused and fixed.** The intermittent
+"unexpected exit, crash, or test timeout" mid-suite (host process died inside
+`EndToEndTests.testPausedDownloadManifestSurvivesRelaunch`) was an
+**EXC_GUARD kill in ShellRunner**: the pipe's read fd was wrapped in a second
+`FileHandle(closeOnDealloc: true)`, so one descriptor had two owners and the
+last dealloc closed an already-closed *guarded* fd. Fixed by reading through
+the pipe's own handle (single owner, no double close) — commits `6d6b4ab`,
+`f16cbfa`. Post-fix suite: no runner restarts.
 
-- **Multi-model residency + parallel chunk downloads**: large weight files
-  fetch fixed byte ranges in parallel (resumable, aggregating progress);
-  small files stream sequentially; both paths verify sha256 and survive
-  relaunch via manifests with auto-resume opt-in.
-- **Composer rewrite (Intent architecture)**: chips-first composer, intent
-  composers/resolvers/presets, deterministic focus ordering, draft-only
-  suffix, structural role dedup, plain-chars-over-4 token estimates.
-- **Reasoning pipeline**: raw reasoning streams arrive in Qwen3-style
-  ` thinking`/` response` XML segments (5-letter tags, verified at byte
-  level); `strippingThinking`/`extractingThinking` and the stream display
-  filter now match that exact format — complete blocks hidden, open blocks
-  show reasoning state, repetition filler collapsed.
-- **GGUF selection**: `selectGGUF` picks the largest candidate (ties broken
-  by quantization level `-q<digits>`); free loopback port + health detection
-  tests added.
-- **MCP config transport**: `MCPServerConfig` explicitly decodes
-  `command`/`args`/`env`/`url`/`headers`/`oauth` with defaults honored;
-  command wins when both transports are present; entries with neither are
-  rejected at load.
-- **Test-suite hermeticity fixes**:
-  - `AppState` launch restore refuses to auto-resume real downloads under an
-    XCTest host (`XCTestConfigurationFilePath` present) — previously every
-    test-host launch resumed the developer's genuine Qwen3-4B download over
-    the network mid-suite, stalling fixture downloads (30+ min runs → ~102 s).
-  - E2E/ComposerStore suites pin `planMode`/`autoApprove*` UserDefaults keys
-    per-test (save/restore in setUp/tearDown) so a developer's real
-    preferences can't leak into the test process.
-  - Checkpoint-undo suite re-enables manual approvals locally, exercising the
-    real approval path.
+## 2. What shipped since the v0.7.0 audit
 
-## 3. Live verification carried over (v0.6.0 audit, still valid)
+- **Activity rail + sidebar redesign**: every panel toggle and action lives
+  in the rail (new chat, sessions/imported tabs, browser, simulator,
+  diagnostics, export, Model Manager, Settings). Imported chats group under
+  collapsible per-project header cards (headline name, accent folder tile,
+  count pill, rotating chevron) with **Claude/Codex/Cursor filter pills**.
+- **Chat history import/export**: import from `~/.claude`, `~/.codex`, Cursor
+  with live parser status and bounded streaming (16 MB/file, 512 KB/message);
+  export via rail button (current chat → Markdown) and per-row context menu
+  (Markdown/JSON) — wire format sanitized out of exports.
+- **Themes**: full-UI Beet mode anchored on the exact Pantone 19-2030 TCX
+  Beet Red `#7A1F3D` window background (one hue, four depths; cards lift,
+  wells sink; glass falls back to opaque themed surfaces); BeetLogo replaces
+  the sparkle avatar and empty-state hammer; brand contract codified in
+  `docs/BRAND-KIT.md`.
+- **Transcript sanitization**: raw tool-call JSON can no longer leak into the
+  transcript — `ToolParser.strippingCalls` cleans live + restored assistant
+  messages; `looksLikeToolCallFragment` turns token-ceiling-truncated calls
+  into protocol-error re-prompts instead of fake "Task complete" answers;
+  streaming display hides in-progress call syntax behind a "Working…"
+  indicator.
+- **Interactive card redesign**: approval/question/plan cards share one
+  silhouette (raised surface, hairline, 3-pt semantic leading bar);
+  destructive actions moved to the far trailing edge; streaming caret is a
+  brand-gradient pulse bar; composer pills can never wrap mid-label.
+- **In-app diagnostics**: docked panel with breadcrumb timeline
+  (session/engine/tool/approval/import/system, 500-entry ring buffer,
+  metadata-only), category filter pills, system snapshot, plain-text log
+  export for bug reports. Spec: `docs/DIAGNOSTICS-SPEC.md`.
+- **KV-aware GGUF context**: fixed 32K clamp replaced by RAM-fitted context
+  (256K ceiling, 4K floor) sniffed from GGUF header dims;
+  `effectiveContextWindow` plumbed engine → pool → router → AppState →
+  AgentLoop compaction + composer gauge (fixes llama-server HTTP 400 overflow
+  when fitted ctx < catalog window).
+- **MTP speculative decoding**: auto-detects nextn tensors (Qwythos),
+  launches llama-server with `--spec-type draft-mtp --spec-draft-n-max 2`,
+  self-healing fallback on older binaries.
+- **Vision**: MLXVLM wired, SmolVLM catalog entries, vision tool covered by
+  real agent-session tests; describe_image refusal surfaces as a failed
+  observation.
+- **Workspace-history digest** in the system prompt (own + imported
+  sessions); 思考-delimited reasoning stripping for Qwen finetunes.
 
-- **Local API server E2E with a real model**: Qwen3 1.7B 4-bit (968 MB)
-  served via `lf serve --model`; `/v1/models`, non-streaming + SSE
-  completions all returned real generated output.
+## 3. Live verification carried over (still valid)
+
+- **Local API server E2E with a real model**: Qwen3 1.7B 4-bit served via
+  `lf serve --model`; `/v1/models`, non-streaming + SSE completions returned
+  real generated output (v0.6.0 audit).
 - **`lf serve` CLI**: banner, model load, SIGINT teardown clean.
 - Live model lists depend on valid provider keys — not fully verifiable for
   every provider without them.
+- Attachments (paperclip → quoted files / vision description) exercised in
+  unit/E2E suites; not re-verified end-to-end with a live vision model this
+  session.
 
 ## 4. Release-readiness checklist
 
@@ -76,7 +103,7 @@ GGUF planner, MCP transport decode, intent/composer store, downloader suites).
    Developer ID Application certificate at developer.apple.com. Then:
    hardened-runtime + timestamp codesign → `ditto` zip →
    `xcrun notarytool submit … --wait`.
-2. **Versioning**: 0.7.0 / build 4 in `project.yml` + `App/Info.plist`.
+2. **Versioning**: 0.8.0 / build 5 in `project.yml` + `App/Info.plist` ✅.
 3. **Entitlements file**: still absent. Create for Developer ID + hardened
    runtime (MLX/Metal needs no JIT entitlement).
 
@@ -87,8 +114,9 @@ GGUF planner, MCP transport decode, intent/composer store, downloader suites).
 5. **Local API server**: no Anthropic-format *streaming* parity for
    `tool_use` blocks (text-only), no per-request rate limiting.
 6. **Info.plist minimal**: no `NSHumanReadableCopyright`, no URL schemes.
-7. **MCP**: stdio + HTTP transports now configurable, but no OAuth flow
-   execution yet.
+7. **MCP**: stdio + HTTP transports configurable, no OAuth flow execution yet.
+8. **Diagnostics persistence**: breadcrumbs are session-only; bounded JSONL
+   persistence across launches is specced (DIAGNOSTICS-SPEC §6) but unbuilt.
 
 ### 4.3 Explicitly fine as-is
 - Ad-hoc signing for self-use ✅
@@ -97,24 +125,27 @@ GGUF planner, MCP transport decode, intent/composer store, downloader suites).
 - Secrets: Keychain-only, sessions AES-GCM encrypted, redaction on —
   no hardcoded keys (scanned before push) ✅
 - Loopback-only server binding (127.0.0.1) ✅
+- Diagnostics are metadata-only (no message/file contents, no secrets) ✅
 - Repo public at https://github.com/Mesutcydev/beet-code ✅
 
-## 5. Test coverage snapshot (what the 304 tests protect)
+## 5. Test coverage snapshot (what the 370 tests protect)
 
 AgentLoop + hooks (deny/rewrite + gate non-bypass) · tools/policy/git/
-workspace · BYOK providers + registry · tool parser · diagnostics parser ·
-diff engine · memory · persistence · repo index · smart downloader · parallel
-chunk planner · GGUF planner · memory advisor · end-to-end (incl.
-download-finalize-activate, paused-manifest-relaunch, checkpoint-undo) ·
-reasoning folding + stream display filter · intent/composer store pipeline ·
-local API server · MCP (config transport decode, tools, spawn failure) ·
+workspace · BYOK providers + registry · tool parser (incl. call-stripping +
+truncated-fragment detection) · diagnostics parser · diff engine · memory ·
+persistence · repo index · smart downloader · parallel chunk planner · GGUF
+planner + metadata/context · memory advisor · engine pool residency ·
+end-to-end (download-finalize-activate, paused-manifest-relaunch,
+checkpoint-undo) · reasoning folding + stream display filter ·
+intent/composer store pipeline · vision sessions · workspace history digest ·
+local API server · MCP (config transport decode, OAuth planner, tools) ·
 slash commands + AGENTS.md · legacy migration · browser tool registration.
 
 Known gaps to add before 1.0: idle-TTL unload timing test (needs clock
 control), MCP timeout path under a hanging server, DMG/signing automation,
 live-browser e2e (needs a UI-test harness).
 
-## 6. Release procedure (repeatable, v0.7)
+## 6. Release procedure (repeatable, v0.8)
 
 ```sh
 cd "new project/BeetCode"
@@ -123,7 +154,7 @@ xcodegen generate                        # after any file add/remove
 xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -configuration Release -destination 'platform=macOS' \
   -derivedDataPath .derived build
-# 1) Bump version in project.yml (info: properties) — currently 0.7.0 / 4
+# 1) Version is 0.8.0 / 5 in project.yml (info: properties)
 # 2) Sign & notarize (BLOCKED until new Developer ID cert, §4.1):
 #    codesign --force --options runtime --timestamp \
 #      --sign "Developer ID Application: <name>" \

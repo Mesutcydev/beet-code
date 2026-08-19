@@ -45,11 +45,12 @@ final class ShellRunnerTests: XCTestCase {
     func testConcurrentSpawnsNeverDoubleCloseFDs() throws {
         let iterations = 150
         let failures = ManagedCounter()
+        let directory = workspace.url
         DispatchQueue.concurrentPerform(iterations: iterations) { i in
             do {
                 let result = try ShellRunner.run(
                     command: "printf 'concurrent-%d' \(i)",
-                    workingDirectory: self.workspace.url,
+                    workingDirectory: directory,
                     timeout: 15)
                 let ok = result.exitCode == 0
                     && !result.timedOut

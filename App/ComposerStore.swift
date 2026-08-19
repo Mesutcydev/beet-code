@@ -301,16 +301,21 @@ final class ComposerStore {
 
     private func schedulePersist() {
         persistTask?.cancel()
-        persistTask = Task { [weak self] in
+        // Capture the target file and the content NOW, not at fire time:
+        // a workspace switch inside the 400 ms debounce window rekeys
+        // `draftFileURL`, so a fire-time read can write this workspace's
+        // draft into the next workspace's file (or wipe the draft the
+        // switch-back just restored).
+        guard let url = draftFileURL else { return }
+        let state = ComposerDraftState(prompt: prompt, selection: selection)
+        persistTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            self?.persistNow()
+            Self.persist(state, to: url)
         }
     }
 
-    private func persistNow() {
-        guard let url = draftFileURL else { return }
-        let state = ComposerDraftState(prompt: prompt, selection: selection)
+    private static func persist(_ state: ComposerDraftState, to url: URL) {
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? data.write(to: url, options: .atomic)
     }

@@ -15,6 +15,15 @@
 > full-UI beet tint; local SmolVLM vision models in the catalog. Details in
 > `README.md` (v0.8) and `docs/MTP-FEASIBILITY.md`; sections below describing
 > the pre-v0.8 UI are historical.
+>
+> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
+> (README v0.6) and the simulator tools were registered but the system prompt
+> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now
+> derives a "Built-in browser & simulator" section from the registered tool
+> list: browser tools teach the navigate → read/click/type → screenshot →
+> `describe_image` visual-verify loop; sim tools teach `sim_build_run` as the
+> one-shot build → install → launch → screenshot → describe loop plus the
+> granular `sim_*` controls. Covered by `Tests/PromptCapabilityGuidanceTests.swift`.
 
 ## 1. Identity
 
@@ -56,6 +65,7 @@ Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 | App/ModelManagerView.swift | Download/install/activate models; BYOK remote section |
 | App/SettingsView.swift | HF token, autonomy, generation, memory & context, advanced, launch, BYOK providers |
 | App/SimulatorController.swift / SimulatorPanelView.swift | SimulatorContext (@MainActor) + SimctlRunner (off-main, ShellRunner-backed); docked side panel |
+| App/BrowserPanelView.swift + Core/Browser/BrowserController.swift | Agent-controlled in-app browser: shared WKWebView, extraction via JS snippets, JS-escaping security boundary |
 | App/ComposerStyle.swift / ComposerAttachment.swift | Composer flow presets + attachment model |
 | App/StatusBarView.swift | RAM/thermal/model/tok-s status |
 | Core/Agent/AgentLoop.swift | The actor orchestrating generate → parse → gate → checkpoint → execute |
@@ -63,7 +73,7 @@ Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 | Core/Agent/ToolParser.swift | Model text → ParsedToolCall (fenced/Qwen/OpenAI/bare JSON) |
 | Core/Agent/ToolExecutor.swift | Runs tools; typed outcomes; duplicate-registration guard |
 | Core/Agent/PermissionGate.swift | Auto/needsApproval decisions (reads auto; writes/commands ask) |
-| Core/Agent/PromptBuilder.swift | System prompt; repo index + memory + plan-mode sections; think-block strip/extract |
+| Core/Agent/PromptBuilder.swift | System prompt; repo index + memory + plan-mode sections; capabilityGuidance (browser/sim verify loops, derived from registered tools); think-block strip/extract |
 | Core/Agent/ContextCompactor.swift | CompressionLevel (light/standard/aggressive) + token-aware compaction |
 | Core/Agent/GitCheckpointer.swift | Snapshot/restore with temp index, GC refs, index preservation, foreign-tree rejection |
 | Core/Agent/AgentMemory.swift / MemoryTools.swift | Per-workspace facts + summaries; memory_add/memory_delete |
@@ -79,6 +89,7 @@ Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 | Core/Tools/BuildDiagnosticsTool.swift | Build + DiagnosticParser (Swift/xcodebuild output) |
 | Core/Tools/SimBuildRunTool.swift | sim_build_run: detect project → xcodebuild → install → launch → screenshot → describe (P1 build loop) |
 | Core/Tools/ArgentBridge.swift / SimulatorAgentTools.swift | argent CLI bridge + sim_* device tools |
+| Core/Tools/BrowserTools.swift | browser_* tools: read/screenshot auto-approved; navigate/click/type/eval approval-gated |
 | Core/Tools/VisionTool.swift | VisionProvider (BYOK describe_image) + DescribeImageTool; SmolVLM seam |
 | Core/Inference/LLMEngine.swift | Engine protocol + default cache/dump impls |
 | Core/Inference/MLXEngine.swift | MLX ChatSession engine behind GenerationGate |
@@ -141,7 +152,8 @@ SwiftUI views → AppState (MainActor) → AgentSessionController → AgentLoop 
 | Diagnostics | BuildDiagnosticsTool | parsed, breadcrumb UI, post-edit verification (opt-in); failing verification refuses completion |
 | Repo context | RepoIndex → PromptBuilder | bounded index + symbol summaries; task-ranked ordering |
 | Vision | VisionTool | BYOK describe_image; SmolVLM seam documented |
-| Simulator + argent | SimulatorController + sim_* tools | simctl panel + tap/type/describe/screenshot |
+| Simulator + argent | SimulatorController + sim_* tools | simctl panel + tap/type/describe/screenshot; sim_build_run one-shot loop |
+| In-app browser | BrowserController + browser_* tools | agent-driven WKWebView; prompt teaches visual-verify loop |
 | Composer | ChatView | attachments, expanding input, flow presets, paste |
 | Thermal | ThermalMonitor | kernel + CPU-load proxy |
 | CLI | BeetCodeCLI | status/download/generate |

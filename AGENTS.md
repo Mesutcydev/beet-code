@@ -27,6 +27,11 @@ This is a native macOS coding agent (Swift 6 / SwiftUI / MLX + BYOK).
   process groups; `GitCheckpointer` = approval-before-mutation snapshots.
 - Sessions encrypted (Keychain key, cached); memory facts/summaries per
   workspace; events stream via AsyncStream<AgentEvent>.
+- Models drive the in-app browser (`browser_*` tools → `BrowserController`)
+  and the built-in simulator (`sim_*` tools → argent; `sim_build_run` =
+  build → install → launch → screenshot → describe in one call).
+  `PromptBuilder.capabilityGuidance` teaches models WHEN to use them
+  (visual verify loops) — keep it in sync when adding tool families.
 
 ## Rules
 

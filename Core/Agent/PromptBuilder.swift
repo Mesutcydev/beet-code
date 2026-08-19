@@ -59,6 +59,13 @@ enum PromptBuilder {
         }
         sections.append("# Available tools\n\n" + toolDocs.joined(separator: "\n\n"))
 
+        // Capability guidance: the tool list alone doesn't teach the model
+        // WHEN to reach for the in-app browser or the simulator. Derived from
+        // the actual tool list so it never advertises something absent.
+        if let guidance = capabilityGuidance(tools: tools) {
+            sections.append(guidance)
+        }
+
         // Bounded repository context: the model sees the project shape and
         // per-file summaries instead of raw file dumps. Summaries survive
         // compaction because they live in the system prompt.
@@ -100,6 +107,54 @@ enum PromptBuilder {
         """)
 
         return sections.joined(separator: "\n\n")
+    }
+
+    /// Teaches the model when to use the in-app browser and the built-in
+    /// simulator. Sections are included only when the matching tools are
+    /// actually registered, so the prompt never advertises a capability the
+    /// current session doesn't have.
+    static func capabilityGuidance(tools: [any AgentTool]) -> String? {
+        let names = Set(tools.map(\.name))
+        var blocks: [String] = []
+
+        if names.contains("browser_navigate") {
+            blocks.append("""
+            ## In-app browser (browser_*)
+
+            The app embeds a real browser you control with the `browser_*` tools. \
+            Use it whenever the task involves a web page or web app:
+            - `browser_navigate` to open a URL (including a local dev server you \
+            started with `run_command`, e.g. http://localhost:3000).
+            - `browser_read` for the page's visible text/links, `browser_click` and \
+            `browser_type` to interact, `browser_eval` for anything the other tools \
+            can't express.
+            - `browser_screenshot` saves a PNG of the page into the workspace; pass \
+            it to `describe_image` to SEE the rendered result.
+            After building or changing web UI, verify it: serve it, navigate, \
+            screenshot, inspect — don't claim it works from code alone.
+            """)
+        }
+
+        if names.contains("sim_build_run") || names.contains("sim_list_devices") {
+            blocks.append("""
+            ## Built-in iOS simulator (sim_*)
+
+            The app embeds an iOS simulator surface you control with the `sim_*` \
+            tools. For iOS/tvOS work, verify on a real simulator instead of only \
+            compiling:
+            - `sim_build_run` is the one-shot loop: build → install → launch → \
+            screenshot → describe. Prefer it for end-to-end verification.
+            - For finer control: `sim_list_devices` → `sim_boot_device` → \
+            `sim_launch_app`, then `sim_tap` / `sim_swipe` / `sim_type` to drive \
+            the UI and `sim_describe` (accessibility tree) or `sim_screenshot` \
+            (then `describe_image`) to observe it.
+            Typical verify loop: change UI code → `sim_build_run` → read the \
+            screenshot description → fix → repeat.
+            """)
+        }
+
+        guard !blocks.isEmpty else { return nil }
+        return "# Built-in browser & simulator\n\n" + blocks.joined(separator: "\n\n")
     }
 
     /// Extracts the concatenated reasoning blocks (e.g. Qwen3

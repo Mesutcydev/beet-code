@@ -59,15 +59,95 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         }
 
         /// Server launch arguments: loopback-only, no web UI, GPU-offloaded.
-        static func serverArguments(modelPath: String, port: Int, contextSize: Int = 8192) -> [String] {
-            [
+        /// `speculativeMTP` turns on draft-mtp speculative decoding — only
+        /// pass true when the GGUF ships nextn tensors (GGUFMetadata
+        /// .supportsDraftMTP); without them the flag is dead weight.
+        /// n-max 2: deeper drafts waste verify passes on code (acceptance
+        /// falls off fast past the second token).
+        static func serverArguments(modelPath: String, port: Int, contextSize: Int = defaultContextSize,
+                                    speculativeMTP: Bool = false) -> [String] {
+            var args = [
                 "--model", modelPath,
                 "--host", "127.0.0.1",
                 "--port", String(port),
-                "--ctx-size", String(contextSize),
+                "--ctx-size", String(clampContextSize(contextSize)),
                 "--n-gpu-layers", "99",
                 "--alias", "beetcode",
                 "--no-webui",
+            ]
+            if speculativeMTP {
+                args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
+            }
+            return args
+        }
+
+        /// Context the server gets when the catalog says nothing.
+        static let defaultContextSize = 8_192
+        /// Sanity ceiling for any launch. The RAM-aware choice below is the
+        /// real limit; this only bounds absurd catalog values (attention cost
+        /// also grows quadratically past a few hundred K).
+        static let maxContextSize = 262_144
+        static let minContextSize = 4_096
+        /// Conservative cap when the GGUF header can't be sniffed: KV cache
+        /// scales linearly with ctx and MemoryAdvisor admission counts only
+        /// the weights, so unknown models stay in proven-safe territory.
+        static let fallbackContextSize = 32_768
+
+        static func clampContextSize(_ requested: Int) -> Int {
+            min(max(requested, minContextSize), maxContextSize)
+        }
+
+        /// KV cache bytes per token (f16 K+V): 2 caches × layers × kv-heads ×
+        /// head-dim × 2 bytes. Needs the transformer dims from the GGUF
+        /// header; MHA models (no kv-head count) use the full head count.
+        static func kvBytesPerToken(metadata: GGUFMetadata) -> Int? {
+            guard let layers = metadata.blockCount,
+                  let embedding = metadata.embeddingLength,
+                  let heads = metadata.attentionHeadCount, heads > 0
+            else { return nil }
+            let kvHeads = metadata.attentionHeadCountKV ?? heads
+            let headDim = embedding / heads
+            guard kvHeads > 0, headDim > 0 else { return nil }
+            let (value, overflow) = (2 * layers * kvHeads).multipliedReportingOverflow(by: headDim * 2)
+            return overflow ? nil : value
+        }
+
+        /// Largest context that fits the RAM budget honestly: the weights'
+        /// projected footprint is spent first, what remains buys KV tokens.
+        /// `availableBudget` is MemoryAdvisor's usable-minus-footprint figure.
+        /// The floor is `minContextSize` — the load was already admitted on
+        /// the weights, and 4 K of KV is small next to any 9 B file.
+        static func chooseContextSize(
+            requested: Int,
+            kvBytesPerToken: Int?,
+            projectedWeights: UInt64,
+            availableBudget: UInt64
+        ) -> Int {
+            let requestedClamped = clampContextSize(requested)
+            guard let kvPerToken = kvBytesPerToken, kvPerToken > 0 else {
+                return min(requestedClamped, fallbackContextSize)
+            }
+            let kvBudget = availableBudget > projectedWeights ? availableBudget - projectedWeights : 0
+            let affordable = kvBudget / UInt64(kvPerToken)
+            let capped = min(UInt64(requestedClamped), affordable)
+            return max(Int(capped), minContextSize)
+        }
+
+        /// Watchdog script: kill the server when the APP dies, even on a
+        /// hard crash (SIGABRT skips applicationWillTerminate). macOS has no
+        /// parent-death signal, so a tiny /bin/sh loop polls both PIDs; it
+        /// exits as soon as either is gone, killing the server if the parent
+        /// went first. Pure function for tests.
+        static func janitorCommand(serverPID: Int32, parentPID: Int32) -> [String] {
+            [
+                "-c",
+                """
+                while kill -0 "$1" 2>/dev/null; do
+                  kill -0 "$2" 2>/dev/null || { kill "$1" 2>/dev/null; break; }
+                  sleep 3
+                done
+                """,
+                "beetcode-gguf-janitor", String(serverPID), String(parentPID),
             ]
         }
 
@@ -81,8 +161,14 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
 
     private let lock = NSLock()
     private var process: Process?
+    /// Crash-safety watchdog for `process` (see Planner.janitorCommand).
+    private var janitor: Process?
     private var port: Int = 0
     private var loadedID: String?
+    /// The ctx-size the running server was actually launched with (RAM-fitted
+    /// by the Planner — often smaller than the catalog window). The agent
+    /// loop compacts against this, never the catalog number.
+    private var launchedContextSize: Int?
     private var statsState = EngineStats()
     /// Stateless replay buffer — identical semantics to RemoteLLMEngine:
     /// llama-server slots are not guaranteed across requests, so every call
@@ -95,6 +181,10 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         get async { withLock { loadedID } }
     }
 
+    var effectiveContextWindow: Int? {
+        get async { withLock { launchedContextSize } }
+    }
+
     var stats: EngineStats {
         get async { withLock { statsState } }
     }
@@ -102,6 +192,18 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     // MARK: Lifecycle
 
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws {
+        try await load(directory: directory, modelID: modelID, diskBytes: diskBytes, contextSize: nil)
+    }
+
+    /// `contextSize` comes from the catalog entry; the Planner fits it to the
+    /// RAM budget (KV cache) before launch. nil uses the 8 K default.
+    func load(directory: URL, modelID: String, diskBytes: Int64, contextSize: Int?) async throws {
+        // Defensive: loading while resident must replace the old server, not
+        // orphan it (the pool normally prevents this; the unpooled path and
+        // tests don't).
+        if withLock({ process != nil }) {
+            await unload()
+        }
         // Same admission authority as every other engine: the GGUF weights
         // inflate the child's footprint just like MLX's mmap does.
         try MemoryAdvisor.admitLoad(diskBytes: diskBytes)
@@ -113,35 +215,46 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         let modelPath = directory.appendingPathComponent(ggufName).path
         let binary = try Self.resolveServerBinary()
 
-        let serverPort = Self.freePort()
-        let child = Process()
-        child.executableURL = binary
-        child.arguments = Planner.serverArguments(modelPath: modelPath, port: serverPort)
-        child.environment = ShellRunner.sanitizedEnvironment()
-        child.standardOutput = FileHandle.nullDevice
-        child.standardError = FileHandle.nullDevice
+        // RAM-honest context sizing: sniff the transformer dims from the GGUF
+        // header and buy as many KV tokens as the budget left over after the
+        // weights affords. Unsniffable headers keep the conservative 32 K cap.
+        let sniffed = GGUFMetadata.read(from: URL(fileURLWithPath: modelPath))
+        let chosenContext = Planner.chooseContextSize(
+            requested: contextSize ?? Planner.defaultContextSize,
+            kvBytesPerToken: sniffed.flatMap(Planner.kvBytesPerToken),
+            projectedWeights: MemoryAdvisor.projectedFootprint(diskBytes: diskBytes),
+            availableBudget: MemoryAdvisor.availableBudget)
 
-        do {
-            try child.run()
-        } catch {
-            throw GGUFError.serverFailedToStart(error.localizedDescription)
+        // MTP speculative decoding: when the GGUF ships nextn tensors (Qwen3.5
+        // "MTP" builds like Qwythos), prefer a draft-mtp launch — llama.cpp
+        // reports ~1.3–1.4× decode on this hybrid arch. A binary too old to
+        // know the flag exits at arg-parse, which fails the health wait in
+        // ~250 ms; we then retry once without it rather than failing the load.
+        let wantsMTP = sniffed?.supportsDraftMTP == true
+        var attempt = try await launchServer(
+            binary: binary, modelPath: modelPath,
+            contextSize: chosenContext, speculativeMTP: wantsMTP)
+        if attempt == nil, wantsMTP {
+            Log.engine.warning("llama-server rejected draft-mtp; retrying without speculative decoding")
+            attempt = try await launchServer(
+                binary: binary, modelPath: modelPath,
+                contextSize: chosenContext, speculativeMTP: false)
         }
-
-        // Wait for the HTTP health endpoint (model page-in can take a while).
-        let healthy = await waitForHealthy(port: serverPort, process: child, timeout: 120)
-        guard healthy else {
-            child.terminate()
+        guard let (child, watchdog, serverPort) = attempt else {
             throw GGUFError.serverFailedToStart("no response from llama-server within 120s")
         }
 
         withLock {
             self.process = child
+            self.janitor = watchdog
             self.port = serverPort
             self.loadedID = modelID
+            self.launchedContextSize = chosenContext
             self.statsState = EngineStats()
             self.accumulated.removeAll()
         }
         child.terminationHandler = { [weak self] _ in
+            ChildProcessRegistry.unregister(child)
             guard let self else { return }
             self.withLock {
                 self.process = nil
@@ -152,15 +265,21 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     }
 
     func unload() async {
-        let child = withLock { () -> Process? in
+        let (child, watchdog) = withLock { () -> (Process?, Process?) in
             let p = process
+            let j = janitor
             process = nil
+            janitor = nil
             port = 0
             loadedID = nil
+            launchedContextSize = nil
             statsState = EngineStats()
             accumulated.removeAll()
-            return p
+            return (p, j)
         }
+        // The watchdog exits on its own once the server is gone; terminate it
+        // explicitly so unload never waits on its 3 s poll.
+        if let watchdog, watchdog.isRunning { watchdog.terminate() }
         guard let child, child.isRunning else { return }
         child.terminate()
         // Graceful → forced: never leak a model server.
@@ -246,6 +365,55 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     }
 
     // MARK: Helpers
+
+    /// Spawns llama-server (plus its crash watchdog) and waits for the health
+    /// endpoint. Returns nil when the server never answers — the caller may
+    /// retry with different arguments. Spawn failures throw immediately (no
+    /// retry would fix a bad binary path).
+    private func launchServer(
+        binary: URL, modelPath: String,
+        contextSize: Int, speculativeMTP: Bool
+    ) async throws -> (child: Process, watchdog: Process, port: Int)? {
+        let serverPort = Self.freePort()
+        let child = Process()
+        child.executableURL = binary
+        child.arguments = Planner.serverArguments(
+            modelPath: modelPath, port: serverPort,
+            contextSize: contextSize, speculativeMTP: speculativeMTP)
+        child.environment = ShellRunner.sanitizedEnvironment()
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+
+        do {
+            try child.run()
+        } catch {
+            throw GGUFError.serverFailedToStart(error.localizedDescription)
+        }
+        // Quit-safety net: if the app exits without an unload (window close,
+        // ⌘Q with a model resident), the app delegate SIGTERMs registered
+        // children — otherwise a multi-GB llama-server outlives the app.
+        ChildProcessRegistry.register(child)
+        // Crash-safety net: SIGABRT skips willTerminate, so a watchdog shell
+        // kills the server if the app process disappears (see Planner).
+        let watchdog = Process()
+        watchdog.executableURL = URL(fileURLWithPath: "/bin/sh")
+        watchdog.arguments = Planner.janitorCommand(
+            serverPID: child.processIdentifier,
+            parentPID: ProcessInfo.processInfo.processIdentifier)
+        watchdog.standardOutput = FileHandle.nullDevice
+        watchdog.standardError = FileHandle.nullDevice
+        try? watchdog.run()
+
+        // Wait for the HTTP health endpoint (model page-in can take a while).
+        let healthy = await waitForHealthy(port: serverPort, process: child, timeout: 120)
+        guard healthy else {
+            child.terminate()
+            watchdog.terminate()
+            ChildProcessRegistry.unregister(child)
+            return nil
+        }
+        return (child, watchdog, serverPort)
+    }
 
     /// Polls the server's model endpoint until it answers or the deadline /
     /// process death arrives.

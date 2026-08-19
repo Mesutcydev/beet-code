@@ -14,6 +14,11 @@ enum Theme {
     // Only ever mutated from the main actor via applyPalette.
     nonisolated(unsafe) static var currentPalette: AccentPalette = .beetRed
 
+    // The active appearance — read at DRAW time by the dynamic colors below
+    // so a Beet-mode switch re-tints every neutral live. Only ever mutated
+    // from the main actor via applyAppearance.
+    nonisolated(unsafe) static var currentAppearance: AppAppearance = .system
+
     /// Applies the user's palette choice. Called once at launch and again on
     /// every change (mirrors `applyAppearance`).
     @MainActor static func applyPalette(_ palette: AccentPalette) {
@@ -38,18 +43,38 @@ enum Theme {
     }
 
     // Neutrals — one cohesive cool-slate hue, deepest (bg) to raised (inset).
-    // Dark steps are deliberately close so bg→surface→inset reads as gentle
-    // depth, never as clashing tones. Light inset is one full step darker
-    // than the page so inset wells + chips keep visible separation (U9).
-    static let bg           = Color.dynamic(light: 0xF6F7F9, dark: 0x0E1016)
-    static let surface      = Color.dynamic(light: 0xFFFFFF, dark: 0x161922)
-    static let surfaceInset = Color.dynamic(light: 0xE3E6EB, dark: 0x1F2330)
-    static let hairline     = Color.dynamic(light: 0xE1E4EA, dark: 0x2C3140)
+    // Dark steps carry real separation: the window bg sits deep so cards
+    // visibly lift off it, and inset wells/chips lift off cards — without
+    // these steps, dark mode reads as one flat sheet. Light inset is one
+    // full step darker than the page so inset wells + chips keep visible
+    // separation (U9).
+    //
+    // Beet mode anchors the ENTIRE ramp on the brand color — Pantone
+    // 19-2030 TCX Beet Red (#7A1F3D) is the window background itself, not
+    // a whisper of plum on black. Cards lift one step lighter, inset wells
+    // step darker, hairlines stay inside the beet family — one hue, four
+    // depths, so the whole window reads as solid beet.
+    static let bg           = Color.dynamic(light: 0xF6F7F9, dark: 0x0C0E14, beet: 0x7A1F3D)
+    static let surface      = Color.dynamic(light: 0xFFFFFF, dark: 0x181C26, beet: 0x90304E)
+    static let surfaceInset = Color.dynamic(light: 0xE3E6EB, dark: 0x232837, beet: 0x5E1630)
+    static let hairline     = Color.dynamic(light: 0xE1E4EA, dark: 0x343B4E, beet: 0xA84668)
 
-    // Text tiers.
-    static let textPrimary   = Color.dynamic(light: 0x14161A, dark: 0xF2F4F8)
-    static let textSecondary = Color.dynamic(light: 0x5B616E, dark: 0x9AA1B2)
-    static let textTertiary  = Color.dynamic(light: 0x8A909C, dark: 0x646B7B)
+    // Text tiers. Dark secondary/tertiary sit a touch brighter than the
+    // neutrals around them so captions stay legible on the lifted surfaces;
+    // beet tiers are warm pinks tuned to stay readable on the saturated
+    // Pantone background (secondary ≈ 5.6:1, tertiary ≈ 3.5:1).
+    static let textPrimary   = Color.dynamic(light: 0x14161A, dark: 0xF2F4F8, beet: 0xFDF2F6)
+    static let textSecondary = Color.dynamic(light: 0x5B616E, dark: 0xA3AABB, beet: 0xE7B8C8)
+    static let textTertiary  = Color.dynamic(light: 0x8A909C, dark: 0x717889, beet: 0xC08CA0)
+
+    /// Elevation shadow: a whisper in light mode, much deeper in dark —
+    /// after the surface lift above, the shadow is what separates a card
+    /// from the window chrome around it.
+    static let cardShadow = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor.black.withAlphaComponent(0.45)
+            : NSColor.black.withAlphaComponent(0.12)
+    })
 
     // Accent — palette-driven. Default is Beet Red (Pantone 19-2030 TCX,
     // #7A1F3D); switchable in Settings → Appearance. In dark mode every
@@ -82,11 +107,14 @@ enum Theme {
     /// Keep AppKit's app-wide appearance in lockstep with the user's setting so
     /// the dynamic `NSColor` providers above resolve to the *forced* scheme —
     /// not merely the OS one — matching SwiftUI's `preferredColorScheme`.
+    /// Beet mode forces dark AppKit chrome; its plum neutrals come from the
+    /// `beet:` hexes, which read `currentAppearance` at draw time.
     @MainActor static func applyAppearance(_ appearance: AppAppearance) {
+        currentAppearance = appearance
         NSApplication.shared.appearance = switch appearance {
         case .system: nil
         case .light:  NSAppearance(named: .aqua)
-        case .dark:   NSAppearance(named: .darkAqua)
+        case .dark, .beet: NSAppearance(named: .darkAqua)
         }
     }
 }
@@ -97,6 +125,23 @@ enum Radius {
     static let md: CGFloat = 11
     static let lg: CGFloat = 15
     static let xl: CGFloat = 20
+}
+
+/// The centered reading column shared by the transcript and the composer.
+/// Fluid up to a wide cap: narrow windows use nearly the full width, and
+/// only very wide windows see side margins — never a skinny 760pt strip
+/// floating in dead space.
+enum ContentColumn {
+    static let maxWidth: CGFloat = 1100
+}
+
+/// App typography. Prose stays in proportional SF; anything the user TYPES
+/// as a coding task uses SF Mono — the same monospaced voice as the diff,
+/// command and diagnostics surfaces, so input and output read as one
+/// coding environment.
+enum AppFont {
+    /// The composer editor (and any future code-forward input).
+    static let editor = Font.system(size: 14, design: .monospaced)
 }
 
 /// Spacing — 4pt grid. Use these instead of ad-hoc padding literals.
@@ -110,10 +155,18 @@ enum Spacing {
 
 extension Color {
     /// A color that resolves light/dark from a hex pair with no intermediate
-    /// `Color`→`NSColor` round-trip (keeps the sRGB values exact).
-    static func dynamic(light: UInt32, dark: UInt32) -> Color {
+    /// `Color`→`NSColor` round-trip (keeps the sRGB values exact). `beet`
+    /// overrides the dark value while Beet mode is active — Beet is a dark
+    /// appearance, so callers that don't pass it fall through to `dark`.
+    static func dynamic(light: UInt32, dark: UInt32, beet: UInt32? = nil) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
-            let hex = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let hex: UInt32
+            if isDark, Theme.currentAppearance == .beet, let beet {
+                hex = beet
+            } else {
+                hex = isDark ? dark : light
+            }
             return NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
                            green:   CGFloat((hex >> 8) & 0xFF) / 255,
                            blue:    CGFloat(hex & 0xFF) / 255,
@@ -185,7 +238,10 @@ private struct LFGlassModifier<S: InsettableShape>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if reduceTransparency {
+        if reduceTransparency || Theme.currentAppearance == .beet {
+            // Beet mode tints EVERY surface — system materials are neutral
+            // gray-blue and would break the plum ramp, so glass falls back
+            // to the opaque themed surface there too.
             content
                 .background(Theme.surface, in: shape)
                 .overlay(shape.strokeBorder(Theme.hairline, lineWidth: 1))

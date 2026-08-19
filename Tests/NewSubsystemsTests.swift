@@ -243,6 +243,97 @@ final class GGUFPlannerTests: XCTestCase {
         XCTAssertFalse(GGUFEngine.Planner.isHealthy(responseBody: ""))
     }
 
+    func testContextSizeClamping() {
+        // Sanity ceiling only: 4 K floor, 256 K ceiling — the RAM-aware
+        // choice happens in chooseContextSize before launch (tested below).
+        XCTAssertEqual(GGUFEngine.Planner.clampContextSize(8_192), 8_192)
+        XCTAssertEqual(GGUFEngine.Planner.clampContextSize(1_000_000), 262_144)
+        XCTAssertEqual(GGUFEngine.Planner.clampContextSize(100), 4_096)
+        // The default launch keeps 8 K.
+        let args = GGUFEngine.Planner.serverArguments(modelPath: "/m.gguf", port: 1)
+        XCTAssertTrue(args.contains("--ctx-size"))
+        XCTAssertEqual(args[args.firstIndex(of: "--ctx-size")! + 1], "8192")
+        // A big-context catalog entry passes through under the sanity
+        // ceiling — KV-budget fitting happens earlier, in the load path.
+        let big = GGUFEngine.Planner.serverArguments(modelPath: "/m.gguf", port: 1, contextSize: 131_072)
+        XCTAssertEqual(big[big.firstIndex(of: "--ctx-size")! + 1], "131072")
+    }
+
+    func testServerArgumentsMTPFlagIsOptIn() {
+        let plain = GGUFEngine.Planner.serverArguments(modelPath: "/m.gguf", port: 1)
+        XCTAssertFalse(plain.contains("--spec-type"))
+
+        let mtp = GGUFEngine.Planner.serverArguments(
+            modelPath: "/m.gguf", port: 1, speculativeMTP: true)
+        XCTAssertEqual(mtp[mtp.firstIndex(of: "--spec-type")! + 1], "draft-mtp")
+        XCTAssertEqual(mtp[mtp.firstIndex(of: "--spec-draft-n-max")! + 1], "2")
+    }
+
+    // MARK: KV-aware context admission
+
+    /// Qwen-ish 9 B dims: 36 layers, 4096 embedding, 32 heads, 8 KV heads.
+    private func qwenMetadata() -> GGUFMetadata {
+        GGUFMetadata(blockCount: 36, embeddingLength: 4096,
+                     attentionHeadCount: 32, attentionHeadCountKV: 8)
+    }
+
+    func testKVBytesPerToken() {
+        // 2 caches × 36 layers × 8 kv-heads × 128 head-dim × 2 bytes (f16).
+        XCTAssertEqual(GGUFEngine.Planner.kvBytesPerToken(metadata: qwenMetadata()), 147_456)
+        // MHA fallback: no kv-head count → the full head count.
+        let mha = GGUFMetadata(blockCount: 36, embeddingLength: 4096, attentionHeadCount: 32)
+        XCTAssertEqual(GGUFEngine.Planner.kvBytesPerToken(metadata: mha), 589_824)
+        // Missing dims → nil (the caller falls back to the conservative cap).
+        XCTAssertNil(GGUFEngine.Planner.kvBytesPerToken(metadata: GGUFMetadata()))
+    }
+
+    func testChooseContextRaisesClampWhenRAMAllows() {
+        let kv = GGUFEngine.Planner.kvBytesPerToken(metadata: qwenMetadata())!
+        // 128 K requested: KV cost ≈ 18 GB — fits easily next to 6 GB
+        // weights in a 64 GB budget. The old fixed 32 K clamp is gone.
+        let chosen = GGUFEngine.Planner.chooseContextSize(
+            requested: 131_072, kvBytesPerToken: kv,
+            projectedWeights: 6 << 30, availableBudget: 64 << 30)
+        XCTAssertEqual(chosen, 131_072)
+    }
+
+    func testChooseContextFitsKVToRemainingBudget() {
+        let kv = GGUFEngine.Planner.kvBytesPerToken(metadata: qwenMetadata())!
+        let weights: UInt64 = 6 << 30
+        // Exactly 8192 tokens of KV headroom after the weights → 8 K, not
+        // the requested 128 K.
+        let chosen = GGUFEngine.Planner.chooseContextSize(
+            requested: 131_072, kvBytesPerToken: kv,
+            projectedWeights: weights, availableBudget: weights + UInt64(kv) * 8_192)
+        XCTAssertEqual(chosen, 8_192)
+    }
+
+    func testChooseContextFallsBackWithoutDimsAndFloorsUnderPressure() {
+        // Unsniffable header → conservative 32 K, even with RAM to spare.
+        XCTAssertEqual(
+            GGUFEngine.Planner.chooseContextSize(
+                requested: 131_072, kvBytesPerToken: nil,
+                projectedWeights: 0, availableBudget: .max),
+            32_768)
+        // No budget left after the weights → the 4 K floor (the load was
+        // already admitted on the weights).
+        let kv = GGUFEngine.Planner.kvBytesPerToken(metadata: qwenMetadata())!
+        XCTAssertEqual(
+            GGUFEngine.Planner.chooseContextSize(
+                requested: 131_072, kvBytesPerToken: kv,
+                projectedWeights: 64 << 30, availableBudget: 64 << 30),
+            4_096)
+    }
+
+    func testJanitorCommandWatchesServerAndParent() {
+        let args = GGUFEngine.Planner.janitorCommand(serverPID: 4242, parentPID: 100)
+        XCTAssertEqual(args.first, "-c")
+        XCTAssertTrue(args[1].contains("kill -0 \"$1\""), "watches the server PID")
+        XCTAssertTrue(args[1].contains("kill -0 \"$2\""), "watches the parent PID")
+        XCTAssertTrue(args[1].contains("kill \"$1\""), "kills the server when the parent dies")
+        XCTAssertEqual(args.suffix(2), ["4242", "100"])
+    }
+
     func testFreePortReturnsUsableLoopbackPort() {
         let port = GGUFEngine.freePort()
         XCTAssertGreaterThan(port, 0)
@@ -257,8 +348,9 @@ final class GGUFPlannerTests: XCTestCase {
                           "\(model.id): GGUF repo id should point at a GGUF repository")
             XCTAssertGreaterThan(model.diskBytes, 0)
         }
-        // Default format is MLX for the historical entries.
-        XCTAssertEqual(ModelCatalog.bundled.filter { $0.format == .mlx }.count, 6)
+        // Default format is MLX for the historical chat entries (vision
+        // sidecars are MLX too but counted by role, not format).
+        XCTAssertEqual(ModelCatalog.bundled.filter { $0.format == .mlx && $0.role == .chat }.count, 6)
     }
 }
 
@@ -574,6 +666,34 @@ final class EngineRouterPoolTests: XCTestCase {
         try await router.load(directory: URL(fileURLWithPath: "/tmp/g"), modelID: "g", diskBytes: 100, format: .gguf)
         XCTAssertEqual(seenFormats.all, [.gguf])
     }
+
+    // MARK: Effective context window plumbing
+
+    func testPooledRouterSurfacesEngineReportedContextWindow() async throws {
+        // The GGUF engine fits the server ctx to RAM (smaller than the
+        // catalog window); the router must surface THAT number so the agent
+        // loop compacts before llama-server hard-errors.
+        let pool = EnginePool(maxResident: 2)
+        await pool.setAdmitLoad { _ in }
+        await pool.setEngineFactory { _, _ in
+            let engine = FakeLLMEngine()
+            engine.stubbedContextWindow = 19_712
+            return engine
+        }
+        let router = EngineRouter(local: FakeLLMEngine(), pool: pool)
+        try await router.load(directory: URL(fileURLWithPath: "/tmp/g"), modelID: "g", diskBytes: 100, format: .gguf)
+        let window = await router.effectiveContextWindow
+        XCTAssertEqual(window, 19_712)
+    }
+
+    func testRouterContextWindowFallsBackToNilWhenEngineDoesNotKnow() async throws {
+        // Engines that size context themselves (MLX, remote, plain fakes)
+        // report nil — the caller then uses the catalog window.
+        let router = EngineRouter(local: FakeLLMEngine())
+        try await router.load(directory: URL(fileURLWithPath: "/tmp/a"), modelID: "a", diskBytes: 100)
+        let window = await router.effectiveContextWindow
+        XCTAssertNil(window)
+    }
 }
 
 private final class FormatRecorder: @unchecked Sendable {
@@ -585,5 +705,126 @@ private final class FormatRecorder: @unchecked Sendable {
     var all: [CatalogModel.Format] {
         lock.lock(); defer { lock.unlock() }
         return formats
+    }
+}
+
+// MARK: - GGUF metadata sniffing
+
+final class GGUFMetadataTests: XCTestCase {
+
+    private enum Value {
+        case string(String)
+        case uint32(UInt32)
+        case uint64(UInt64)
+        case stringArray([String])
+        case float32Array(Int)  // element count; contents don't matter
+    }
+
+    /// Builds a minimal GGUF v3 header: magic, version, tensor_count 0,
+    /// then the given metadata key-value pairs (little-endian).
+    private func header(_ kvs: [(String, Value)]) -> Data {
+        var data = Data()
+        func u32(_ v: UInt32) { var x = v.littleEndian; data.append(Data(bytes: &x, count: 4)) }
+        func u64(_ v: UInt64) { var x = v.littleEndian; data.append(Data(bytes: &x, count: 8)) }
+        func str(_ s: String) { u64(UInt64(s.utf8.count)); data.append(contentsOf: s.utf8) }
+
+        u32(0x46554747)  // "GGUF"
+        u32(3)           // version
+        u64(0)           // tensor_count
+        u64(UInt64(kvs.count))
+        for (key, value) in kvs {
+            str(key)
+            switch value {
+            case .string(let s):
+                u32(8); str(s)
+            case .uint32(let v):
+                u32(4); u32(v)
+            case .uint64(let v):
+                u32(10); u64(v)
+            case .stringArray(let elements):
+                u32(9); u32(8); u64(UInt64(elements.count))
+                for element in elements { str(element) }
+            case .float32Array(let count):
+                u32(9); u32(6); u64(UInt64(count))
+                for _ in 0..<count { u32(0) }
+            }
+        }
+        return data
+    }
+
+    func testParsesArchitectureContextLengthAndName() {
+        // context_length arrives BEFORE general.architecture on purpose —
+        // resolution must happen after all keys are collected. A second
+        // architecture's context_length must not win over the matching one.
+        let data = header([
+            ("qwen3.context_length", .uint32(131_072)),
+            ("llama.context_length", .uint32(8_192)),
+            ("general.architecture", .string("qwen3")),
+            ("general.name", .string("Test Model")),
+            ("tokenizer.ggml.tokens", .stringArray(["a", "bb", "ccc"])),
+            ("some.floats", .float32Array(3)),
+        ])
+        let metadata = GGUFMetadata.parse(data)
+        XCTAssertEqual(metadata?.architecture, "qwen3")
+        XCTAssertEqual(metadata?.contextLength, 131_072)
+        XCTAssertEqual(metadata?.modelName, "Test Model")
+    }
+
+    func testSingleContextLengthCandidateResolvesWithoutArchitecture() {
+        let data = header([
+            ("mystery.context_length", .uint64(4_096)),
+        ])
+        let metadata = GGUFMetadata.parse(data)
+        XCTAssertNil(metadata?.architecture)
+        XCTAssertEqual(metadata?.contextLength, 4_096)
+    }
+
+    func testAmbiguousContextLengthCandidatesResolveToNil() {
+        let data = header([
+            ("a.context_length", .uint32(1_024)),
+            ("b.context_length", .uint32(2_048)),
+        ])
+        XCTAssertNil(GGUFMetadata.parse(data)?.contextLength)
+    }
+
+    func testMTPLayerCountDrivesSupportsDraftMTP() {
+        // Qwythos-style header: one nextn predictor layer on a qwen35 arch.
+        let withMTP = GGUFMetadata.parse(header([
+            ("qwen35.nextn_predict_layers", .uint32(1)),
+            ("general.architecture", .string("qwen35")),
+        ]))
+        XCTAssertEqual(withMTP?.mtpPredictLayers, 1)
+        XCTAssertEqual(withMTP?.supportsDraftMTP, true)
+
+        // A plain build without nextn tensors must not trigger the flag.
+        let plain = GGUFMetadata.parse(header([
+            ("qwen35.context_length", .uint32(262_144)),
+            ("general.architecture", .string("qwen35")),
+        ]))
+        XCTAssertNil(plain?.mtpPredictLayers)
+        XCTAssertEqual(plain?.supportsDraftMTP, false)
+        // Never-parsed metadata stays off too.
+        XCTAssertFalse(GGUFMetadata().supportsDraftMTP)
+    }
+
+    func testGarbageAndTruncationNeverCrash() {
+        XCTAssertNil(GGUFMetadata.parse(Data()))
+        XCTAssertNil(GGUFMetadata.parse(Data("not a gguf file".utf8)))
+        // Valid magic but the rest of the fixed header is missing.
+        XCTAssertNil(GGUFMetadata.parse(header([]).prefix(8)))
+
+        // A well-formed header whose kv section is cut short parses the
+        // intact prefix instead of crashing or throwing.
+        let full = header([
+            ("general.architecture", .string("qwen3")),
+            ("qwen3.context_length", .uint32(131_072)),
+            ("general.name", .string("Test Model")),
+        ])
+        // 24-byte fixed header + one complete kv pair
+        // (8+20 key, 4 type, 8+5 string value); the second pair is cut off.
+        let cutAfterArchitecture = full.prefix(24 + 45)
+        let partial = GGUFMetadata.parse(Data(cutAfterArchitecture))
+        XCTAssertEqual(partial?.architecture, "qwen3")
+        XCTAssertNil(partial?.contextLength)
     }
 }

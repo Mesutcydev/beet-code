@@ -145,6 +145,54 @@ enum ToolParser {
         return candidates
     }
 
+    /// Removes everything that parses as a tool call (fenced blocks,
+    /// `<tool_call>` tags, bare JSON) from display text, leaving only prose.
+    /// Used to sanitize assistant messages for the transcript: the model's
+    /// raw call syntax is wire format, never user-facing content.
+    static func strippingCalls(from text: String) -> String {
+        var removals: [Range<String.Index>] = []
+        for candidate in collectCandidates(text) {
+            guard let value = TolerantJSON.value(from: candidate.payload),
+                  !shape(value).isEmpty else { continue }
+            removals.append(candidate.range)
+        }
+        guard !removals.isEmpty else { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        var result = ""
+        var cursor = text.startIndex
+        for range in removals.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            result += text[cursor..<range.lowerBound]
+            cursor = range.upperBound
+        }
+        result += text[cursor...]
+        // Collapse the blank runs a removed block leaves behind.
+        let collapsed = result.replacingOccurrences(
+            of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// True when the text ends inside what looks like an UNTERMINATED tool
+    /// call: a `{"name": …` object whose braces never balance (the token
+    /// ceiling cut the JSON off mid-call). Such a reply executed nothing —
+    /// the loop should treat it as a protocol error, not a final answer.
+    static func looksLikeToolCallFragment(_ text: String) -> Bool {
+        guard let match = try? NSRegularExpression(pattern: #"\{\s*"name"\s*:"#)
+            .firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+            let range = Range(match.range, in: text)
+        else { return false }
+        let tail = text[range.lowerBound...]
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for character in tail {
+            if escaped { escaped = false; continue }
+            if escaped == false, character == "\\", inString { escaped = true; continue }
+            if character == "\"" { inString.toggle(); continue }
+            guard !inString else { continue }
+            if character == "{" { depth += 1 } else if character == "}" { depth -= 1 }
+        }
+        return depth > 0
+    }
+
     // MARK: Shape validation
 
     private struct Shaped: Equatable {

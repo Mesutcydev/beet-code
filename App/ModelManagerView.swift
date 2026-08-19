@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The Model Manager sheet. One scrolling column of cards: local catalog
 /// models first, then remote (BYOK) providers. Each card surfaces the model's
@@ -7,12 +8,16 @@ import SwiftUI
 struct ModelManagerView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    /// True while an import validation/copy runs off-main — multi-GB copies
+    /// must never block the UI.
+    @State private var importInProgress = false
 
     var body: some View {
         VStack(spacing: 0) {
             ManagerHeaderView(
                 freeBytes: appState.availableBudget,
                 totalBytes: MemoryAdvisor.physicalMemory,
+                importing: importInProgress,
                 onImport: importModel,
                 onDone: { dismiss() })
 
@@ -26,81 +31,202 @@ struct ModelManagerView: View {
             }
         }
         .background(Theme.bg)
+        // Re-sync with reality every open: models imported/copied/deleted
+        // outside the registry (or left unregistered by an interrupted
+        // import) must not show stale Download/Load states.
+        .onAppear { appState.modelStore.rescanFromDisk() }
     }
 
-    /// Pick a local model directory and register it as a user-catalog model.
+    /// Pick a local model — an MLX folder (config.json + .safetensors) or a
+    /// GGUF model (a single .gguf file, or a folder containing one) — and
+    /// register it as a user-catalog model.
     private func importModel() {
         let panel = NSOpenPanel()
-        panel.title = "Import MLX model folder"
+        panel.title = "Import local model"
         panel.prompt = "Import"
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Select a folder containing config.json and .safetensors weight files."
+        panel.allowedContentTypes = [.folder, UTType(filenameExtension: "gguf") ?? .data]
+        panel.message = "Select an MLX folder (config.json + .safetensors) or a .gguf model file."
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        let base = appState.modelStore.modelsBaseURL
+        importInProgress = true
+        Task {
+            defer { importInProgress = false }
+            do {
+                // Validation and the (possibly multi-GB) copy run off-main.
+                let catalog = try await Task.detached(priority: .userInitiated) {
+                    try Self.prepareImport(from: url, modelsBase: base)
+                }.value
+                var userModels = ModelCatalog.loadUserModels()
+                userModels.removeAll { $0.id == catalog.id }
+                userModels.append(catalog)
+                ModelCatalog.saveUserModels(userModels)
+                _ = appState.modelStore.register(catalogModel: catalog, sizeBytes: catalog.diskBytes)
+                appState.modelStore.objectWillChange.send()
+            } catch {
+                presentImportError(error.localizedDescription)
+            }
+        }
+    }
+
+    private enum ImportError: Error, LocalizedError {
+        case notAModel
+        case missingConfig
+        case missingWeights
+        case incompleteDownloads
+        case copyFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notAModel:
+                "Choose an MLX model folder or a .gguf model file."
+            case .missingConfig:
+                "No config.json found in the selected folder."
+            case .missingWeights:
+                "No .safetensors or .gguf weight files found in the selected folder."
+            case .incompleteDownloads:
+                "The folder contains incomplete downloads (.incomplete files). Finish the download first."
+            case .copyFailed(let detail):
+                "Copy failed: \(detail)"
+            }
+        }
+    }
+
+    /// Validates the selection, copies it into the managed Models directory
+    /// (unless already there) and returns the catalog entry. Called off-main.
+    nonisolated private static func prepareImport(from url: URL, modelsBase: URL) throws -> CatalogModel {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: url.appendingPathComponent("config.json").path) else {
-            presentImportError("No config.json found in the selected folder.")
-            return
-        }
-        let contents = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
-        guard contents.contains(where: { $0.hasSuffix(".safetensors") }) else {
-            presentImportError("No .safetensors weight files found in the selected folder.")
-            return
-        }
-        if contents.contains(where: { $0.hasSuffix(".incomplete") }) {
-            presentImportError("The folder contains incomplete downloads (.incomplete files). Finish the download first.")
-            return
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            throw ImportError.notAModel
         }
 
-        // Read model config for display metadata.
-        var family = "Custom"
-        var contextWindow = 32_768
+        // Single .gguf file: wrap it in a managed folder named after the file.
+        if !isDirectory.boolValue {
+            guard url.pathExtension.lowercased() == "gguf" else { throw ImportError.notAModel }
+            let stem = url.deletingPathExtension().lastPathComponent
+            let destDir = modelsBase.appendingPathComponent(stem, isDirectory: true)
+            let destFile = destDir.appendingPathComponent(url.lastPathComponent)
+            if !fm.fileExists(atPath: destFile.path) {
+                do {
+                    try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+                    try fm.copyItem(at: url, to: destFile)
+                } catch {
+                    throw ImportError.copyFailed(error.localizedDescription)
+                }
+            }
+            let size = fileSize(at: destFile)
+            // Sniff the copied file's GGUF header for the real architecture
+            // and training context length; the fallbacks match llama-server's
+            // --ctx-size default so utilization % stays honest when the
+            // header can't be read.
+            let sniffed = GGUFMetadata.read(from: destFile)
+            return CatalogModel(
+                id: stem,
+                repo: url.path,
+                displayName: prettifiedName(stem),
+                family: sniffed?.architecture?.capitalized ?? "GGUF",
+                parameters: "—",
+                quantization: ggufQuantization(stem) ?? "GGUF",
+                diskBytes: size,
+                contextWindow: sniffed?.contextLength ?? 8_192,
+                minRAMGB: max(6, Int(Double(size) / 1_000_000_000 * 1.5)),
+                recommendedRAMGB: max(8, Int(Double(size) / 1_000_000_000 * 2)),
+                notes: "Imported from \(url.path)",
+                format: .gguf)
+        }
+
+        // Folder import: MLX (config.json + .safetensors) or GGUF (a .gguf
+        // file inside).
+        let contents = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
+        if contents.contains(where: { $0.hasSuffix(".incomplete") }) {
+            throw ImportError.incompleteDownloads
+        }
+        let hasSafetensors = contents.contains { $0.hasSuffix(".safetensors") }
+        let hasGGUF = contents.contains { $0.lowercased().hasSuffix(".gguf") }
+        let format: CatalogModel.Format
+        if hasSafetensors {
+            guard fm.fileExists(atPath: url.appendingPathComponent("config.json").path) else {
+                throw ImportError.missingConfig
+            }
+            format = .mlx
+        } else if hasGGUF {
+            format = .gguf
+        } else {
+            throw ImportError.missingWeights
+        }
+
+        // Read model config for display metadata when present (GGUF folders
+        // usually ship no config.json).
+        var family = format == .gguf ? "GGUF" : "Custom"
+        var contextWindow = format == .gguf ? 8_192 : 32_768
         if let configData = try? Data(contentsOf: url.appendingPathComponent("config.json")),
            let json = try? JSONSerialization.jsonObject(with: configData) as? [String: Any] {
-            family = (json["model_type"] as? String)?.capitalized ?? "Custom"
-            contextWindow = (json["max_position_embeddings"] as? Int) ?? 32_768
+            family = (json["model_type"] as? String)?.capitalized ?? family
+            contextWindow = (json["max_position_embeddings"] as? Int) ?? contextWindow
+        }
+
+        // GGUF folders: the header inside the .gguf is the source of truth —
+        // it wins over any config.json the folder happens to carry.
+        if format == .gguf,
+           let ggufName = contents.first(where: { $0.lowercased().hasSuffix(".gguf") }),
+           let sniffed = GGUFMetadata.read(from: url.appendingPathComponent(ggufName)) {
+            if let contextLength = sniffed.contextLength { contextWindow = contextLength }
+            if let architecture = sniffed.architecture { family = architecture.capitalized }
         }
 
         let dirName = url.lastPathComponent
-        let displayName = dirName.replacingOccurrences(of: "-", with: " ")
-            .split(separator: " ").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
         let size = (try? ModelStore.sizeOfDirectory(url)) ?? 0
 
-        let catalog = CatalogModel(
-            id: dirName,
-            repo: url.path,
-            displayName: displayName,
-            family: family,
-            parameters: "—",
-            quantization: "—",
-            diskBytes: size,
-            contextWindow: contextWindow,
-            minRAMGB: max(6, Int(Double(size) / 1_000_000_000 * 1.5)),
-            recommendedRAMGB: max(8, Int(Double(size) / 1_000_000_000 * 2)),
-            notes: "Imported from \(url.path)")
-
         // Copy into the managed Models directory if it isn't already there.
-        let dest = appState.modelStore.modelsBaseURL.appendingPathComponent(dirName, isDirectory: true)
+        let dest = modelsBase.appendingPathComponent(dirName, isDirectory: true)
         if !fm.fileExists(atPath: dest.path) {
             do {
                 try fm.copyItem(at: url, to: dest)
             } catch {
-                presentImportError("Copy failed: \(error.localizedDescription)")
-                return
+                throw ImportError.copyFailed(error.localizedDescription)
             }
         }
 
-        // Save to user catalog so it persists across launches.
-        var userModels = ModelCatalog.loadUserModels()
-        userModels.removeAll { $0.id == catalog.id }
-        userModels.append(catalog)
-        ModelCatalog.saveUserModels(userModels)
+        return CatalogModel(
+            id: dirName,
+            repo: url.path,
+            displayName: prettifiedName(dirName),
+            family: family,
+            parameters: "—",
+            quantization: format == .gguf ? (ggufQuantization(dirName) ?? "GGUF") : "—",
+            diskBytes: size,
+            contextWindow: contextWindow,
+            minRAMGB: max(6, Int(Double(size) / 1_000_000_000 * 1.5)),
+            recommendedRAMGB: max(8, Int(Double(size) / 1_000_000_000 * 2)),
+            notes: "Imported from \(url.path)",
+            format: format)
+    }
 
-        // Register as installed.
-        _ = appState.modelStore.register(catalogModel: catalog, sizeBytes: size)
-        appState.modelStore.objectWillChange.send()
+    /// "qwen3-4b-4bit" → "Qwen3 4b 4bit".
+    nonisolated private static func prettifiedName(_ name: String) -> String {
+        name.replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
+
+    /// Extracts a quantization label from a GGUF name
+    /// ("…-Q4_K_M.gguf" → "Q4_K_M").
+    nonisolated private static func ggufQuantization(_ stem: String) -> String? {
+        let pattern = #"(?i)[\-_.](Q\d(?:_K)?(?:_[SMXL])?|IQ\d(?:_[A-Z\d]+)?|F(?:16|32|8_0)|BF16)(?=[\-_.]|$)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: stem, range: NSRange(stem.startIndex..., in: stem)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: stem)
+        else { return nil }
+        return String(stem[range]).uppercased()
+    }
+
+    nonisolated private static func fileSize(at url: URL) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
     private func presentImportError(_ message: String) {
@@ -119,6 +245,7 @@ struct ModelManagerView: View {
 private struct ManagerHeaderView: View {
     let freeBytes: UInt64
     let totalBytes: UInt64
+    var importing: Bool = false
     let onImport: () -> Void
     let onDone: () -> Void
 
@@ -133,8 +260,14 @@ private struct ManagerHeaderView: View {
                 Text("Models")
                     .font(.title2.bold())
                 Spacer()
-                Button("Import…", action: onImport)
-                    .help("Import a local MLX model folder (must contain config.json + .safetensors)")
+                if importing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("Importing model…")
+                } else {
+                    Button("Import…", action: onImport)
+                        .help("Import a local model — an MLX folder (config.json + .safetensors) or a .gguf file")
+                }
                 Button("Done", action: onDone)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
@@ -414,7 +547,13 @@ private struct ModelActions: View {
     @ViewBuilder
     private var primaryAction: some View {
         if isInstalled {
-            if isActive {
+            if model.role == .vision {
+                // Vision sidecars are never loaded by hand — the app runs
+                // them automatically when an image needs describing.
+                Label("Vision — runs automatically", systemImage: "eye")
+                    .foregroundStyle(Theme.textSecondary)
+                    .help("Downloaded. Beet Code uses this model automatically to describe image attachments and screenshots.")
+            } else if isActive {
                 Button("Unload") {
                     Task { await appState.deactivate() }
                 }

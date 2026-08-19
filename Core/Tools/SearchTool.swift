@@ -126,8 +126,80 @@ struct SearchTool: AgentTool {
     }
 
     private func globToRegex(_ glob: String) -> String {
-        NSRegularExpression.escapedPattern(for: glob)
-            .replacingOccurrences(of: "\\*", with: "[^/]*")
+        Self.globToRegex(glob)
+    }
+
+    /// Wildcard glob (`*`, matches within a path component) → anchored regex.
+    static func globToRegex(_ glob: String) -> String {
+        "^" + NSRegularExpression.escapedPattern(for: glob)
+            .replacingOccurrences(of: "\\*", with: "[^/]*") + "$"
+    }
+}
+
+// MARK: - find_files
+
+/// Name-pattern file discovery — the complement to `search` (which matches
+/// contents). "Where are the test files" is a file-name question, not a
+/// grep.
+struct FindFilesTool: AgentTool {
+    let name = "find_files"
+    let summary = "Find files by name pattern (glob like *Tests.swift) without reading contents"
+    let risk = ToolRisk.read
+
+    // Tree listings drift between turns; a short TTL absorbs repeat lookups
+    // in one turn.
+    let cachePolicy: ToolCachePolicy = .shortLived(2)
+
+    let schemaText = """
+        {"type":"object","properties":{
+          "pattern":{"type":"string","description":"File-name glob, e.g. *.swift or *Tests.swift"},
+          "path":{"type":"string","description":"Directory to search from (default \".\")"}
+        },"required":["pattern"]}
+        """
+
+    private static let maxResults = 200
+
+    func execute(_ call: ParsedToolCall, in context: ToolContext) async throws -> String {
+        guard let pattern = call.string("pattern"), !pattern.isEmpty else {
+            throw ToolError.missingArgument("pattern")
+        }
+        let path = call.string("path") ?? "."
+        let url = try context.workspace.resolve(path)
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return "error: directory not found: \(path)"
+        }
+
+        let regex = SearchTool.globToRegex(pattern)
+        var matches: [String] = []
+        let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        while let entry = enumerator?.nextObject() as? URL {
+            // Never descend through symlinks (a link may point outside the
+            // root) and skip noise directories with their descendants.
+            let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if FileToolsDefaults.skippedNames.contains(entry.lastPathComponent)
+                || values?.isSymbolicLink == true
+            {
+                if values?.isDirectory == true || values?.isSymbolicLink == true {
+                    enumerator?.skipDescendants()
+                }
+                continue
+            }
+            if values?.isDirectory == true { continue }
+            let name = entry.lastPathComponent
+            guard name.range(of: regex, options: .regularExpression) != nil else { continue }
+            matches.append(entry.path.replacingOccurrences(of: url.path + "/", with: ""))
+            if matches.count >= Self.maxResults { break }
+        }
+
+        guard !matches.isEmpty else { return "(no files matching \(pattern))" }
+        return matches.sorted().joined(separator: "\n")
+            + (matches.count >= Self.maxResults ? "\n… (truncated at \(Self.maxResults) results)" : "")
     }
 }
 

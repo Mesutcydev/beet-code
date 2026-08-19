@@ -58,6 +58,10 @@ final class AgentSessionController: ObservableObject {
 
     /// Supplies the active model ID (AppState owns that truth).
     var activeModelIDHandler: () -> String = { "" }
+    /// Supplies the context window compaction should target: the engine's
+    /// real launched ctx when known (GGUF fits it to RAM), else the catalog
+    /// window. nil → the Configuration default (32 K).
+    var contextWindowHandler: () -> Int? = { nil }
 
     let engine: any LLMEngine
     private let settings: SettingsStore
@@ -107,7 +111,7 @@ final class AgentSessionController: ObservableObject {
 
         // Prepared turn: the transcript shows the user's clean message; the
         // MODEL receives bounded attachment context. The two never mix.
-        let modelText = Self.expand(attachments: attachments, message: message)
+        let modelText = await Self.expand(attachments: attachments, message: message)
         let displayText = attachments.isEmpty ? message : message + "  ·  " + Self.attachmentSummary(attachments)
         transcript.append(TranscriptItem(id: UUID(), kind: .user(displayText)))
 
@@ -153,6 +157,7 @@ final class AgentSessionController: ObservableObject {
                 maxTokensPerTurn: maxTokensPerTurn,
                 temperature: temperature,
                 checkpointingEnabled: checkpointingEnabled,
+                contextWindowTokens: contextWindowHandler() ?? 32_768,
                 thermalTokenCeiling: thermal.maxTokens(ceiling: maxTokensPerTurn),
                 verifyAfterEdits: settings.verifyAfterEdits,
                 showReasoning: showReasoning,
@@ -207,6 +212,31 @@ final class AgentSessionController: ObservableObject {
             .first(where: { $0.workspacePath == url.path }) {
             _ = restore(latest)
         }
+    }
+
+    /// Starts a fresh chat in the current workspace: the transcript clears
+    /// and the next send begins a brand-new session record — no continuation
+    /// seed, and the app no longer points at the old session on relaunch.
+    func newSession() {
+        let oldLoop = loop
+        loop = nil
+        eventTask?.cancel()
+        eventTask = nil
+        if let oldLoop {
+            Task { await oldLoop.cancel() }
+        }
+        runID = UUID()
+        isRunning = false
+        clearPending()
+        finishReason = nil
+        dropTokenBuffer()
+        streamingText = ""
+        rawStreamingText = ""
+        isReasoningVisible = false
+        activeSessionID = nil
+        gitOutput = nil
+        transcript = []
+        SessionStore.shared.currentSessionID = nil
     }
 
     /// Stops the active run and WAITS for the loop to reach its terminal
@@ -325,7 +355,12 @@ final class AgentSessionController: ObservableObject {
             case .user:
                 rebuilt.append(TranscriptItem(id: UUID(), kind: .user(message.content)))
             case .assistant:
-                rebuilt.append(TranscriptItem(id: UUID(), kind: .assistant(message.content)))
+                // Sanitize restored history the same way as live events:
+                // older sessions stored raw tool-call JSON in assistant text.
+                let prose = ToolParser.strippingCalls(from: message.content)
+                if !prose.isEmpty {
+                    rebuilt.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
+                }
             case .toolCall:
                 let call = ParsedToolCall(
                     name: message.toolName ?? "tool",
@@ -451,12 +486,47 @@ final class AgentSessionController: ObservableObject {
             }
 
         case .help:
-            notice(SlashCommand.helpText)
+            notice(Self.helpText(home: FileManager.default.homeDirectoryForCurrentUser,
+                                 workspace: workspaceURL))
 
         case .unknown(let raw):
-            notice("Unknown command '\(raw)'. Try /help.")
+            // Universal compatibility: an unrecognized slash name may be a
+            // Claude skill/command, a Codex prompt, or a BeetCode command
+            // discovered in the convention directories. Its text expands
+            // into the next user message — the same contract those tools
+            // give their own files.
+            let parts = raw.dropFirst().split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            let name = parts.first.map { String($0).lowercased() } ?? ""
+            let args = parts.count > 1 ? String(parts[1]) : ""
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            guard let command = ExternalCommands.command(named: name, home: home, workspace: workspaceURL) else {
+                notice("Unknown command '\(name)'. Try /help.")
+                return true
+            }
+            guard workspaceURL != nil else {
+                notice("/\(name) needs an open workspace folder.")
+                return true
+            }
+            guard !isRunning else {
+                notice("Wait for the current run to finish before invoking /\(name).")
+                return true
+            }
+            notice("Running \(command.origin.rawValue) \(command.kind.label) '/\(name)'.")
+            let message = args.isEmpty ? command.text : command.text + "\n\nUser input:\n" + args
+            send(message, attachments: [])
         }
         return true
+    }
+
+    /// /help output: the built-in catalog plus any external commands
+    /// discovered in the workspace and home convention directories.
+    static func helpText(home: URL, workspace: URL?) -> String {
+        let external = ExternalCommands.discover(home: home, workspace: workspace)
+        guard !external.isEmpty else { return SlashCommand.helpText }
+        let lines = external.map { "  /\($0.name)  (\($0.origin.rawValue) \($0.kind.label))" }
+        return SlashCommand.helpText
+            + "\n\nExternal commands (Claude / Codex / BeetCode convention dirs):\n"
+            + lines.joined(separator: "\n")
     }
 
     /// Compresses the active session's history immediately and persists the
@@ -519,6 +589,7 @@ final class AgentSessionController: ObservableObject {
         guard pendingPlan != nil else { return }
         pendingPlan = nil
         transcript.append(TranscriptItem(id: UUID(), kind: .notice("Plan approved — executing.")))
+        DiagnosticsCenter.shared.record(.approval, "Plan approved — executing")
         if let loop {
             Task { await loop.resolvePlan(approved: true) }
         }
@@ -528,6 +599,7 @@ final class AgentSessionController: ObservableObject {
         guard pendingPlan != nil else { return }
         pendingPlan = nil
         transcript.append(TranscriptItem(id: UUID(), kind: .user(feedback)))
+        DiagnosticsCenter.shared.record(.approval, "Plan sent back for revision")
         if let loop {
             Task { await loop.resolvePlanRevision(feedback: feedback) }
         }
@@ -552,12 +624,14 @@ final class AgentSessionController: ObservableObject {
         if approved {
             transcript.append(
                 TranscriptItem(id: UUID(), kind: .notice("Approved: \(request.invocation.name)")))
+            DiagnosticsCenter.shared.record(.approval, "\(request.invocation.name) approved\(always ? " (always)" : "")")
             if always {
                 applyAlwaysApproval(for: request)
             }
         } else {
             transcript.append(
                 TranscriptItem(id: UUID(), kind: .notice("Declined: \(request.invocation.name)")))
+            DiagnosticsCenter.shared.record(.approval, "\(request.invocation.name) declined", level: .warning)
         }
         if let loop {
             Task { await loop.resolve(requestID: request.id, approved: approved) }
@@ -596,12 +670,16 @@ final class AgentSessionController: ObservableObject {
 
     private func handle(_ event: AgentEvent, runID token: UUID) {
         guard token == runID else { return }
+        // Diagnostics: every event is also a breadcrumb (metadata only —
+        // never message contents). See docs/DIAGNOSTICS-SPEC.md.
+        let diagnostics = DiagnosticsCenter.shared
         switch event {
         case .taskStarted:
             flushTokens()
             streamingText = ""
             rawStreamingText = ""
             isReasoningVisible = false
+            diagnostics.record(.session, "Task started")
 
         case .tokenDelta(let chunk):
             pendingTokenBuffer += chunk
@@ -612,7 +690,12 @@ final class AgentSessionController: ObservableObject {
             streamingText = ""
             rawStreamingText = ""
             isReasoningVisible = false
-            transcript.append(TranscriptItem(id: UUID(), kind: .assistant(text)))
+            // Wire format never reaches the transcript: strip tool-call
+            // syntax, and drop the bubble entirely if nothing else remains.
+            let prose = ToolParser.strippingCalls(from: text)
+            if !prose.isEmpty {
+                transcript.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
+            }
 
         case .toolCallStarted(let invocation):
             flushTokens()
@@ -620,35 +703,48 @@ final class AgentSessionController: ObservableObject {
             rawStreamingText = ""
             isReasoningVisible = false
             transcript.append(TranscriptItem(id: UUID(), kind: .toolCall(invocation)))
+            diagnostics.record(.tool, "\(invocation.name) started", detail: invocation.summary)
 
         case .awaitingApproval(let request):
             pendingApproval = request
+            diagnostics.record(.approval, "Approval requested: \(request.invocation.name)",
+                               detail: request.invocation.summary, level: .warning)
 
         case .toolCallFinished(let invocation, let output, let failed):
             transcript.append(
                 TranscriptItem(
                     id: UUID(),
                     kind: .toolResult(id: invocation.id, output: output, failed: failed, toolName: invocation.name)))
+            diagnostics.record(
+                .tool, "\(invocation.name) \(failed ? "failed" : "finished")",
+                detail: ByteFormatter.bytes(Int64(output.utf8.count)),
+                level: failed ? .error : .info)
 
         case .askUser(let requestID, let question):
             pendingQuestionID = requestID
             pendingQuestion = question
+            diagnostics.record(.approval, "The agent asked a question",
+                               detail: String(question.prefix(120)))
 
         case .checkpointCreated(let checkpoint):
             transcript.append(
                 TranscriptItem(id: UUID(), kind: .checkpoint(checkpoint)))
+            diagnostics.record(.tool, "Checkpoint saved", detail: checkpoint.summary)
 
         case .checkpointFailed(let reason):
             transcript.append(
                 TranscriptItem(
                     id: UUID(),
                     kind: .notice("Checkpoint failed — the action was NOT executed: \(reason)")))
+            diagnostics.record(.tool, "Checkpoint failed — action not executed",
+                               detail: reason, level: .error)
 
         case .protocolError(let message):
             transcript.append(
                 TranscriptItem(
                     id: UUID(),
                     kind: .notice("Tool protocol error: \(message)")))
+            diagnostics.record(.tool, "Protocol error", detail: message, level: .warning)
 
         case .reasoning(let text):
             transcript.append(
@@ -656,6 +752,7 @@ final class AgentSessionController: ObservableObject {
 
         case .planProposed(let plan):
             pendingPlan = plan
+            diagnostics.record(.approval, "Plan proposed — waiting for approval")
 
         case .phaseChanged(let phase):
             currentPhase = phase
@@ -670,6 +767,18 @@ final class AgentSessionController: ObservableObject {
             clearPending()
             loop = nil
             eventTask = nil
+            switch reason {
+            case .completed:
+                diagnostics.record(.session, "Task completed")
+            case .cancelled:
+                diagnostics.record(.session, "Task stopped by user", level: .warning)
+            case .declined(let detail):
+                diagnostics.record(.session, "Task declined", detail: detail, level: .warning)
+            case .maxTurnsReached(let turns):
+                diagnostics.record(.session, "Turn limit reached (\(turns))", level: .warning)
+            case .engineError(let message):
+                diagnostics.record(.engine, "Engine error", detail: message, level: .error)
+            }
         }
     }
 
@@ -678,8 +787,10 @@ final class AgentSessionController: ObservableObject {
     static let defaultTools: [any AgentTool] = [
         ReadFileTool(),
         WriteFileTool(),
+        MoveFileTool(),
         ListDirectoryTool(),
         SearchTool(),
+        FindFilesTool(),
         ApplyPatchTool(),
         RunCommandTool(),
         BuildDiagnosticsTool(),
@@ -714,15 +825,20 @@ final class AgentSessionController: ObservableObject {
         else { return nil }
         return record
     }
-    private static func expand(attachments: [ComposerAttachment], message: String) -> String {
+    /// Async: local VLM first load can take seconds (weights page-in), and a
+    /// BYOK describe is a network call — a synchronous bridge with a fixed
+    /// timeout here used to misreport slow-but-working vision as missing.
+    private static func expand(attachments: [ComposerAttachment], message: String) async -> String {
         guard !attachments.isEmpty else { return message }
         var blocks: [String] = []
         for attachment in attachments {
             if attachment.isImage {
-                if let description = Self.describeImage(attachment) {
+                if let description = try? await VisionProvider.describe(
+                    imageAt: attachment.url,
+                    prompt: "Describe this image concisely for a coding agent.") {
                     blocks.append("Image \(attachment.name): \(description)")
                 } else {
-                    blocks.append("Image attached: \(attachment.name) (\(attachment.url.path)) — no vision provider configured to describe it.")
+                    blocks.append("Image attached: \(attachment.name) (\(attachment.url.path)) — no vision model available to describe it (download SmolVLM2 in the Model Manager or add a vision API key in Settings).")
                 }
             } else if let data = try? Data(contentsOf: attachment.url),
                       data.count < 16_384 {
@@ -744,37 +860,4 @@ final class AgentSessionController: ObservableObject {
         return "\(attachments.count) attachments"
     }
 
-    private static func describeImage(_ attachment: ComposerAttachment) -> String? {
-        // Synchronous bridge: the vision call is async; fetch it before
-        // send() builds the message. Detached so the main actor (blocked on
-        // the semaphore below) is never needed to finish the call.
-        let semaphore = DispatchSemaphore(value: 0)
-        let box = SendableBox<String?>(nil)
-        Task.detached {
-            do {
-                box.value = try await VisionProvider.describe(
-                    imageAt: attachment.url,
-                    prompt: "Describe this image concisely for a coding agent.")
-            } catch {
-                box.value = nil
-            }
-            semaphore.signal()
-        }
-        _ = semaphore.wait(timeout: .now() + 15)
-        return box.value
-    }
-
-}
-
-/// A tiny thread-safe box for bridging async results into sync code.
-private final class SendableBox<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: T
-
-    init(_ value: T) { storage = value }
-
-    var value: T {
-        get { lock.lock(); defer { lock.unlock() }; return storage }
-        set { lock.lock(); storage = newValue; lock.unlock() }
-    }
 }

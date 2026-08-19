@@ -17,7 +17,11 @@ enum StreamDisplayFilter {
     /// model currently appears to be reasoning.
     static func display(raw: String) -> (visible: String, reasoning: Bool) {
         let stripped = PromptBuilder.strippingThinking(raw)
-        let visible = stripped.split(whereSeparator: { $0.isWhitespace })
+        // Tool-call syntax is wire format, never transcript content: strip
+        // complete calls and hide the tail of one still streaming in, so
+        // raw JSON/fenced blocks can never flash on screen.
+        let prose = cuttingUnterminatedToolTail(ToolParser.strippingCalls(from: stripped))
+        let visible = prose.split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
         if hasRepetitionFillerTail(visible) {
             return (trimmingFillerTail(visible), true)
@@ -33,7 +37,59 @@ enum StreamDisplayFilter {
                 .range(of: "</think>") == nil
             searchFrom = open.upperBound
         }
+        // 思考 markers pair up like delimiters (see PromptBuilder
+        // .strippingThinking): an odd count means the last one is still open.
+        if !inOpenThink {
+            var markers = 0
+            var from = raw.startIndex
+            while let m = raw.range(of: "思考", range: from..<raw.endIndex) {
+                markers += 1
+                from = m.upperBound
+            }
+            inOpenThink = markers % 2 == 1
+        }
+        // Everything streamed so far is think/tool wire format — show the
+        // working indicator instead of an empty or raw-JSON bubble.
+        if visible.isEmpty, !stripped.isEmpty {
+            return ("", true)
+        }
         return (visible, inOpenThink)
+    }
+
+    /// Cuts a still-streaming tool call off the tail: an unterminated
+    /// tool/json fence, an open `<tool_call>` tag, or a `{"name": …` object
+    /// whose braces have not balanced yet. Legitimate code fences (```swift
+    /// etc.) are left alone — only tool-shaped content is hidden.
+    private static func cuttingUnterminatedToolTail(_ text: String) -> String {
+        // Unterminated fence whose info string or body marks it as a call.
+        let fences = text.components(separatedBy: "```").count - 1
+        if fences % 2 == 1, let open = text.range(of: "```", options: .backwards) {
+            let tail = String(text[open.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let info = tail.prefix(8).lowercased()
+            if info.hasPrefix("tool") || info.hasPrefix("json") || tail.hasPrefix("{") {
+                return String(text[..<open.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        // Open <tool_call> without its close tag.
+        if let tagOpen = text.range(of: "<tool_call>", options: .backwards) {
+            let after = text[tagOpen.upperBound...]
+            if !after.contains("</tool_call>") {
+                return String(text[..<tagOpen.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        // Trailing unbalanced {"name": … object.
+        if ToolParser.looksLikeToolCallFragment(text),
+           let regex = try? NSRegularExpression(pattern: #"\{\s*"name"\s*:"#) {
+            let nsRange = NSRange(text.startIndex..., in: text)
+            if let last = regex.matches(in: text, range: nsRange).last,
+               let range = Range(last.range, in: text) {
+                return String(text[..<range.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// "thinking thinking thinking …" — the same word (2–12 chars) repeated

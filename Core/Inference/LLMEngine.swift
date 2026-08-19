@@ -51,9 +51,24 @@ public protocol LLMEngine: AnyObject, Sendable {
     var loadedModelID: String? { get async }
     var stats: EngineStats { get async }
 
+    /// The context window actually in effect for the resident model, when
+    /// the engine knows it. GGUF fits the llama-server launch ctx to the RAM
+    /// budget, which can be SMALLER than the catalog window — the agent
+    /// loop's compaction must target this number or the server hard-errors
+    /// (HTTP 400) instead of compacting. nil → fall back to the catalog.
+    /// A protocol REQUIREMENT (default below) for the same dispatch reason
+    /// as the context-aware load.
+    var effectiveContextWindow: Int? { get async }
+
     /// Loads a model from a local directory. Admission is arbitrated by
     /// `MemoryAdvisor` before any weights are touched.
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws
+
+    /// Context-window-aware load. A protocol REQUIREMENT (with the default
+    /// below) so calls through `any LLMEngine` dispatch to the conformer's
+    /// witness — GGUFEngine's llama-server needs the size as a launch flag,
+    /// and an extension-only member would be statically bypassed.
+    func load(directory: URL, modelID: String, diskBytes: Int64, contextSize: Int?) async throws
 
     func unload() async
 
@@ -73,6 +88,17 @@ extension LLMEngine {
     /// Memory-pressure response: free caches. Default: nothing (engines that
     /// maintain caches override this).
     func clearCaches() async {}
+
+    /// Default context-aware load: engines that size context from the model
+    /// itself (MLX reads the checkpoint config) ignore the hint. Public —
+    /// witnesses for a public protocol must be.
+    public func load(directory: URL, modelID: String, diskBytes: Int64, contextSize: Int?) async throws {
+        try await load(directory: directory, modelID: modelID, diskBytes: diskBytes)
+    }
+
+    /// Default: the engine doesn't size context itself — callers use the
+    /// catalog window. Public — witnesses for a public protocol must be.
+    public var effectiveContextWindow: Int? { get async { nil } }
 
     /// Emergency unload used by the memory-pressure coordinator. Returns true
     /// when a model was actually resident and got dumped.

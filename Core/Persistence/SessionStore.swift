@@ -26,6 +26,34 @@ struct SessionMessage: Codable, Sendable, Equatable {
     var timestamp: Date
 }
 
+/// Where a session came from. `.app` sessions are BeetCode's own; the rest
+/// are imported chat histories from external coding agents. Decoded with a
+/// default so records written before this field existed stay valid.
+enum SessionSource: String, Codable, Sendable, CaseIterable {
+    case app
+    case claude
+    case codex
+    case cursor
+
+    var label: String {
+        switch self {
+        case .app: "Beet Code"
+        case .claude: "Claude"
+        case .codex: "Codex"
+        case .cursor: "Cursor"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .app: "hammer"
+        case .claude: "sparkle"
+        case .codex: "terminal"
+        case .cursor: "cursorarrow.rays"
+        }
+    }
+}
+
 struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
     var id: UUID
     var title: String
@@ -35,11 +63,46 @@ struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
     var modelID: String
     var messages: [SessionMessage]
     var checkpoints: [SessionCheckpoint]
+    /// Which app/agent this session originated from. Absent on records
+    /// written before imports existed — those are `.app`.
+    var source: SessionSource
     /// Optional schema version. Absent on records written by the original
     /// store — those are v1 and migrated on next save.
     var schemaVersion: Int?
 
     static let currentSchemaVersion = 2
+
+    init(
+        id: UUID, title: String, createdAt: Date, updatedAt: Date,
+        workspacePath: String, modelID: String, messages: [SessionMessage],
+        checkpoints: [SessionCheckpoint], source: SessionSource = .app,
+        schemaVersion: Int? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.workspacePath = workspacePath
+        self.modelID = modelID
+        self.messages = messages
+        self.checkpoints = checkpoints
+        self.source = source
+        self.schemaVersion = schemaVersion
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        workspacePath = try container.decode(String.self, forKey: .workspacePath)
+        modelID = try container.decode(String.self, forKey: .modelID)
+        messages = try container.decode([SessionMessage].self, forKey: .messages)
+        checkpoints = try container.decode([SessionCheckpoint].self, forKey: .checkpoints)
+        source = try container.decodeIfPresent(SessionSource.self, forKey: .source) ?? .app
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+    }
 }
 
 /// Symmetric encryption for session payloads using a Keychain-held local key.
@@ -277,6 +340,7 @@ final class SessionStore: @unchecked Sendable {
         let payload = SessionCrypto.encrypt(data) ?? data
         try? payload.write(to: target, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        invalidateCache()
     }
 
     func load(id: UUID) -> SessionRecord? {
@@ -325,6 +389,37 @@ final class SessionStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         try? FileManager.default.removeItem(at: url(for: record.id))
+        allCache = nil
+    }
+
+    /// TTL cache over loadAll(): consumers that need "all sessions" often
+    /// (the agent loop's workspace-history digest, the sidebar) must not pay
+    /// a decrypt-every-file pass per call. Saves and deletes invalidate.
+    private var allCache: (at: Date, records: [SessionRecord])?
+
+    /// loadAll() with a freshness budget: repeated calls within `maxAge`
+    /// reuse the last snapshot instead of re-decrypting every session file.
+    func cachedAll(maxAge: TimeInterval = 60) -> [SessionRecord] {
+        lock.lock()
+        if let cache = allCache, Date().timeIntervalSince(cache.at) < maxAge {
+            let records = cache.records
+            lock.unlock()
+            return records
+        }
+        lock.unlock()
+        let records = loadAll()
+        lock.lock()
+        allCache = (Date(), records)
+        lock.unlock()
+        return records
+    }
+
+    /// Drops the snapshot — called after every save/delete so the next
+    /// cachedAll() re-reads. Tests can call it directly for determinism.
+    func invalidateCache() {
+        lock.lock()
+        allCache = nil
+        lock.unlock()
     }
 
     /// True when the session's workspace binding still exists on disk.

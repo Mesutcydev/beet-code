@@ -351,6 +351,58 @@ enum RemoteLLMClient {
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
+            let task = Task {
+                do {
+                    let first = streamOpenAIOnce(
+                        provider: provider, baseURL: baseURL, apiKey: apiKey,
+                        model: model, turns: turns, temperature: temperature,
+                        maxTokens: maxTokens, includeStreamOptions: true, onUsage: onUsage)
+                    for try await chunk in first {
+                        if Task.isCancelled { throw RemoteLLMError.cancelled }
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch RemoteLLMError.badStatus(let code, _) where code == 400 {
+                    // Compatibility fallback: strict OpenAI-compatible
+                    // servers (older vLLM/llama.cpp builds, some proxies)
+                    // reject the unknown `stream_options` field with a 400
+                    // before any content streams. Retry once without it;
+                    // usage stats degrade to chunk counting.
+                    do {
+                        let retry = streamOpenAIOnce(
+                            provider: provider, baseURL: baseURL, apiKey: apiKey,
+                            model: model, turns: turns, temperature: temperature,
+                            maxTokens: maxTokens, includeStreamOptions: false, onUsage: onUsage)
+                        for try await chunk in retry {
+                            if Task.isCancelled { throw RemoteLLMError.cancelled }
+                            continuation.yield(chunk)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// One OpenAI-compatible streaming attempt. `includeStreamOptions` toggles
+    /// the `stream_options: {include_usage}` field strict servers reject.
+    private static func streamOpenAIOnce(
+        provider: LLMProvider,
+        baseURL: URL,
+        apiKey: String,
+        model: String,
+        turns: [ChatTurn],
+        temperature: Double?,
+        maxTokens: Int?,
+        includeStreamOptions: Bool,
+        onUsage: (@Sendable (UsageInfo) -> Void)?
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
             let messages = prepareOpenAIMessages(turns)
             let reasoningCap = usesMaxCompletionTokens(model)
             let body = OpenAIRequest(
@@ -360,7 +412,7 @@ enum RemoteLLMClient {
                 max_tokens: reasoningCap ? nil : maxTokens,
                 max_completion_tokens: reasoningCap ? maxTokens : nil,
                 stream: true,
-                stream_options: .init())
+                stream_options: includeStreamOptions ? .init() : nil)
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
                 request.httpMethod = "POST"

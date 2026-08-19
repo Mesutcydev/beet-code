@@ -28,6 +28,11 @@ final class AppState: ObservableObject {
     let sessions: AgentSessionController
 
     @Published var activeModelID: String?
+    /// The context window the resident engine actually runs with. GGUF loads
+    /// fit the server ctx to the RAM budget, which can be smaller than the
+    /// catalog window — compaction and the composer gauge must use this, or
+    /// llama-server hard-errors (HTTP 400) mid-session. nil → catalog value.
+    @Published var effectiveContextWindow: Int?
     /// True while the simulator side panel is docked — the window must be
     /// allowed to grow so sidebar + chat + simulator never clip each other.
     @Published var isSimulatorPanelOpen = false
@@ -58,6 +63,11 @@ final class AppState: ObservableObject {
         LegacyMigration.runOnce()
 
         self.engine = engine
+        // The vision sidecar serializes its Metal work through the same gate
+        // as every resident LLM engine (one command buffer per process).
+        if let gate = engine.enginePool?.sharedGate {
+            VisionEngine.shared.configure(gate: gate)
+        }
         self.downloadManager = ModelDownloadManager(
             tokenProvider: { HFTokenStore.currentToken() },
             hub: hubOverride)
@@ -67,6 +77,12 @@ final class AppState: ObservableObject {
             settings: SettingsStore.shared,
             thermal: thermal)
         sessions.activeModelIDHandler = { [weak self] in self?.activeModelID ?? "" }
+        // The loop compacts against the engine's REAL launched window (GGUF
+        // fits ctx to RAM), falling back to the catalog window for engines
+        // that size context themselves.
+        sessions.contextWindowHandler = { [weak self] in
+            self?.effectiveContextWindow ?? self?.activeModel?.contextWindow
+        }
         // `/model <id>` slash command: resolve against the catalog and
         // activate (load) the model, exactly like the Model Manager does.
         sessions.modelSwitchHandler = { [weak self] modelID in
@@ -166,6 +182,9 @@ final class AppState: ObservableObject {
                 // race the resident model leaving memory.
                 await engine.cancelGeneration()
                 await self?.sessions.stopAndWait()
+                // The vision sidecar is the cheapest thing to drop first —
+                // it holds no conversation state and reloads on demand.
+                _ = await VisionEngine.shared.dumpIfResident()
                 let dumped = await engine.dumpIfResident()
                 if dumped {
                     MemoryAdvisor.notePressureDump()
@@ -222,6 +241,15 @@ final class AppState: ObservableObject {
 
     func activate(model: CatalogModel) async {
         clearStaleLoadError()
+        // Reentrancy guard: two rapid Load clicks (or a click while a load is
+        // paging in) must not race engine swaps — the second tap is ignored.
+        if case .loading = enginePhase { return }
+        // Vision sidecars are never loadable as the chat engine — they run
+        // automatically when an image needs describing.
+        guard model.role == .chat else {
+            enginePhase = .failed("\(model.displayName) is a vision sidecar — it runs automatically for image attachments. Load a chat model instead.")
+            return
+        }
         guard let installed = modelStore.installedModel(id: model.id) else {
             enginePhase = .failed("\(model.displayName) is not downloaded yet.")
             return
@@ -250,14 +278,18 @@ final class AppState: ObservableObject {
             // download has no config.json), so user-imported models route
             // correctly too.
             let format = modelStore.detectedFormat(installed)
-            try await engine.load(directory: directory, modelID: model.id, diskBytes: installed.sizeBytes, format: format)
+            try await engine.load(directory: directory, modelID: model.id, diskBytes: installed.sizeBytes, format: format, contextSize: model.contextWindow)
             activeModelID = model.id
+            // The engine's REAL window (GGUF fits ctx to RAM) wins over the
+            // catalog number; the agent loop compacts against this.
+            effectiveContextWindow = await engine.effectiveContextWindow ?? model.contextWindow
             enginePhase = .ready(model.displayName)
             // Persist the selection only after a successful load.
             persistActiveModel(model.id)
         } catch {
             enginePhase = .failed(error.localizedDescription)
             activeModelID = nil
+            effectiveContextWindow = nil
             clearPersistedModel()
         }
     }
@@ -275,6 +307,7 @@ final class AppState: ObservableObject {
         if activeModelID != nil || engine.source != .localMLX {
             await engine.unload()
             activeModelID = nil
+            effectiveContextWindow = nil
         }
         guard engine.useRemote(endpoint) else {
             enginePhase = .failed("No API key configured for \(endpoint.provider.displayName).")
@@ -304,6 +337,7 @@ final class AppState: ObservableObject {
         await sessions.stopAndWait()
         await engine.unload()
         activeModelID = nil
+        effectiveContextWindow = nil
         enginePhase = .idle
         clearPersistedModel()
     }

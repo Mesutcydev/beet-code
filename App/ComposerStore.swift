@@ -210,7 +210,9 @@ final class ComposerStore {
         let attachmentTokens = attachments.reduce(0) { $0 + estimatedAttachmentTokens($1) }
         let total = draftTokens + intentTokens + focusTokens + attachmentTokens
 
-        let window = appState?.activeModel?.contextWindow
+        // The engine's REAL launched window (GGUF fits ctx to RAM) is the
+        // honest denominator; the catalog value is the fallback.
+        let window = appState?.effectiveContextWindow ?? appState?.activeModel?.contextWindow
         // The denominator is the window minus the response reserve; when the
         // window is unknown (remote engine) there is no percentage, by design.
         let reserve = 4_096

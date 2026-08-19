@@ -66,8 +66,10 @@ context compression**, **no persistent memory**. Beet Code's wedge:
    allow/ask/deny with glob rules on arguments, stored in a
    `beetcode.json` project file → also delivers your "fully customizable"
    goal (config file beats UI-only settings).
-7. **Session fork/export/import** (+ import from OpenCode/Claude Code JSON —
-   the user-poaching feature ZCode ships).
+7. **Session fork/export/import** — import half ✅ **DONE**: Claude Code,
+   Codex, and Cursor histories import through a live-status parser into
+   structurally faithful native sessions, grouped under collapsible
+   per-project headers. Fork/export remains open.
 8. **Markdown-defined agents/subagents**: bounded child `AgentLoop`s with
    their own prompt/model/permissions (Hermes pattern: summary-only return).
 9. **Per-agent model routing** (OpenClaude idea): cheap local MLX for

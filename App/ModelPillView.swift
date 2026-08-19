@@ -17,22 +17,32 @@ struct ModelSelectionPill: View {
             showPopover = true
         } label: {
             HStack(spacing: 6) {
+                // A status dot before the icon: engine health is glanceable
+                // even when the icon itself only says local vs remote.
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
                 Image(systemName: icon)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(iconColor)
                 Text(label)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .layoutPriority(1)
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(Theme.textTertiary)
             }
+            // The row's one identity control: primary text, and an accent
+            // border once an engine is actually ready — before that it wears
+            // the same hairline as the accessory pills.
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.textPrimary)
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(Theme.surfaceInset))
-            .overlay(Capsule().strokeBorder(showPopover ? Theme.accent.opacity(0.6) : Theme.hairline, lineWidth: 1))
+            .frame(minHeight: 24)
+            .background(Theme.surfaceInset, in: Capsule())
+            .overlay(Capsule().strokeBorder(borderColor, lineWidth: 1))
+            .lfHoverLift()
         }
         .buttonStyle(.plain)
         .help(tooltip)
@@ -76,6 +86,21 @@ struct ModelSelectionPill: View {
         }
     }
 
+    private var statusColor: Color {
+        switch appState.enginePhase {
+        case .ready: return Theme.success
+        case .loading: return Theme.warning
+        case .failed: return Theme.danger
+        case .idle: return Theme.textTertiary
+        }
+    }
+
+    private var borderColor: Color {
+        if showPopover { return Theme.washBorder(Theme.accent) }
+        if case .ready = appState.enginePhase { return Theme.washBorder(Theme.accent) }
+        return Theme.hairline
+    }
+
     private var tooltip: String {
         switch appState.enginePhase {
         case .ready(let name): return "Active model: \(name). Click to switch."
@@ -96,7 +121,11 @@ private struct ModelPickerPopover: View {
     @Environment(\.dismiss) private var dismiss
 
     private var installedModels: [CatalogModel] {
-        ModelCatalog.all.filter { appState.modelStore.isInstalled(catalogModel: $0) }
+        // Chat models only — vision sidecars are never loadable here; the
+        // app runs them automatically for image attachments.
+        ModelCatalog.all.filter {
+            $0.role == .chat && appState.modelStore.isInstalled(catalogModel: $0)
+        }
     }
 
     private var remoteProviders: [LLMProvider] {
@@ -117,7 +146,9 @@ private struct ModelPickerPopover: View {
             Divider()
             footer
         }
-        .background(.regularMaterial)
+        // Opaque themed surface — a material popover would stay neutral
+        // gray in Beet mode while everything around it goes plum.
+        .background(Theme.surface)
     }
 
     private var header: some View {
@@ -149,7 +180,7 @@ private struct ModelPickerPopover: View {
             .foregroundStyle(color)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.12)))
+            .background(Capsule().fill(Theme.wash(color)))
     }
 
     // MARK: Local models

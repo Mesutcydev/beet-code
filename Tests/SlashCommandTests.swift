@@ -101,4 +101,33 @@ final class ProjectInstructionsTests: XCTestCase {
             tools: [], workspace: Workspace(root: tempRoot), projectInstructions: nil)
         XCTAssertFalse(prompt.contains("Project instructions"))
     }
+
+    /// Cursor's `.cursor/rules/` directory loads as a rule pack: every
+    /// markdown file, concatenated in name order.
+    func testCursorRulesPackConcatenatesInNameOrder() throws {
+        let rules = tempRoot.appendingPathComponent(".cursor/rules", isDirectory: true)
+        try FileManager.default.createDirectory(at: rules, withIntermediateDirectories: true)
+        try "style rules".write(to: rules.appendingPathComponent("01-style.md"), atomically: true, encoding: .utf8)
+        try "testing rules".write(to: rules.appendingPathComponent("02-testing.mdc"), atomically: true, encoding: .utf8)
+        let loaded = ProjectInstructions.load(workspaceRoot: tempRoot)
+        XCTAssertEqual(loaded?.source, "workspace .cursor/rules")
+        XCTAssertEqual(loaded?.text, "style rules\n\ntesting rules")
+    }
+
+    /// AGENTS.md still beats a Cursor rule pack when both exist.
+    func testAgentsMdWinsOverCursorRules() throws {
+        try "from AGENTS.md".write(to: tempRoot.appendingPathComponent("AGENTS.md"), atomically: true, encoding: .utf8)
+        let rules = tempRoot.appendingPathComponent(".cursor/rules", isDirectory: true)
+        try FileManager.default.createDirectory(at: rules, withIntermediateDirectories: true)
+        try "cursor rules".write(to: rules.appendingPathComponent("a.md"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(ProjectInstructions.load(workspaceRoot: tempRoot)?.source, "workspace AGENTS.md")
+    }
+
+    /// The legacy single-file `.cursorrules` convention still loads.
+    func testLegacyCursorrulesFileLoads() throws {
+        try "legacy cursor rules".write(to: tempRoot.appendingPathComponent(".cursorrules"), atomically: true, encoding: .utf8)
+        let loaded = ProjectInstructions.load(workspaceRoot: tempRoot)
+        XCTAssertEqual(loaded?.source, "workspace .cursorrules")
+        XCTAssertEqual(loaded?.text, "legacy cursor rules")
+    }
 }

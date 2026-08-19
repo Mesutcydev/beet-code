@@ -11,6 +11,7 @@ enum PromptBuilder {
         repoIndex: RepoIndex? = nil,
         memorySection: String? = nil,
         projectInstructions: String? = nil,
+        workspaceHistory: String? = nil,
         planMode: Bool = false
     ) -> String {
         var sections: [String] = []
@@ -81,6 +82,13 @@ enum PromptBuilder {
             sections.append("# Project instructions (AGENTS.md / CLAUDE.md)\n\n\(projectInstructions)")
         }
 
+        // Workspace history: what earlier sessions in THIS folder were about
+        // — BeetCode's own and chats imported from Claude / Codex / Cursor.
+        // Bounded digest; like memory it survives compaction in the prompt.
+        if let workspaceHistory, !workspaceHistory.isEmpty {
+            sections.append("# Earlier work in this workspace\n\n\(workspaceHistory)")
+        }
+
         sections.append("""
         # Conventions for editing files
 
@@ -122,6 +130,22 @@ enum PromptBuilder {
         // Unterminated block (generation cut mid-think).
         if let range = result.range(of: #"<think>[\s\S]*$"#, options: .regularExpression) {
             result.removeSubrange(range)
+        }
+        // Qwen-style Chinese reasoning marker (思考): some uncensored/Chinese
+        // finetunes delimit the reasoning preamble with 思考 … 思考 instead of
+        // <think> tags. A complete pair proves the delimiter convention, so
+        // the whole preamble through the closing marker is hidden. A lone
+        // marker is ambiguous (the word also means "thinking" in ordinary
+        // prose), so only the tail from the marker on is hidden — preceding
+        // text stays visible and the message can never vanish entirely.
+        // Each iteration removes at least one marker, so the loop is bounded.
+        while let first = result.range(of: "思考") {
+            let rest = result[first.upperBound...]
+            if let close = rest.range(of: "思考") {
+                result.removeSubrange(result.startIndex..<close.upperBound)
+            } else {
+                result.removeSubrange(first.lowerBound..<result.endIndex)
+            }
         }
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }

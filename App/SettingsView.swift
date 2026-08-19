@@ -2,10 +2,10 @@ import SwiftUI
 
 // MARK: - Settings window
 
-/// Tabbed, card-based settings. Three fixed tabs (General / Agent /
-/// Providers) instead of one endless scrolling list; every section is a
-/// Theme-styled card with an icon header, consistent padding, and a footer
-/// that never truncates.
+/// Tabbed, card-based settings. Four fixed tabs (General / Agent /
+/// Providers / Plugins) instead of one endless scrolling list; every
+/// section is a Theme-styled card with an icon header, consistent padding,
+/// and a footer that never truncates.
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject private var settings = SettingsStore.shared
@@ -14,6 +14,7 @@ struct SettingsView: View {
         case general = "General"
         case agent = "Agent"
         case providers = "Providers"
+        case plugins = "Plugins"
         var id: String { rawValue }
 
         var icon: String {
@@ -21,6 +22,7 @@ struct SettingsView: View {
             case .general: "gearshape"
             case .agent: "cpu"
             case .providers: "key"
+            case .plugins: "puzzlepiece"
             }
         }
     }
@@ -48,6 +50,7 @@ struct SettingsView: View {
                 case .general: GeneralTab()
                 case .agent: AgentTab()
                 case .providers: ProvidersTab()
+                case .plugins: PluginsTab()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -210,6 +213,32 @@ private struct TabScroll<Content: View>: View {
     }
 }
 
+/// Slim tinted banner for tab-level explanations — deliberately NOT a
+/// SettingsCard, so a one-paragraph note doesn't read as a runt card next
+/// to the content-rich cards around it.
+private struct InfoBanner: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.info)
+                .frame(width: 30, height: 30)
+                .background(Theme.washStrong(Theme.info),
+                            in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(Spacing.md)
+        .lfWashCard(Theme.info)
+    }
+}
+
 // MARK: - General tab
 
 private struct GeneralTab: View {
@@ -328,6 +357,7 @@ private struct GeneralTab: View {
                     if appState.apiServerRunning {
                         Text("Serving at \(appState.apiServerBaseURL)")
                             .font(.caption.monospaced())
+                            .foregroundStyle(Theme.textSecondary)
                             .textSelection(.enabled)
                     } else if let error = appState.apiServerError {
                         Text(error)
@@ -453,12 +483,11 @@ private struct ProvidersTab: View {
             if pendingRestore {
                 keyRestoreBanner
             }
-            SettingsCard(title: "Bring your own key", icon: "info.circle") {
-                Text("Run the agent on a remote model instead of a local download. Keys live in the Keychain only. After saving a key, use **Test** to verify the connection, then activate the provider in the Model Manager.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // A slim tinted banner, not a SettingsCard: a full card around
+            // one paragraph read as a runt next to the provider cards.
+            InfoBanner(
+                icon: "key",
+                text: "Run the agent on a remote model instead of a local download. Keys live in the Keychain only. After saving a key, use **Test** to verify the connection, then activate the provider in the Model Manager.")
             ForEach(LLMProvider.allCases) { provider in
                 ProviderCard(provider: provider)
             }
@@ -471,11 +500,20 @@ private struct ProvidersTab: View {
     }
 
     private var keyRestoreBanner: some View {
-        SettingsCard(title: "Keys from LocalForge found", icon: "key.fill") {
-            VStack(alignment: .leading, spacing: Spacing.md) {
-                Text("Your saved API keys are still in the Keychain under the old LocalForge app, but macOS requires one authorization to move them. Your keys were never deleted.")
-                    .font(.callout)
+        HStack(alignment: .top, spacing: Spacing.md) {
+            Image(systemName: "key.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.warning)
+                .frame(width: 30, height: 30)
+                .background(Theme.washStrong(Theme.warning),
+                            in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                Text("Keys from LocalForge found")
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
+                Text("Your saved API keys are still in the Keychain under the old LocalForge app, but macOS requires one authorization to move them. Your keys were never deleted.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Spacing.md) {
                     Button("Restore Keys…") {
@@ -483,14 +521,18 @@ private struct ProvidersTab: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accent)
+                    .controlSize(.small)
                     if let restoreResult {
                         Text(restoreResult)
-                            .font(.callout)
+                            .font(.caption)
                             .foregroundStyle(Theme.success)
                     }
                 }
             }
         }
+        .padding(Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lfWashCard(Theme.warning)
     }
 
     /// Runs the interactive migration OFF the main actor — the Keychain
@@ -548,8 +590,12 @@ private struct ProviderCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
-            // Header: name + status badges
+            // Header: provider glyph + name + status badges — the same
+            // icon-header chrome every SettingsCard wears.
             HStack(spacing: Spacing.sm) {
+                Image(systemName: provider == .custom ? "server.rack" : "cloud.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
                 Text(provider.displayName)
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
@@ -825,5 +871,90 @@ private struct ProviderCard: View {
                                       ?? error.localizedDescription)
             }
         }
+    }
+}
+
+
+// MARK: - Plugins tab
+
+/// Universal compatibility surface: shows which foreign tool conventions
+/// Beet Code picked up for the current workspace — Claude skills/commands,
+/// Codex prompts, Cursor rule packs, Copilot instructions — and which
+/// instruction file the agent actually loads. Read-only: the source of
+/// truth stays the files on disk, this tab just makes discovery visible.
+private struct PluginsTab: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var commands: [ExternalCommand] = []
+    @State private var instructionSource: String?
+
+    var body: some View {
+        TabScroll {
+            InfoBanner(
+                icon: "puzzlepiece.extension",
+                text: "Beet Code reads the convention directories of Claude Code, Codex, Cursor and Copilot, so the skills, commands, prompts and project rules you already have keep working here. Discovered skills and commands become slash commands in the composer — type /help to see them.")
+
+            SettingsCard(
+                title: "Project instructions",
+                icon: "doc.text.magnifyingglass",
+                footer: "Search order: AGENTS.md → CLAUDE.md → .cursor/rules → .cursorrules → .github/copilot-instructions.md — workspace first, then user-level (~/.beetcode, ~/.claude). The first file found wins.") {
+                SettingRow(
+                    label: instructionSource ?? "No instructions file found",
+                    value: appState.sessions.workspaceURL?.path ?? "Open a workspace folder to load project rules") {
+                    Image(systemName: instructionSource == nil ? "circle.dashed" : "checkmark.circle.fill")
+                        .font(.callout)
+                        .foregroundStyle(instructionSource == nil ? Theme.textTertiary : Theme.success)
+                }
+            }
+
+            SettingsCard(
+                title: "Slash commands",
+                icon: "slash.circle",
+                footer: "Scanned: .claude/skills/<name>/SKILL.md, .claude/commands/*.md, .codex/prompts/*.md, .beetcode/commands/*.md — in the workspace first, then your home folder; the workspace wins name collisions. MCP server config import (~/.claude.json, .cursor/mcp.json, ~/.codex/config.toml) is not supported yet.") {
+                if commands.isEmpty {
+                    Text("No external commands discovered yet.")
+                        .font(.callout)
+                        .foregroundStyle(Theme.textSecondary)
+                } else {
+                    ForEach(grouped, id: \.0) { origin, items in
+                        VStack(alignment: .leading, spacing: Spacing.sm) {
+                            Text(origin)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Theme.textTertiary)
+                            ForEach(items) { command in
+                                SettingRow(
+                                    label: "/\(command.name)",
+                                    value: command.location.path) {
+                                    Text(command.kind.label)
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(Theme.accent)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 2)
+                                        .background(Theme.wash(Theme.accent), in: Capsule())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear(perform: reload)
+    }
+
+    /// Commands grouped by origin, in a stable Claude → Codex → BeetCode
+    /// order so the list doesn't reshuffle between scans.
+    private var grouped: [(String, [ExternalCommand])] {
+        let order: [ExternalCommand.Origin] = [.claude, .codex, .beetcode]
+        return order.compactMap { origin in
+            let items = commands.filter { $0.origin == origin }
+            return items.isEmpty ? nil : (origin.rawValue, items)
+        }
+    }
+
+    private func reload() {
+        let workspace = appState.sessions.workspaceURL
+        commands = ExternalCommands.discover(
+            home: FileManager.default.homeDirectoryForCurrentUser,
+            workspace: workspace)
+        instructionSource = workspace.flatMap { ProjectInstructions.load(workspaceRoot: $0)?.source }
     }
 }

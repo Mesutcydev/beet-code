@@ -1,12 +1,15 @@
 import Foundation
 
-/// App color appearance. `system` follows macOS; `light`/`dark` force it.
+/// App color appearance. `system` follows macOS; `light`/`dark` force it;
+/// `beet` is the identity theme — a dark appearance whose neutrals are
+/// tinted from Beet Red (Pantone 19-2030 TCX) instead of cool slate.
 /// Light is the default. Kept Foundation-only (no SwiftUI) so the CLI target
 /// can compile this file; the SwiftUI `ColorScheme` mapping lives in the app.
 enum AppAppearance: String, CaseIterable, Codable, Identifiable, Sendable {
     case system
     case light
     case dark
+    case beet
 
     var id: String { rawValue }
 
@@ -15,6 +18,7 @@ enum AppAppearance: String, CaseIterable, Codable, Identifiable, Sendable {
         case .system: "System"
         case .light: "Light"
         case .dark: "Dark"
+        case .beet: "Beet"
         }
     }
 }

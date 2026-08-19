@@ -115,6 +115,8 @@ final class ModelDownloadManager: ObservableObject {
 
     /// Called at startup: every persisted manifest becomes a paused state,
     /// ready for explicit resume (or opt-in auto-resume by AppState).
+    /// Partial bytes are recovered from disk so a resumable row shows real
+    /// progress ("3,1 GB of 4,1 GB") instead of a misleading "0 KB".
     func restorePausedDownloads() {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: manifestsDirectory.path) else {
             return
@@ -124,9 +126,10 @@ final class ModelDownloadManager: ObservableObject {
             guard let data = try? Data(contentsOf: url),
                   let manifest = try? JSONDecoder().decode(DownloadManifest.self, from: data)
             else { continue }
+            let downloaded = Self.downloadedBytes(in: URL(fileURLWithPath: manifest.directoryPath))
             states[manifest.modelID] = .paused(
                 Progress(
-                    completedBytes: 0,
+                    completedBytes: downloaded,
                     totalBytes: manifest.totalBytes,
                     currentFile: "resumable"))
         }
@@ -350,7 +353,7 @@ final class ModelDownloadManager: ObservableObject {
                 if Self.isComplete(file: file, at: destination) {
                     completed += file.sizeBytes
                 } else {
-                    pending.append((file, Self.partialSize(near: destination)))
+                    pending.append((file, Self.partialBytes(near: destination)))
                 }
             }
 
@@ -376,8 +379,13 @@ final class ModelDownloadManager: ObservableObject {
                         orchestrationTasks[modelID] = nil
                         return
                     }
+                    // Include the in-flight file's partial bytes — otherwise
+                    // pausing mid-first-file reads "0 KB" even when hundreds
+                    // of MB are already on disk.
+                    let partial = Self.partialBytes(
+                        near: directory.appendingPathComponent(file.path))
                     states[modelID] = .paused(
-                        Progress(completedBytes: completed, totalBytes: total))
+                        Progress(completedBytes: completed + partial, totalBytes: total))
                     saveManifest(
                         DownloadManifest(
                             modelID: modelID,
@@ -427,10 +435,45 @@ final class ModelDownloadManager: ObservableObject {
         return size == file.sizeBytes && file.sizeBytes > 0
     }
 
-    nonisolated private static func partialSize(near destination: URL) -> Int64 {
+    /// Real bytes already on disk for a partial file. Parallel-chunk partials
+    /// are preallocated to full length, so their size lies — the chunk
+    /// sidecar is the source of truth there; sequential partials append, so
+    /// the file length itself is the truth.
+    nonisolated private static func partialBytes(near destination: URL) -> Int64 {
+        let sidecarURL = destination.appendingPathExtension("incomplete.json")
+        if let data = try? Data(contentsOf: sidecarURL),
+           let sidecar = try? JSONDecoder().decode(
+            ParallelChunkDownloader.SidecarState.self, from: data) {
+            let chunks = ParallelChunkDownloader.Logic.plan(
+                totalBytes: sidecar.totalBytes, chunkSize: ParallelChunkDownloader.chunkSize)
+            return chunks
+                .filter { sidecar.completedChunks.contains($0.index) }
+                .reduce(Int64(0)) { $0 + $1.length }
+        }
         let incomplete = URL(fileURLWithPath: destination.path + ".incomplete")
         let attributes = try? FileManager.default.attributesOfItem(atPath: incomplete.path)
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    /// Total real bytes a partially-downloaded model directory already holds:
+    /// completed files at full size plus each partial's true progress. Used
+    /// to restore honest paused progress after a relaunch.
+    nonisolated private static func downloadedBytes(in directory: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.fileSizeKey])
+        else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if name.hasSuffix(".incomplete.json") { continue }
+            if name.hasSuffix(".incomplete") {
+                total += partialBytes(near: url.deletingPathExtension())
+                continue
+            }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            total += Int64(size)
+        }
+        return total
     }
 
     nonisolated private static func removePartials(in directory: URL) {

@@ -103,9 +103,11 @@ actor AgentLoop {
             mode: configuration.memoryMode,
             taskHint: taskHint)
         let projectInstructions = ProjectInstructions.section(workspaceRoot: workspace.root)
+        let historySection = WorkspaceHistory.section(workspacePath: workspace.root.path)
         self.systemPrompt = PromptBuilder.systemPrompt(
             tools: allTools, workspace: workspace, repoIndex: repoIndex,
-            memorySection: memorySection, projectInstructions: projectInstructions)
+            memorySection: memorySection, projectInstructions: projectInstructions,
+            workspaceHistory: historySection)
         if let seed = seedRecord {
             // Continuation: resume an existing session instead of starting a
             // fresh record — history and checkpoints carry over.
@@ -310,6 +312,22 @@ actor AgentLoop {
 
                 // 2. Parse tool calls.
                 let calls = ToolParser.parse(visible)
+
+                // 2t. A reply ending in an UNTERMINATED tool-call object
+                // executed nothing — the token ceiling cut the JSON off
+                // mid-call. Never show the raw fragment as an answer or
+                // declare completion: hand the model a protocol observation
+                // and let it re-emit a call that fits the budget.
+                if calls.isEmpty, ToolParser.looksLikeToolCallFragment(visible) {
+                    let notice = "error: malformed tool call — the JSON was cut off before it closed, so nothing was executed. "
+                        + "Re-emit exactly one complete tool block. If you are writing a file, keep the content small enough to fit in one reply or build it up in several appends."
+                    record.messages.append(
+                        SessionMessage(role: .toolResult, content: notice, toolName: "protocol", timestamp: Date()))
+                    history.append(ChatTurn(role: .tool, content: notice))
+                    eventContinuation?.yield(.protocolError(notice))
+                    await compactIfNeeded()
+                    continue
+                }
 
                 // 2z. Empty after thinking-stripping means the token ceiling
                 // cut the generation off mid-thought. Never surface an empty

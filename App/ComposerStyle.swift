@@ -60,9 +60,14 @@ struct ComposerBorder: ViewModifier {
             // One elevated card: the composer floats on the raised surface
             // above the window bg — not a recessed input well.
             .background(Theme.surface, in: shape)
+            // A whisper of elevation so the card floats over the window bg —
+            // appearance-aware, since dark mode needs a far deeper shadow.
+            .shadow(color: Theme.cardShadow, radius: 6, y: 2)
             // Outer glow (streaming/approval only): rendered BEHIND the
             // surface so only the bleed beyond the card edge shows — the
             // light appears to radiate without hazing the input area.
+            // allowsHitTesting(false) on every decorative layer: without it
+            // the overlay swallows clicks meant for the composer's buttons.
             .background {
                 if animated && (phase == .streaming || phase == .awaitingApproval) {
                     TimelineView(.animation) { timeline in
@@ -72,12 +77,14 @@ struct ComposerBorder: ViewModifier {
                             .blur(radius: 7)
                             .opacity(0.55)
                     }
+                    .allowsHitTesting(false)
                 }
             }
             // Baseline edge so the card stays defined while the gradient is
             // dim at idle.
             .overlay {
                 shape.strokeBorder(Theme.hairline, lineWidth: 1)
+                    .allowsHitTesting(false)
             }
             // Signature: the animated light tracing the FULL perimeter of
             // the composer, intensifying idle → focused → streaming.
@@ -88,8 +95,10 @@ struct ComposerBorder: ViewModifier {
                         let progress = (t / flow.cycleSeconds).truncatingRemainder(dividingBy: 1)
                         borderGradient(angle: .degrees(progress * 360))
                     }
+                    .allowsHitTesting(false)
                 } else {
                     borderGradient(angle: .degrees(45))
+                        .allowsHitTesting(false)
                 }
             }
     }
@@ -109,17 +118,24 @@ struct ComposerBorder: ViewModifier {
 extension View {
     /// The accessory row's single pill language — attach, model pill,
     /// Intent, Plan and Reasoning all share this capsule: surfaceInset fill
-    /// + secondary text at rest, an accent wash + border + accent text when
-    /// active. Type is caption; 11pt icons are set at the call site.
+    /// + hairline border + secondary text at rest, an accent wash + accent
+    /// border + accent text when active. Type is caption; 11pt icons are
+    /// set at the call site. The resting border matters: without it the
+    /// pills read as static labels instead of controls.
     func lfComposerPill(active: Bool) -> some View {
         self
             .font(.caption.weight(.medium))
             .foregroundStyle(active ? Theme.accent : Theme.textSecondary)
+            // Never wrap or squeeze: a pill that can't fit hides behind the
+            // row's overflow instead of breaking its label in two (the old
+            // "Rea-son-ing" wrap).
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 9)
             .frame(minHeight: 24)
             .background(active ? Theme.washStrong(Theme.accent) : Theme.surfaceInset, in: Capsule())
             .overlay(Capsule().strokeBorder(
-                active ? Theme.washBorder(Theme.accent) : .clear, lineWidth: 1))
+                active ? Theme.washBorder(Theme.accent) : Theme.hairline, lineWidth: 1))
             .lfHoverLift()
     }
 }

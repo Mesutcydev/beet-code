@@ -14,14 +14,15 @@ This is a native macOS coding agent (Swift 6 / SwiftUI / MLX + BYOK).
    xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
      -destination 'platform=macOS' -derivedDataPath .derived test
    ```
-   Suite: 237 tests, all deterministic (no weights, no Metal, no network).
+   Suite: 370 tests, all deterministic (no weights, no Metal, no network).
 
 ## Architecture in 30 seconds
 
 - `AppState` (MainActor) → `AgentSessionController` → `AgentLoop` (actor) →
   `PermissionGate` → `ToolExecutor` → `AgentTool`s.
-- Engines behind `LLMEngine`; `EngineRouter` switches local MLX ↔ remote
-  BYOK (OpenAI/DeepSeek/LongCat/Alibaba/Gemini/OpenRouter).
+- Engines behind `LLMEngine`; `EngineRouter` switches local MLX / local GGUF
+  (embedded llama-server) / remote BYOK (OpenAI/DeepSeek/LongCat/Alibaba/
+  Gemini/OpenRouter/Anthropic/Custom).
 - `Workspace` = canonical realpath confinement; `ShellRunner` = posix_spawn
   process groups; `GitCheckpointer` = approval-before-mutation snapshots.
 - Sessions encrypted (Keychain key, cached); memory facts/summaries per

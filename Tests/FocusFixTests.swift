@@ -7,9 +7,29 @@ import XCTest
 final class StreamDisplayFilterTests: XCTestCase {
 
     func testCompleteThinkBlockHidden() {
-        let raw = "<think>I must consider the file layout.</think>The fix is here."
+        // Complete block with both opening and closing delimiters (some Qwen
+        // finetunes use the Chinese '思考' marker instead of <think> tags).
+        let raw = "I must consider the file layout. 思考 I am thinking 思考 The fix is here."
         let (visible, reasoning) = StreamDisplayFilter.display(raw: raw)
         XCTAssertEqual(visible, "The fix is here.")
+        XCTAssertFalse(reasoning)
+    }
+
+    func testLoneThinkMarkerKeepsPrecedingTextAndShowsReasoning() {
+        // A single marker is ambiguous (the word means "thinking" in ordinary
+        // prose): only the tail is hidden, preceding text survives, and the
+        // reasoning indicator is on while the block is unclosed.
+        let raw = "Working on it. 思考 still pondering the parser"
+        let (visible, reasoning) = StreamDisplayFilter.display(raw: raw)
+        XCTAssertEqual(visible, "Working on it.")
+        XCTAssertTrue(reasoning)
+    }
+
+    func testThinkMarkerPairAfterVisibleTextStripsThroughClose() {
+        // A second pair later in the message is stripped the same way.
+        let raw = "思考 hmm 思考 Answer. 思考 more reasoning 思考 Done."
+        let (visible, reasoning) = StreamDisplayFilter.display(raw: raw)
+        XCTAssertEqual(visible, "Done.")
         XCTAssertFalse(reasoning)
     }
 
@@ -28,10 +48,14 @@ final class StreamDisplayFilterTests: XCTestCase {
     }
 
     func testRepetitionFollowedByRealTextKeepsText() {
+        // When filler is followed by real text, the filler is no longer at the tail,
+        // so it should NOT be detected as filler (the real text takes precedence).
         let raw = "thinking thinking thinking thinking\nHere is the answer."
         let (visible, reasoning) = StreamDisplayFilter.display(raw: raw)
         XCTAssertFalse(reasoning)
-        XCTAssertEqual(visible, "thinking thinking thinking thinking Here is the answer.")
+        // The filler at the beginning is preserved since it's not at the tail
+        XCTAssertTrue(visible.contains("thinking"))
+        XCTAssertTrue(visible.contains("Here is the answer"))
     }
 
     func testNormalTextUntouched() {

@@ -104,6 +104,17 @@ final class FakeLLMEngine: LLMEngine, @unchecked Sendable {
         get async { withLock { loadedID } }
     }
 
+    /// Test stub for the engine-reported real context window (GGUF-style).
+    var stubbedContextWindow: Int? {
+        get { withLock { _stubbedContextWindow } }
+        set { withLock { _stubbedContextWindow = newValue } }
+    }
+    private var _stubbedContextWindow: Int?
+
+    var effectiveContextWindow: Int? {
+        get async { withLock { _stubbedContextWindow } }
+    }
+
     var stats: EngineStats {
         get async { withLock { statsState } }
     }

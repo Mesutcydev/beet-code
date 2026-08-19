@@ -1,19 +1,33 @@
 import SwiftUI
 
+/// Application delegate for lifecycle events SwiftUI's `App` can't express.
+final class BeetCodeAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        // Synchronous best-effort: engines' async unload path can't run on
+        // the way out, so registered child processes (llama-server) get a
+        // plain SIGTERM here.
+        ChildProcessRegistry.terminateAll()
+    }
+}
+
 /// Maps the persisted appearance setting onto SwiftUI. `nil` means "follow
-/// the OS"; `.light`/`.dark` force it. Light is the app default.
+/// the OS"; `.light`/`.dark` force it; `.beet` forces dark chrome (its
+/// beet-tinted neutrals come from Theme, not the system scheme).
 extension AppAppearance {
     var colorScheme: ColorScheme? {
         switch self {
         case .system: nil
         case .light: .light
-        case .dark: .dark
+        case .dark, .beet: .dark
         }
     }
 }
 
 @main
 struct BeetCodeApp: App {
+    // Termination hook: SIGTERM any registered child processes (llama-server
+    // backing a resident GGUF model) so they never outlive the app.
+    @NSApplicationDelegateAdaptor(BeetCodeAppDelegate.self) private var appDelegate
     // AppState is an ObservableObject the app OWNS: StateObject guarantees
     // exactly one instance across view updates.
     @StateObject private var appState = AppState()
@@ -35,6 +49,11 @@ struct BeetCodeApp: App {
                 // Apply the accent palette at launch and on every change —
                 // Theme's palette-driven colors resolve live.
                 .task(id: settings.accentPalette) { Theme.applyPalette(settings.accentPalette) }
+                .task {
+                    DiagnosticsCenter.shared.record(
+                        .system, "App launched",
+                        detail: "appearance: \(settings.appearance.rawValue) · palette: \(settings.accentPalette.rawValue)")
+                }
         }
         .defaultSize(width: 1240, height: 840)
         .windowResizability(.contentMinSize)

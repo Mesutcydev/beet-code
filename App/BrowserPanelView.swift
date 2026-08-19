@@ -109,22 +109,31 @@ struct BrowserPanelView: View {
 }
 
 /// Hosts the shared WKWebView inside SwiftUI. The web view instance is owned
-/// by BrowserController; this representable only (re)parents it, installing
-/// the navigation delegate the first time.
+/// by BrowserController; this representable wraps it in a container view.
+/// (Returning the web view itself from makeNSView made updateNSView yank it
+/// OUT of SwiftUI's hierarchy into an offscreen container — a blank panel.)
 private struct BrowserWebViewHost: NSViewRepresentable {
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> NSView {
+        let container = context.coordinator.container
         let webView = BrowserController.shared.webView
         webView.navigationDelegate = context.coordinator
-        return webView
+        if webView.superview !== container {
+            webView.removeFromSuperview()
+            webView.frame = container.bounds
+            webView.autoresizingMask = [.width, .height]
+            container.addSubview(webView)
+        }
+        return container
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {
-        // Reparent if a previous panel still owns it.
-        if nsView.superview !== context.coordinator.container {
-            nsView.removeFromSuperview()
-            context.coordinator.container.addSubview(nsView)
-            nsView.autoresizingMask = [.width, .height]
-            nsView.frame = context.coordinator.container.bounds
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // Reparent if a previous panel still owns the shared web view.
+        let webView = BrowserController.shared.webView
+        if webView.superview !== nsView {
+            webView.removeFromSuperview()
+            webView.frame = nsView.bounds
+            webView.autoresizingMask = [.width, .height]
+            nsView.addSubview(webView)
         }
     }
 

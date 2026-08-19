@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. BeetCode runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-> Phase 1 deliberately focuses on one polished path: MLX + MLX-quantized safetensors + core coding tools. GGUF/llama.cpp and MCP are planned follow-ups, not half-implemented dependencies.
+> Phase 1 deliberately focuses on one polished path: MLX + MLX-quantized safetensors + core coding tools. GGUF/llama.cpp has since shipped (v0.2+, see the GGUF entries in the model catalog); MCP support is stdio-only.
 
 
 ## v0.2 — safety, durability, diagnostics
@@ -45,8 +45,8 @@ Manual acceptance checklist: [`docs/ACCEPTANCE-v0.2.md`](docs/ACCEPTANCE-v0.2.md
   provider/model settings with a live model-list refresh and a Test button,
   and a Model Manager section to switch between the local MLX engine and a
   remote provider. The agent loop is engine-agnostic.
-- **Built-in iOS Simulator side panel**: docked next to the chat (toolbar
-  toggle), with device list, boot/shutdown, app install/launch, and a live
+- **Built-in iOS Simulator side panel**: docked next to the chat (activity
+  rail toggle), with device list, boot/shutdown, app install/launch, and a live
   screenshot stream (public `simctl` APIs).
 - **argent integration**: when `argent` is installed, the agent gets
   `sim_list_devices`, `sim_boot_device`, `sim_launch_app`, `sim_tap`,
@@ -134,8 +134,8 @@ Manual acceptance checklist: [`docs/ACCEPTANCE-v0.2.md`](docs/ACCEPTANCE-v0.2.md
   (`stream_options`/`usageMetadata`/Anthropic `usage`), live `/v1/models`
   refresh in Settings, API keys out of URLs (Gemini `x-goog-api-key`
   header), User-Agent everywhere.
-- **In-app browser the agent controls**: docked WKWebView panel (toolbar
-  toggle, URL bar, back/forward/reload). Agent tools: `browser_read`
+- **In-app browser the agent controls**: docked WKWebView panel (activity
+  rail toggle, URL bar, back/forward/reload). Agent tools: `browser_read`
   (text/links/info, auto-approved), `browser_screenshot`, and the
   approval-gated `browser_navigate` / `browser_click` (selector or visible
   text) / `browser_type` / `browser_eval`. All agent-supplied strings are
@@ -159,6 +159,37 @@ Manual acceptance checklist: [`docs/ACCEPTANCE-v0.2.md`](docs/ACCEPTANCE-v0.2.md
   stops the agent (single Esc owner — the old conflict is gone).
 - Per-workspace composer drafts (prompt + intent selection) persist across
   sessions; intent is one-shot and clears on send.
+
+## v0.8 — activity rail, chat import, themes, GGUF context + MTP
+
+- **Activity rail**: a dedicated left rail now owns all panel toggles
+  (simulator, browser, diagnostics, …) plus the new-chat button in a fixed,
+  predictable order; the old chat-toolbar buttons and segmented picker are
+  gone. Sidebar lists imported chats under distinctive, collapsible
+  per-project headers instead of one flat list.
+- **Chat history import**: Claude, Codex, and Cursor session history imports
+  through a live parser with visible per-file status; imported transcripts
+  keep their original structure (roles, tool calls, timestamps) so they read
+  like native BeetCode sessions. Streaming is bounded (16 MB per file /
+  512 KB per message) so a huge history can't wedge the app.
+- **Workspace history digest**: the agent's system prompt carries a bounded
+  digest of what earlier sessions in this workspace were about — BeetCode's
+  own and imported ones alike.
+- **Plugins**: Settings gains a Plugins tab; external command plugins are
+  discovered and runnable from the app.
+- **Themes**: light / dark / **beet** — beet mode tints the whole UI (not
+  just accents), with contrast tuned for readability. The coding font and
+  dark-mode palette were polished; the assistant avatar is now the beet logo
+  instead of the generic sparkle.
+- **KV-aware GGUF context admission**: the fixed 32 K context clamp is gone.
+  The engine sniffs transformer dims from the GGUF header, prices KV cache
+  bytes per token, and buys as much context as the RAM budget left after the
+  weights affords (256 K sanity ceiling, 4 K floor). Unsniffable headers keep
+  a conservative 32 K fallback.
+- **MTP speculative decoding**: GGUF builds with nextn predictor tensors
+  (e.g. Qwythos-9B MTP) launch llama-server with `--spec-type draft-mtp`
+  automatically, with a self-healing retry without the flag when the server
+  binary is too old. See [`docs/MTP-FEASIBILITY.md`](docs/MTP-FEASIBILITY.md).
 
 ## Requirements
 
@@ -274,15 +305,21 @@ The bundled catalog currently includes:
 - `qwen3-8b-4bit` — 16 GB
 - `qwen3-coder-14b-4bit` — 24 GB
 - `qwen3-coder-30b-a3b-4bit` — 32 GB+
+- `qwen2.5-coder-7b-gguf-q4`, `qwen3-4b-gguf-q4`, `qwen3-8b-gguf-q4` — GGUF
+  builds served through the embedded llama.cpp engine (needs
+  `brew install llama.cpp`)
+- `smolvlm2-500m-mlx`, `smolvlm2-2.2b-mlx` — local vision models backing the
+  `describe_image` tool without a BYOK provider
 
 Catalog entries are ordinary Swift values; adding a user model later does not require changing the engine.
 
 ## Current limitations
 
-- The app currently targets MLX-quantized safetensors, not GGUF.
 - MCP support is stdio-only (no HTTP/SSE transports or OAuth yet).
-- The model manager currently downloads repo snapshots sequentially; per-file range resume is implemented, while parallel chunk fetching is a future optimization.
-- The in-process engine is intentionally single-resident; the safety coordinator unloads before admitting another model.
+- GGUF models require a system `llama-server` (`brew install llama.cpp`); the
+  in-process MLX engine has no such dependency.
+- Multi-model residency is bounded by the memory advisor; on smaller tiers
+  the coordinator still unloads before admitting another model.
 
 ## Open-source dependencies
 

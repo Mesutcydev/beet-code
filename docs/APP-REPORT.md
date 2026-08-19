@@ -5,6 +5,17 @@
 > written so another agent (or engineer) can review, onboard, and improve
 > the app without re-deriving everything from source.
 
+> **Addendum (2026-08-19, v0.8):** since this report was written the app
+> gained: the embedded GGUF/llama.cpp engine with KV-aware context admission
+> (fixed 32 K clamp removed) and auto-enabled MTP speculative decoding; the
+> left activity rail (panel toggles + new-chat) replacing the chat toolbar;
+> Claude/Codex/Cursor chat-history import with live parser status and
+> project-grouped collapsible sidebar headers; a Plugins settings tab;
+> workspace-history digest in the system prompt; light/dark/beet themes with
+> full-UI beet tint; local SmolVLM vision models in the catalog. Details in
+> `README.md` (v0.8) and `docs/MTP-FEASIBILITY.md`; sections below describing
+> the pre-v0.8 UI are historical.
+
 ## 1. Identity
 
 - **What**: native macOS (Apple Silicon only) coding agent that runs MLX

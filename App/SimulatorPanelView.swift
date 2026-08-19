@@ -17,11 +17,9 @@ struct SimulatorPanelView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            HStack(alignment: .top, spacing: 0) {
-                deviceList
-                Divider()
-                liveView
-            }
+            controls
+            Divider()
+            liveView
         }
         // Fill the docked column (the parent decides width/height); never
         // impose a hard size that fights the layout.
@@ -35,22 +33,21 @@ struct SimulatorPanelView: View {
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 8) {
             Label("iOS Simulator", systemImage: "iphone")
-                .font(.title3.bold())
-            if let device = controller.selectedDevice {
-                Text(device.name)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+                .font(.callout.weight(.semibold))
             if controller.isStreaming {
                 Label("Live", systemImage: "dot.radiowaves.left.and.right")
                     .font(.caption)
                     .foregroundStyle(Theme.success)
             }
-            Button("Refresh") { controller.refreshDevices() }
-                .controlSize(.small)
+            Spacer()
+            devicePicker
+            Button { controller.refreshDevices() } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .controlSize(.small)
+            .help("Refresh the device list")
             if let onClose {
                 Button {
                     onClose()
@@ -64,34 +61,60 @@ struct SimulatorPanelView: View {
                 // stop button (stopping a run must never be ambiguous).
             }
         }
-        .padding(10)
-        .background(.bar)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        // Theme surface, not .bar material: Beet mode must tint this too.
+        .background(Theme.surface)
     }
 
-    private var deviceList: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Devices").font(.caption.bold()).foregroundStyle(.secondary)
-            ScrollView {
-                ForEach(controller.devices) { device in
-                    DeviceRow(
-                        device: device,
-                        isSelected: device.udid == controller.selectedUDID) {
-                        controller.select(device)
-                    }
+    /// The device list lives in a menu: in a 380–560 pt docked column a
+    /// fixed 260-pt side list squeezed the phone screen to a postage stamp.
+    private var devicePicker: some View {
+        Menu {
+            ForEach(controller.devices) { device in
+                Button {
+                    controller.select(device)
+                } label: {
+                    Label(
+                        "\(device.name) — \(device.runtime)",
+                        systemImage: device.udid == controller.selectedUDID
+                            ? "checkmark.circle.fill"
+                            : (device.state.contains("Booted") ? "iphone" : "iphone.slash"))
                 }
             }
+            if controller.devices.isEmpty {
+                Text("No simulators found — create one in Xcode.")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(controller.selectedDevice?.name ?? "Select device")
+                    .font(.callout)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Choose the simulated device")
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Button("Boot") { controller.bootSelected() }
                     .controlSize(.small)
                 Button("Shutdown") { controller.shutdownSelected() }
                     .controlSize(.small)
-            }
-            HStack(spacing: 8) {
-                Button("Install App…") { showInstaller = true }
-                    .controlSize(.small)
+                Spacer()
                 TextField("bundle id", text: $bundleID)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
+                    .frame(maxWidth: 120)
+                Button("Install…") { showInstaller = true }
+                    .controlSize(.small)
+                    .help("Install and launch an .app on the selected device")
             }
             if let error = controller.lastError {
                 Text(error)
@@ -99,15 +122,14 @@ struct SimulatorPanelView: View {
                     .foregroundStyle(Theme.danger)
                     .lineLimit(3)
             }
-            Divider()
             Text(ArgentBridge.isAvailable
                  ? "The agent can drive this simulator: sim_tap, sim_type, sim_describe, sim_screenshot (via argent)."
                  : "Install argent to let the agent interact (tap/type/describe).")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
-        .padding(10)
-        .frame(width: 260)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .fileImporter(
             isPresented: $showInstaller,
             allowedContentTypes: [.application],
@@ -127,6 +149,7 @@ struct SimulatorPanelView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(8)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "iphone")
@@ -136,41 +159,9 @@ struct SimulatorPanelView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.surfaceInset)
-        .padding(8)
     }
-}
-private struct DeviceRow: View {
-    let device: SimulatorContext.SimDevice
-    let isSelected: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack {
-                Image(systemName: isBooted ? "iphone" : "iphone.slash")
-                    .foregroundStyle(isBooted ? Theme.success : Theme.textSecondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(device.name).font(.callout)
-                    Text(device.runtime)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-            .padding(6)
-            .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var isBooted: Bool { device.state.contains("Booted") }
 }

@@ -83,7 +83,8 @@ hooks, subagents, permission modes, MCP — to any LLM).
 15. **Output styles** — concise/verbose presets applied to the system prompt.
 16. **Long-running dev servers** — a managed background-process tool that
     keeps a server alive across turns and reattaches to its output.
-17. **App themes** — light/dark/contrast presets beyond composer flows.
+17. ~~**App themes**~~ ✅ **DONE**: light / dark / beet modes with a
+    full-UI beet tint (not just composer flows).
 
 ## Where BeetCode is ahead
 

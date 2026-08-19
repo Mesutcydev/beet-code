@@ -33,6 +33,27 @@ with ~80 % draft acceptance at `n-max 2`. Acceptance drops sharply past the
 second drafted token on code, so deeper drafts waste verify passes — Beet Code
 launches with `--spec-draft-n-max 2`.
 
+## Measured on this machine (2026-08-19, M4, Qwythos-9B MTP Q5_K_M)
+
+Fixed prompt (Swift LRU cache, 256 generated tokens, temp 0.6, cold KV),
+sequential servers, two samples per mode:
+
+| Mode | Decode tok/s | Prompt tok/s |
+| --- | --- | --- |
+| MTP off | 12.75 / 10.79 | 71.4 / 70.6 |
+| draft-mtp, n-max 2 | 13.32 / 11.43 | 69.6 / 66.7 |
+| draft-mtp, n-max 4 | 7.15 | 61.3 |
+
+**Verdict: ~+5 % decode at n-max 2** (consistent direction in both pairs;
+run-to-run noise is ±8 %), a ~3 % prompt-processing hit, and n-max 4 is
+clearly counterproductive (−34 %) — which validates the n-max 2 default.
+The community's 33–39 % did not reproduce on this hardware/model combo
+(hybrid-arch MTP kernels are young; gains likely scale with model size and
+acceptance profile). Auto-enable stays: small consistent upside, no
+meaningful downside, and the self-healing fallback covers older binaries.
+First app-launched server confirmed the auto-detect path live
+(`--spec-type draft-mtp --spec-draft-n-max 2` present in the wild).
+
 ## What shipped
 
 - `GGUFMetadata.mtpPredictLayers` / `.supportsDraftMTP` — parses

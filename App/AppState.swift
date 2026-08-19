@@ -151,6 +151,21 @@ final class AppState: ObservableObject {
             Log.app.info("Restored session \(record.title, privacy: .public)")
         }
 
+        // Model: reload the last-used local model so the composer is ready
+        // right after relaunch. lastModelID was always persisted but never
+        // restored — after a crash or ⌘Q the user came back to a greyed-out
+        // Send button ("Choose a model to run") despite having used one
+        // minutes earlier. activate() runs the full guard chain (installed,
+        // complete, chat-role, MemoryAdvisor admission) and no-ops cleanly
+        // when any of it fails. Never under the test host: an auto-load
+        // would page real weights mid-suite.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+           let modelID = preferences.lastModelID,
+           let catalog = ModelCatalog.model(id: modelID) {
+            Task { await self.activate(model: catalog) }
+            Log.app.info("Auto-reloading last model \(modelID, privacy: .public)")
+        }
+
         // Downloads: manifest scan already populated paused states; resume
         // only when the user opted in. Never under a test host: the app's
         // real Application Support is live there, and an auto-resumed
@@ -308,6 +323,9 @@ final class AppState: ObservableObject {
             await engine.unload()
             activeModelID = nil
             effectiveContextWindow = nil
+            // Switching to BYOK is a deliberate leave: don't auto-reload the
+            // local model on the next launch.
+            clearPersistedModel()
         }
         guard engine.useRemote(endpoint) else {
             enginePhase = .failed("No API key configured for \(endpoint.provider.displayName).")

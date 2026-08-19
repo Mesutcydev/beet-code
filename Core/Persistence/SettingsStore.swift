@@ -96,7 +96,7 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.autoApproveEdits: false,
             DefaultsKeys.autoApproveCommands: false,
             DefaultsKeys.maxTurns: 40,
-            DefaultsKeys.maxTokensPerTurn: 2048,
+            DefaultsKeys.maxTokensPerTurn: 4096,
             DefaultsKeys.temperature: 0.6,
             DefaultsKeys.checkpointingEnabled: true,
             DefaultsKeys.verifyAfterEdits: false,

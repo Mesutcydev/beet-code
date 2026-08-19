@@ -58,6 +58,13 @@ targets:
         SWIFT_APPROACHABLE_CONCURRENCY: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # Stable signature across rebuilds: ad-hoc ("-") gives every binary a
+        # new cdhash, so Keychain's "Always Allow" never sticks and the app
+        # re-prompts for every item on every launch. A real development
+        # identity keeps the designated requirement stable — one Always
+        # Allow, forever. (Test target stays ad-hoc on purpose.)
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: "438VSM6P5L"
 
   BeetCodeCLI:
     type: tool

@@ -11,7 +11,7 @@ actor AgentLoop {
 
     struct Configuration: Sendable {
         var maxTurns: Int = 40
-        var maxTokensPerTurn: Int = 2048
+        var maxTokensPerTurn: Int = 4096
         var temperature: Double = 0.6
         var checkpointingEnabled: Bool = true
         var contextWindowTokens: Int = 32_768
@@ -264,6 +264,10 @@ actor AgentLoop {
 
     private func step(userMessage: String) async {
         var turns = 0
+        // Consecutive replies that were all reasoning and no answer. One
+        // re-prompt is fair (the model may comply); a streak means the
+        // reasoning chronically eats the whole token budget — surface it.
+        var emptyReplyStreak = 0
 
         do {
             await engine.reset()
@@ -308,7 +312,7 @@ actor AgentLoop {
                     !think.isEmpty {
                     eventContinuation?.yield(.reasoning(think))
                 }
-                let visible = PromptBuilder.strippingThinking(raw)
+                var visible = PromptBuilder.strippingThinking(raw)
 
                 // 2. Parse tool calls.
                 let calls = ToolParser.parse(visible)
@@ -330,18 +334,34 @@ actor AgentLoop {
                 }
 
                 // 2z. Empty after thinking-stripping means the token ceiling
-                // cut the generation off mid-thought. Never surface an empty
-                // bubble or plan card — hand the model a protocol observation
-                // and let it answer directly on the next turn.
+                // cut the generation off mid-thought — or the model answers
+                // entirely inside its reasoning channel (Qwythos-style hybrids
+                // do this under a tight budget). One re-prompt gives the model
+                // a chance to answer directly; on a repeated reasoning-only
+                // reply, surface the reasoning itself as the answer — looping
+                // to maxTurns on an invisible reply reads as "the model never
+                // answers".
                 if calls.isEmpty, visible.isEmpty {
-                    let notice = "error: empty reply — the token budget ran out before any answer or tool call. "
-                        + "Reply now with the answer or exactly one tool block, without a reasoning section."
-                    record.messages.append(
-                        SessionMessage(role: .toolResult, content: notice, toolName: "protocol", timestamp: Date()))
-                    history.append(ChatTurn(role: .tool, content: notice))
-                    eventContinuation?.yield(.protocolError(notice))
-                    await compactIfNeeded()
-                    continue
+                    emptyReplyStreak += 1
+                    if emptyReplyStreak >= 2,
+                       let think = PromptBuilder.extractingThinking(raw),
+                       !think.isEmpty {
+                        // Never re-parse the reasoning for tool calls: it
+                        // contains hypothetical calls the model considered,
+                        // not calls it committed to.
+                        visible = Self.reasoningFallback(think)
+                    } else {
+                        let notice = "error: empty reply — the token budget ran out before any answer or tool call. "
+                            + "Reply now with the answer or exactly one tool block, without a reasoning section."
+                        record.messages.append(
+                            SessionMessage(role: .toolResult, content: notice, toolName: "protocol", timestamp: Date()))
+                        history.append(ChatTurn(role: .tool, content: notice))
+                        eventContinuation?.yield(.protocolError(notice))
+                        await compactIfNeeded()
+                        continue
+                    }
+                } else {
+                    emptyReplyStreak = 0
                 }
 
                 // 2a. Plan mode: replies are plans, not actions, until one
@@ -784,6 +804,20 @@ actor AgentLoop {
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? visible : trimmed
+    }
+
+    /// The reply to surface when a reasoning model spent its whole token
+    /// budget on thinking and emitted no answer twice in a row. The TAIL of
+    /// the reasoning carries the conclusions; a long trace is capped so the
+    /// bubble stays readable.
+    static func reasoningFallback(_ thinking: String) -> String {
+        let trimmed = thinking.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cap = 1600
+        let tail = trimmed.count > cap
+            ? "…" + trimmed.suffix(cap)
+            : trimmed[...]
+        return "*The model spent its whole reply budget on reasoning — here is what it worked out. "
+            + "Raise “Max tokens per turn” in Settings for a full reply.*\n\n" + tail
     }
 
     private static func factFromEdit(_ output: String) -> String? {

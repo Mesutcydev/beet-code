@@ -84,7 +84,6 @@ enum ShellRunner {
     ) throws -> CommandResult {
         let pipe = Pipe()
         let writeFD = pipe.fileHandleForWriting.fileDescriptor
-        let readFD = pipe.fileHandleForReading.fileDescriptor
 
         var fileActions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&fileActions)

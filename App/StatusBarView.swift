@@ -28,6 +28,8 @@ struct StatusBarView: View {
             thermalChip
             cpuChip
 
+            IntelligenceInspectorButton()
+
             Spacer()
 
             if let tps = appState.lastEngineStats.tokensPerSecond {

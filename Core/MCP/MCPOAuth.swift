@@ -220,15 +220,16 @@ actor MCPOAuthProvider {
             throw OAuthError.authorizationFailed("could not build authorization URL")
         }
 
-        // Wait for the loopback callback first, THEN open the browser.
-        let callback = await waitForCallback(state: state)
+        // Start the loopback listener concurrently, THEN open the browser —
+        // awaiting the callback before opening the browser would deadlock.
+        async let callback = waitForCallback(state: state)
         #if canImport(AppKit)
-        await MainActor.run {
+        _ = await MainActor.run {
             NSWorkspace.shared.open(authURL)
         }
         #endif
 
-        guard let code = try await callback else {
+        guard let code = await callback else {
             throw OAuthError.authorizationFailed("no authorization code received")
         }
 
@@ -414,22 +415,25 @@ final class LoopbackOAuthListener: @unchecked Sendable {
 
     private func handle(_ connection: NWConnection) {
         connection.start(queue: .global(qos: .userInitiated))
-        var received = Data()
-        func receiveMore() {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, error in
-                if let data { received.append(data) }
-                // The request line is enough: GET /callback?code=…&state=… HTTP/1.1
-                if let requestText = String(data: received, encoding: .utf8),
-                   requestText.contains("\r\n") || error != nil {
-                    self.respond(to: requestText ?? "", on: connection)
-                } else if error == nil {
-                    receiveMore()
-                } else {
-                    connection.cancel()
-                }
+        receiveMore(on: connection, received: Data())
+    }
+
+    /// Accumulates the HTTP request by value across receives — no captured
+    /// mutable state in the @Sendable completion handler.
+    private func receiveMore(on connection: NWConnection, received: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, error in
+            var accumulated = received
+            if let data { accumulated.append(data) }
+            // The request line is enough: GET /callback?code=…&state=… HTTP/1.1
+            if let requestText = String(data: accumulated, encoding: .utf8),
+               requestText.contains("\r\n") || error != nil {
+                self.respond(to: requestText, on: connection)
+            } else if error == nil {
+                self.receiveMore(on: connection, received: accumulated)
+            } else {
+                connection.cancel()
             }
         }
-        receiveMore()
     }
 
     private func respond(to requestText: String, on connection: NWConnection) {
@@ -453,7 +457,7 @@ final class LoopbackOAuthListener: @unchecked Sendable {
         </body></html>
         """
         let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+        connection.send(content: Data(response.utf8), completion: .contentProcessed { [code] _ in
             connection.cancel()
             self.finish(code)
         })

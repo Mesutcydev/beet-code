@@ -208,6 +208,12 @@ final class AgentSessionController: ObservableObject {
         streamingText = ""
         rawStreamingText = ""
         isReasoningVisible = false
+        // Background intelligence index: incremental when a baseline exists,
+        // full on first open. Silent on failure — the agent loop degrades to
+        // no injected context, never to a blocked session.
+        Task.detached(priority: .utility) {
+            _ = try? await WorkspaceIntelligence(workspaceRoot: url).update()
+        }
         if let latest = SessionStore.shared.loadAll()
             .first(where: { $0.workspacePath == url.path }) {
             _ = restore(latest)

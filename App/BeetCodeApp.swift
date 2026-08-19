@@ -35,6 +35,16 @@ struct BeetCodeApp: App {
     // user changes Appearance in Settings.
     @ObservedObject private var settings = SettingsStore.shared
 
+    init() {
+        // CLI early-exit (Phase 22): `beetcode intel <command>` runs the
+        // intelligence CLI and terminates before any UI or app state boots.
+        let arguments = CommandLine.arguments
+        if arguments.count > 1, arguments[1] == "intel" {
+            let code = IntelligenceCLIRunner.run(Array(arguments.dropFirst(2)))
+            Foundation.exit(code)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             MainWindowView()

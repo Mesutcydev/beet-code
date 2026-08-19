@@ -114,6 +114,75 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(collector.finish, .completed("The file says hello world. Task complete."))
     }
 
+    // MARK: Reasoning-only replies (Qwythos-style hybrids)
+
+    /// A reasoning model can spend the whole token budget inside its think
+    /// channel, leaving NOTHING after think-stripping. One re-prompt is fair;
+    /// a repeated reasoning-only reply must surface the reasoning as the
+    /// answer — never loop silently to maxTurns ("the model never answers").
+    func testReasoningOnlyReplySurfacesAfterOneReprompt() async throws {
+        engine.enqueue(texts: [
+            "<think>let me consider this carefully</think>",
+            "<think>the answer is 42</think>",
+        ])
+        let loop = makeLoop()
+        let collector = await runToCompletion(loop)
+
+        let messages = collector.assistantMessages()
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertTrue(messages[0].contains("the answer is 42"), messages[0])
+        XCTAssertTrue(messages[0].contains("reply budget"), messages[0])
+        guard case .completed = collector.finish else {
+            XCTFail("expected completion, got \(String(describing: collector.finish))")
+            return
+        }
+        let notices = collector.events { event in
+            if case .protocolError(let message) = event { return message }
+            return nil
+        }
+        XCTAssertEqual(notices.count, 1, "exactly one re-prompt before the fallback")
+    }
+
+    /// The fallback never re-parses the reasoning for tool calls: reasoning
+    /// traces contain HYPOTHETICAL calls the model considered, not calls it
+    /// committed to — executing them would be a safety bug.
+    func testReasoningFallbackNeverExecutesHypotheticalToolCalls() async throws {
+        workspace!.write("secret", to: "notes.txt")
+        engine.enqueue(texts: [
+            "<think>I could read notes.txt but I should not</think>",
+            "<think>I would run " + toolCall("read_file", "{\"path\": \"notes.txt\"}") + " but instead: no.</think>",
+        ])
+        let loop = makeLoop()
+        let collector = await runToCompletion(loop)
+
+        XCTAssertTrue(collector.toolCalls().isEmpty, "reasoning fallback must never execute tools")
+        XCTAssertEqual(collector.assistantMessages().count, 1)
+    }
+
+    /// A single reasoning-only reply still gets its one re-prompt chance;
+    /// a normal answer afterwards completes without any fallback note.
+    func testReasoningOnlyReplyThenNormalAnswerCompletesCleanly() async throws {
+        engine.enqueue(texts: [
+            "<think>hmm</think>",
+            "Here is the answer.",
+        ])
+        let loop = makeLoop()
+        let collector = await runToCompletion(loop)
+
+        XCTAssertEqual(collector.finish, .completed("Here is the answer."))
+        XCTAssertEqual(collector.assistantMessages(), ["Here is the answer."])
+    }
+
+    /// Long reasoning traces are capped at the tail so the bubble stays
+    /// readable.
+    func testReasoningFallbackCapsLongTraces() {
+        let long = String(repeating: "x", count: 5000)
+        let fallback = AgentLoop.reasoningFallback(long)
+        XCTAssertTrue(fallback.contains("…"), "long traces keep the tail only")
+        XCTAssertLessThan(fallback.count, 1800)
+        XCTAssertTrue(fallback.hasSuffix(String(repeating: "x", count: 1600)))
+    }
+
     func testExactSecondTurnHistorySequence() async throws {
         workspace!.write("content", to: "a.txt")
         let callText = toolCall("read_file", "{\"path\": \"a.txt\"}")

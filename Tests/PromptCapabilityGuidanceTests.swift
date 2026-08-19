@@ -35,7 +35,7 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
 
     func testBrowserGuidanceAppearsWithBrowserTools() {
         let text = prompt(tools: [StubTool(name: "browser_navigate")])
-        XCTAssertTrue(text.contains("Built-in browser & simulator"))
+        XCTAssertTrue(text.contains("Built-in browser, simulator & computer control"))
         XCTAssertTrue(text.contains("In-app browser"))
         XCTAssertFalse(text.contains("sim_build_run is the one-shot loop"))
     }
@@ -57,7 +57,13 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
 
     func testNoGuidanceWithoutMatchingTools() {
         let text = prompt(tools: [StubTool(name: "read_file")])
-        XCTAssertFalse(text.contains("Built-in browser & simulator"))
+        XCTAssertFalse(text.contains("Built-in browser, simulator & computer control"))
+    }
+
+    func testComputerGuidanceAppearsWithComputerTools() {
+        let text = prompt(tools: [StubTool(name: "computer_ui_tree")])
+        XCTAssertTrue(text.contains("Computer control (computer_*)"))
+        XCTAssertTrue(text.contains("observe → act → re-observe"))
     }
 
     /// The real default registry includes both tool families, so a real
@@ -68,5 +74,7 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(names.contains("browser_navigate"))
         XCTAssertTrue(names.contains("sim_build_run"))
         XCTAssertTrue(names.contains("describe_image"))
+        XCTAssertTrue(names.contains("computer_ui_tree"))
+        XCTAssertTrue(names.contains("computer_click"))
     }
 }

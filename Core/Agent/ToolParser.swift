@@ -31,6 +31,18 @@ struct ParsedToolCall: Sendable, Equatable, Identifiable {
         arguments.objectValue?[key]?.boolValue
             ?? arguments.objectValue?[key]?.stringValue.flatMap { $0.lowercased() == "true" ? true : ($0.lowercased() == "false" ? false : nil) }
     }
+
+    /// String arrays (e.g. modifier lists). A bare string is treated as a
+    /// one-element array — models often emit `"modifiers": "cmd"`.
+    func strings(_ key: String) -> [String] {
+        if let array = arguments.objectValue?[key]?.arrayValue {
+            return array.compactMap(\.stringValue)
+        }
+        if let single = arguments.objectValue?[key]?.stringValue {
+            return [single]
+        }
+        return []
+    }
 }
 
 /// Extracts tool calls from raw model text. Completely independent of the

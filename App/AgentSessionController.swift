@@ -818,6 +818,16 @@ final class AgentSessionController: ObservableObject {
         BrowserTools.ClickTool(),
         BrowserTools.TypeTool(),
         BrowserTools.EvalTool(),
+        // Computer use: drive ANY Mac app. Observation (status/ui tree/
+        // screenshot) is auto-approved; input actions go through the
+        // approval card like every other mutation.
+        ComputerStatusTool(),
+        ComputerUITreeTool(),
+        ComputerScreenshotTool(),
+        ComputerClickTool(),
+        ComputerTypeTool(),
+        ComputerKeyTool(),
+        ComputerScrollTool(),
     ]
     /// Turns attachments into part of the user message: files are quoted
     /// (bounded), images are described through the active vision-capable

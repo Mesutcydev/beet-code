@@ -446,6 +446,8 @@ private struct AgentTab: View {
                 SettingToggle(label: "Git checkpoints before edits", isOn: $settings.checkpointingEnabled)
                 SettingToggle(label: "Verify edits with a build", isOn: $settings.verifyAfterEdits)
             }
+
+            ComputerControlCard()
         }
     }
 
@@ -465,6 +467,67 @@ private struct AgentTab: View {
             Stepper(label, value: value, in: range, step: step)
                 .labelsHidden()
         }
+    }
+}
+
+// MARK: - Computer control permissions
+
+/// Live status of the two TCC permissions computer use needs, with one-tap
+/// grant buttons. Status refreshes on appear and after returning to the app
+/// (the user flips the switch in System Settings, then comes back).
+private struct ComputerControlCard: View {
+    @State private var accessibilityGranted = false
+    @State private var screenRecordingGranted = false
+
+    var body: some View {
+        SettingsCard(
+            title: "Computer control",
+            icon: "desktopcomputer.and.arrow.down",
+            footer: "Lets the agent observe and drive any Mac app (computer_* tools): the accessibility tree and screenshots for observation, mouse/keyboard for actions. Observation is automatic; every click, keystroke, and scroll passes through the approval card. Both permissions are macOS-level and can be revoked anytime in System Settings → Privacy & Security."
+        ) {
+            permissionRow(
+                label: "Accessibility",
+                value: "Read app UI trees; post mouse & keyboard events",
+                granted: accessibilityGranted,
+                grant: { ComputerPermission.requestAccessibility() })
+            permissionRow(
+                label: "Screen Recording",
+                value: "Capture windows for vision models",
+                granted: screenRecordingGranted,
+                grant: { ComputerPermission.requestScreenRecording() })
+        }
+        .onAppear(perform: refresh)
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+    }
+
+    private func permissionRow(
+        label: String,
+        value: String,
+        granted: Bool,
+        grant: @escaping () -> Void
+    ) -> some View {
+        SettingRow(label: label, value: value) {
+            HStack(spacing: Spacing.sm) {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(granted ? Color.green : Color.orange)
+                        .frame(width: 7, height: 7)
+                    Text(granted ? "Granted" : "Not granted")
+                        .font(.callout)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                if !granted {
+                    Button("Grant…", action: grant)
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func refresh() {
+        accessibilityGranted = ComputerPermission.accessibilityGranted
+        screenRecordingGranted = ComputerPermission.screenRecordingGranted
     }
 }
 

@@ -153,8 +153,35 @@ enum PromptBuilder {
             """)
         }
 
+        if names.contains("computer_ui_tree") {
+            blocks.append("""
+            ## Computer control (computer_*)
+
+            You can observe and drive ANY Mac app with the `computer_*` tools \
+            (Claude-style computer use). The discipline is ALWAYS \
+            observe → act → re-observe; never act blind:
+            - `computer_status` first: it reports whether Accessibility and \
+            Screen Recording permissions are granted and which app is focused. \
+            If a permission is missing, tell the user to grant it in \
+            Settings → Agent → Computer control instead of retrying.
+            - `computer_ui_tree` is your PRIMARY observation: the focused \
+            app's accessibility tree as text, with each element's label and \
+            screen coordinates (top-left origin). Prefer it — it is exact, \
+            cheap, and needs no vision model.
+            - `computer_screenshot` saves a PNG into the workspace; pass it to \
+            `describe_image` when you need pixels (layout, colors, images).
+            - Act with `computer_click` (coordinates straight from the ui_tree \
+            line), `computer_type` (types into whatever has focus — click the \
+            field first), `computer_key` (shortcuts like cmd+s), and \
+            `computer_scroll`.
+            - After EVERY action, re-run `computer_ui_tree` to confirm the \
+            result before the next step. Coordinates go stale after scrolling \
+            or window moves.
+            """)
+        }
+
         guard !blocks.isEmpty else { return nil }
-        return "# Built-in browser & simulator\n\n" + blocks.joined(separator: "\n\n")
+        return "# Built-in browser, simulator & computer control\n\n" + blocks.joined(separator: "\n\n")
     }
 
     /// Extracts the concatenated reasoning blocks (e.g. Qwen3

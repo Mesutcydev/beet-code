@@ -119,4 +119,80 @@ final class ComputerToolsTests: XCTestCase {
                              "\(tool.name) schemaText must be valid JSON")
         }
     }
+
+    // MARK: Coordinate clamp (Quartz space — no Y flip)
+
+    func testClampDoesNotFlipY() {
+        let bounds = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let point = ComputerEvents.clamped(840, 620, quartzBounds: bounds)
+        XCTAssertEqual(point.x, 840, accuracy: 0.5)
+        XCTAssertEqual(point.y, 620, accuracy: 0.5, "AX/CGEvent Y is already top-left; must not be inverted")
+    }
+
+    func testClampKeepsSecondaryMonitorLeft() {
+        let bounds = CGRect(x: -1920, y: 0, width: 3360, height: 1080)
+        let point = ComputerEvents.clamped(-100, 200, quartzBounds: bounds)
+        XCTAssertEqual(point.x, -100, accuracy: 0.5)
+        XCTAssertEqual(point.y, 200, accuracy: 0.5)
+    }
+
+    func testClampPinsOffscreenPoints() {
+        let bounds = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let point = ComputerEvents.clamped(99_999, -50, quartzBounds: bounds)
+        XCTAssertEqual(point.x, 1439, accuracy: 0.5)
+        XCTAssertEqual(point.y, 0, accuracy: 0.5)
+    }
+
+    // MARK: Dangerous shortcuts
+
+    func testBlocksQuitLogoutLockAndForceQuit() {
+        XCTAssertTrue(ComputerKey.isBlocked(key: "q", modifiers: ["cmd"]))
+        XCTAssertTrue(ComputerKey.isBlocked(key: "q", modifiers: ["command", "shift"]))
+        XCTAssertTrue(ComputerKey.isBlocked(key: "q", modifiers: ["ctrl", "cmd"]))
+        XCTAssertTrue(ComputerKey.isBlocked(key: "escape", modifiers: ["cmd", "alt"]))
+        XCTAssertTrue(ComputerKey.isBlocked(key: "esc", modifiers: ["cmd", "option"]))
+        XCTAssertFalse(ComputerKey.isBlocked(key: "s", modifiers: ["cmd"]))
+        XCTAssertFalse(ComputerKey.isBlocked(key: "return", modifiers: []))
+        XCTAssertFalse(ComputerKey.isBlocked(key: "q", modifiers: []))
+    }
+
+    // MARK: Screenshot window pick
+
+    func testPickerPrefersFrontmostLargestStandardWindow() {
+        let windows = [
+            CaptureCandidate(bundleID: "com.apple.Safari", isOnScreen: true, layer: 0, area: 100),
+            CaptureCandidate(bundleID: "com.apple.Safari", isOnScreen: true, layer: 0, area: 9_000),
+            CaptureCandidate(bundleID: "com.apple.finder", isOnScreen: true, layer: 0, area: 50_000),
+            CaptureCandidate(bundleID: "com.apple.Safari", isOnScreen: true, layer: 25, area: 80_000),
+        ]
+        XCTAssertEqual(
+            CaptureWindowPicker.pickIndex(
+                windows: windows, frontmostBundleID: "com.apple.Safari", selfBundleID: "com.beetcode.app"),
+            1)
+    }
+
+    func testPickerIgnoresSelfAndOffscreen() {
+        let windows = [
+            CaptureCandidate(bundleID: "com.beetcode.app", isOnScreen: true, layer: 0, area: 9_000),
+            CaptureCandidate(bundleID: "com.apple.Safari", isOnScreen: false, layer: 0, area: 9_000),
+        ]
+        XCTAssertNil(
+            CaptureWindowPicker.pickIndex(
+                windows: windows, frontmostBundleID: "com.beetcode.app", selfBundleID: "com.beetcode.app"))
+        XCTAssertNil(
+            CaptureWindowPicker.pickIndex(
+                windows: windows, frontmostBundleID: "com.apple.Safari", selfBundleID: "com.beetcode.app"))
+    }
+
+    // MARK: Secure field redaction
+
+    func testRenderRedactsSecureFieldValues() {
+        let node = AXNodeInfo(
+            depth: 0, role: "AXSecureTextField", label: "Password",
+            value: "(redacted)", frame: .zero, enabled: true)
+        let text = AXTreeWalker.render([node])
+        XCTAssertTrue(text.contains("Password"))
+        XCTAssertTrue(text.contains("(redacted)"))
+        XCTAssertFalse(text.contains("hunter2"))
+    }
 }

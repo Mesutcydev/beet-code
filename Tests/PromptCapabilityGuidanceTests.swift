@@ -76,5 +76,13 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(names.contains("describe_image"))
         XCTAssertTrue(names.contains("computer_ui_tree"))
         XCTAssertTrue(names.contains("computer_click"))
+        XCTAssertTrue(names.contains("glob"))
+        XCTAssertTrue(names.contains("web_fetch"))
+    }
+
+    func testWebFetchAndTaskGuidanceAppearWhenRegistered() {
+        let text = prompt(tools: [StubTool(name: "web_fetch"), StubTool(name: "task")])
+        XCTAssertTrue(text.contains("Web fetch (web_fetch)"))
+        XCTAssertTrue(text.contains("Subagents (task)"))
     }
 }

@@ -39,3 +39,13 @@ Hooks added this pass (HookRunner unit + AgentLoop integration, including the
 deny-vs-gate case); INTENT composer and lattice-intent invariants covered in
 `IntentComposerTests` / `LatticeEngineTests`.
 Known gap: DMG/signing automation.
+
+## 2026-08-19 addendum (computer use + browser confinement)
+
+| ID | Sev | Location | Defect | Status |
+| --- | --- | --- | --- | --- |
+| C1 | Critical | `ComputerEvents.clamped` | Y flipped Cocoa→Quartz on already-Quartz AX coords — clicks mirrored. | ✅ |
+| C2 | High | `ComputerScreenshotTool` | Captured `windows.first`, not the focused app. | ✅ |
+| C3 | High | `BrowserController.open` | `file://` escaped workspace confinement. | ✅ |
+| C4 | High | `ComputerKeyTool` | No blocklist for logout/lock/force-quit/quit. | ✅ |
+| C5 | Medium | `AXTreeWalker` | Secure field values entered the prompt. | ✅ |

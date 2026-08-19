@@ -110,6 +110,7 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.composerBorderAnimation: true,
             DefaultsKeys.apiServerEnabled: false,
             DefaultsKeys.apiServerPort: 1234,
+            DefaultsKeys.enterSends: true,
         ])
     }
 
@@ -279,6 +280,16 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// When true, Enter sends and Shift+Enter inserts a newline.
+    /// When false, Enter inserts a newline and only ⌘↩ sends.
+    var enterSends: Bool {
+        get { defaults.bool(forKey: DefaultsKeys.enterSends) }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.enterSends)
+            objectWillChange.send()
+        }
+    }
+
     private enum DefaultsKeys {
         static let autoApproveEdits = "autoApproveEdits"
         static let autoApproveCommands = "autoApproveCommands"
@@ -297,5 +308,6 @@ final class SettingsStore: ObservableObject {
         static let composerBorderAnimation = "composerBorderAnimation"
         static let apiServerEnabled = "apiServerEnabled"
         static let apiServerPort = "apiServerPort"
+        static let enterSends = "enterSends"
     }
 }

@@ -1,6 +1,16 @@
 # Beet Code
 
-A lightweight, native, **Apple Silicon-only macOS coding agent**. BeetCode runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
+A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
+
+[![Download Beet Code 0.8.1](https://img.shields.io/badge/Download-Beet%20Code%200.8.1%20DMG-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.1.dmg)
+
+<p align="center">
+  <img src="docs/screenshots/app.jpg" alt="Beet Code — chats, composer, and faded window atmosphere" width="960">
+</p>
+
+**Install:** download the [DMG](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.1.dmg), drag **Beet Code** onto Applications (or Desktop). Apple Silicon + macOS 15+.
+
+> Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
 > Phase 1 deliberately focuses on one polished path: MLX + MLX-quantized safetensors + core coding tools. GGUF/llama.cpp has since shipped (v0.2+, see the GGUF entries in the model catalog); MCP support is stdio-only.
 
@@ -231,7 +241,7 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 
 - Apple Silicon Mac (arm64)
 - macOS 15+
-- Xcode 26.5+ / Swift 6
+- **Xcode 26.6 or Xcode 27.0** / Swift 6 (the same `project.yml` builds on both)
 - XcodeGen (`brew install xcodegen`)
 - 8 GB Macs: Qwen3 1.7B is the recommended first model; 4B is marginal; 7B+ is refused by the admission gate on this tier.
 

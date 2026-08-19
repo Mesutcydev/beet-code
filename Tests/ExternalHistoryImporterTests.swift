@@ -261,6 +261,53 @@ final class ExternalHistoryImporterTests: XCTestCase {
     }
 }
 
+final class SessionTitleTests: XCTestCase {
+
+    func testSkipsRecommendedPluginsTag() {
+        let messages = [
+            SessionMessage(role: .user, content: "<recommended_plugins>", toolName: nil, timestamp: Date()),
+            SessionMessage(role: .user, content: "Fix the TestFlight upload", toolName: nil, timestamp: Date()),
+        ]
+        XCTAssertEqual(SessionTitle.from(messages: messages), "Fix the TestFlight upload")
+    }
+
+    func testUnwrapsUserQueryWrapper() {
+        let messages = [
+            SessionMessage(
+                role: .user,
+                content: "<user_query>\nShip version 1.7\n</user_query>",
+                toolName: nil,
+                timestamp: Date()),
+        ]
+        XCTAssertEqual(SessionTitle.from(messages: messages), "Ship version 1.7")
+    }
+
+    func testDisplayUsesMessagesWhenStoredTitleIsATag() {
+        let record = SessionRecord(
+            id: UUID(),
+            title: "<recommended_plugins>",
+            createdAt: Date(),
+            updatedAt: Date(),
+            workspacePath: "/tmp/New project 2",
+            modelID: "codex",
+            messages: [
+                SessionMessage(role: .user, content: "<recommended_plugins>", toolName: nil, timestamp: Date()),
+                SessionMessage(role: .user, content: "Update GitHub Pages download", toolName: nil, timestamp: Date()),
+            ],
+            checkpoints: [],
+            source: .codex)
+        XCTAssertEqual(SessionTitle.display(for: record), "Update GitHub Pages download")
+    }
+
+    func testCompactAge() {
+        let now = Date()
+        XCTAssertEqual(SessionTitle.compactAge(now.addingTimeInterval(-20), now: now), "just now")
+        XCTAssertEqual(SessionTitle.compactAge(now.addingTimeInterval(-180), now: now), "3m")
+        XCTAssertEqual(SessionTitle.compactAge(now.addingTimeInterval(-8_000), now: now), "2h")
+        XCTAssertEqual(SessionTitle.compactAge(now.addingTimeInterval(-200_000), now: now), "2d")
+    }
+}
+
 /// Thread-safe collector for the importer's @Sendable progress callback.
 private final class ProgressBox: @unchecked Sendable {
     private let lock = NSLock()

@@ -90,7 +90,7 @@ enum BrowserTools {
             let wait = call.boolean("wait") ?? true
             return try await Task { @MainActor in
                 let controller = BrowserController.shared
-                let url = try controller.open(raw)
+                let url = try controller.open(raw, filePolicy: .confined(context.workspace))
                 if wait { await controller.waitForLoad() }
                 return "opened \(url.absoluteString)\n" + controller.pageInfo()
             }.value

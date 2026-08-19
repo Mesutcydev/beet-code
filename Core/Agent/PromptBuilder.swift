@@ -173,10 +173,34 @@ enum PromptBuilder {
             - Act with `computer_click` (coordinates straight from the ui_tree \
             line), `computer_type` (types into whatever has focus — click the \
             field first), `computer_key` (shortcuts like cmd+s), and \
-            `computer_scroll`.
+            `computer_scroll`. Logout, lock screen, force-quit, and cmd+q \
+            are blocked and will error if you try them.
             - After EVERY action, re-run `computer_ui_tree` to confirm the \
             result before the next step. Coordinates go stale after scrolling \
             or window moves.
+            """)
+        }
+
+        if names.contains("web_fetch") {
+            blocks.append("""
+            ## Web fetch (web_fetch)
+
+            `web_fetch` retrieves a public http(s) URL and returns visible text \
+            (HTML stripped, bounded). Use it to read documentation or a raw \
+            API response without opening the in-app browser. It needs approval. \
+            Prefer `browser_*` when you must click or see layout.
+            """)
+        }
+
+        if names.contains("task") {
+            blocks.append("""
+            ## Subagents (task)
+
+            `task` runs a nested agent (read/write/patch/search/glob/shell, 8 turns) \
+            that shares this session's approval gate. Use it to isolate a focused \
+            subtask. Do not nest task calls; the child cannot spawn further \
+            subagents. Child writes and commands still ask unless auto-approve \
+            is on.
             """)
         }
 

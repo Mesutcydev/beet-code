@@ -24,10 +24,23 @@ public struct ChatTurn: Sendable, Equatable {
 public struct EngineStats: Sendable, Equatable {
     public var tokensPerSecond: Double?
     public var generatedTokens: Int
+    /// Prompt tokens from the last usage report (0 when the engine doesn't know).
+    public var promptTokens: Int
+    /// Monotonic id bumped on every completed generation that reported usage.
+    /// AppState uses this to accumulate session totals without double-counting
+    /// the 2-second stats poll.
+    public var usageSerial: UInt64
 
-    public init(tokensPerSecond: Double? = nil, generatedTokens: Int = 0) {
+    public init(
+        tokensPerSecond: Double? = nil,
+        generatedTokens: Int = 0,
+        promptTokens: Int = 0,
+        usageSerial: UInt64 = 0
+    ) {
         self.tokensPerSecond = tokensPerSecond
         self.generatedTokens = generatedTokens
+        self.promptTokens = promptTokens
+        self.usageSerial = usageSerial
     }
 }
 
@@ -79,6 +92,11 @@ public protocol LLMEngine: AnyObject, Sendable {
     /// the caller).
     func stream(adding turns: [ChatTurn], maxTokens: Int?, temperature: Double?) -> AsyncThrowingStream<String, Error>
 
+    /// Generate from an explicit transcript WITHOUT mutating the engine's
+    /// resident conversation. Used by nested `task` subagents so the parent
+    /// turn history / KV accumulation stays intact. Default: `stream(adding:)`.
+    func streamReplay(_ turns: [ChatTurn], maxTokens: Int?, temperature: Double?) -> AsyncThrowingStream<String, Error>
+
     /// Cancels queued/in-flight generation. In-flight Metal work completes;
     /// queued work is skipped.
     func cancelGeneration() async
@@ -99,6 +117,10 @@ extension LLMEngine {
     /// Default: the engine doesn't size context itself — callers use the
     /// catalog window. Public — witnesses for a public protocol must be.
     public var effectiveContextWindow: Int? { get async { nil } }
+
+    public func streamReplay(_ turns: [ChatTurn], maxTokens: Int?, temperature: Double?) -> AsyncThrowingStream<String, Error> {
+        stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
+    }
 
     /// Emergency unload used by the memory-pressure coordinator. Returns true
     /// when a model was actually resident and got dumped.

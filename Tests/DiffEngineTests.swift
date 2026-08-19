@@ -38,6 +38,23 @@ final class DiffEngineTests: XCTestCase {
         XCTAssertFalse(result.isEmpty)
         XCTAssertGreaterThan(result.addedCount, 0)
     }
+
+    func testSideBySidePairsReplacement() {
+        let result = DiffEngine.diff(old: "let x = 1", new: "let x = 2")
+        let rows = result.sideBySide
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].left, "let x = 1")
+        XCTAssertEqual(rows[0].leftKind, .removed)
+        XCTAssertEqual(rows[0].right, "let x = 2")
+        XCTAssertEqual(rows[0].rightKind, .added)
+    }
+
+    func testSideBySideKeepsContextOnBothSides() {
+        let result = DiffEngine.diff(old: "a\nb\nc", new: "a\nB\nc")
+        let rows = result.sideBySide
+        XCTAssertTrue(rows.contains(where: { $0.left == "a" && $0.right == "a" }))
+        XCTAssertTrue(rows.contains(where: { $0.left == "b" && $0.right == "B" }))
+    }
 }
 
 final class WorkspaceTests: XCTestCase {

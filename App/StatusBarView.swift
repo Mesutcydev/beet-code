@@ -10,8 +10,10 @@ struct StatusBarView: View {
             chip(icon: appState.activeModelID == nil ? "cpu" : "checkmark.seal",
                  tint: appState.activeModelID == nil ? Theme.textSecondary : Theme.success) {
                 Text(appState.activeModel?.displayName ?? "No model")
+                    .lineLimit(1)
             }
             .help(appState.isRemoteActive ? "Active remote (BYOK) engine" : "Active local MLX model")
+            .layoutPriority(1)
 
             chip(icon: "memorychip", tint: Theme.info) {
                 Text(ByteFormatter.bytes(appState.currentFootprint))
@@ -20,17 +22,16 @@ struct StatusBarView: View {
                     .foregroundStyle(Theme.textTertiary)
                 Text(ByteFormatter.bytes(appState.availableBudget))
                     .monospacedDigit()
-                Text("budget")
-                    .foregroundStyle(Theme.textTertiary)
             }
-            .help("Process footprint vs. remaining model budget (70% of RAM reserved for models, minus current use).")
+            .help("Process footprint vs. remaining model budget.")
+            .layoutPriority(0)
 
             thermalChip
             cpuChip
 
             IntelligenceInspectorButton()
 
-            Spacer()
+            Spacer(minLength: 0)
 
             if let tps = appState.lastEngineStats.tokensPerSecond {
                 chip(icon: "speedometer", tint: Theme.accent) {
@@ -41,13 +42,23 @@ struct StatusBarView: View {
                 }
                 .help("Tokens per second from the last generation")
             }
+
+            if appState.sessionUsage.totalTokens > 0 {
+                let label = appState.sessionUsage.compactLabel(
+                    provider: appState.engine.activeRemoteEndpoint?.provider)
+                chip(icon: "sum", tint: Theme.info) {
+                    Text(label)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+                .help("This chat: \(appState.sessionUsage.promptTokens) prompt + \(appState.sessionUsage.completionTokens) completion tokens across \(appState.sessionUsage.turns) generation(s). Cost is a published-rate estimate, not a bill.")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
         .font(.caption)
         .foregroundStyle(Theme.textSecondary)
-        // Opaque like the chat column above; MainWindowView's Divider is
-        // the single separator, so the bar draws no hairline of its own.
+        .lineLimit(1)
         .background(Theme.bg)
     }
 

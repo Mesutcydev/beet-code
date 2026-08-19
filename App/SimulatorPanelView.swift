@@ -96,37 +96,35 @@ struct SimulatorPanelView: View {
             }
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
+        .frame(maxWidth: 140)
         .help("Choose the simulated device")
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Button("Boot") { controller.bootSelected() }
-                    .controlSize(.small)
-                Button("Shutdown") { controller.shutdownSelected() }
-                    .controlSize(.small)
-                Spacer()
-                TextField("bundle id", text: $bundleID)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .frame(maxWidth: 120)
-                Button("Install…") { showInstaller = true }
-                    .controlSize(.small)
-                    .help("Install and launch an .app on the selected device")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    bootButtons
+                    Spacer(minLength: 4)
+                    installRow
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) { bootButtons; Spacer() }
+                    installRow
+                }
             }
             if let error = controller.lastError {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(Theme.danger)
-                    .lineLimit(3)
+                    .lineLimit(2)
             }
             Text(ArgentBridge.isAvailable
-                 ? "The agent can drive this simulator: sim_tap, sim_type, sim_describe, sim_screenshot (via argent)."
-                 : "Install argent to let the agent interact (tap/type/describe).")
+                 ? "Agent can drive this simulator via sim_* tools."
+                 : "Install argent to let the agent tap/type.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .lineLimit(2)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -139,6 +137,27 @@ struct SimulatorPanelView: View {
                     appBundle: app,
                     bundleIdentifier: bundleID.isEmpty ? nil : bundleID)
             }
+        }
+    }
+
+    private var bootButtons: some View {
+        HStack(spacing: 8) {
+            Button("Boot") { controller.bootSelected() }
+                .controlSize(.small)
+            Button("Shutdown") { controller.shutdownSelected() }
+                .controlSize(.small)
+        }
+    }
+
+    private var installRow: some View {
+        HStack(spacing: 8) {
+            TextField("bundle id", text: $bundleID)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .frame(minWidth: 80, maxWidth: 140)
+            Button("Install…") { showInstaller = true }
+                .controlSize(.small)
+                .help("Install and launch an .app on the selected device")
         }
     }
 

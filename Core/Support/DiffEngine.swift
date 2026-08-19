@@ -32,6 +32,53 @@ enum DiffEngine {
                 }
             }.joined(separator: "\n")
         }
+
+        /// Paired columns for a split preview. A removed line sits on the
+        /// left; an added line on the right; a context line on both.
+        /// Consecutive remove+add pairs share a row.
+        var sideBySide: [SideBySideRow] {
+            DiffEngine.sideBySide(lines)
+        }
+    }
+
+    struct SideBySideRow: Sendable, Equatable {
+        var left: String?
+        var leftKind: LineKind?
+        var right: String?
+        var rightKind: LineKind?
+    }
+
+    static func sideBySide(_ lines: [Line]) -> [SideBySideRow] {
+        var rows: [SideBySideRow] = []
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            switch line.kind {
+            case .context:
+                rows.append(SideBySideRow(
+                    left: line.text, leftKind: .context,
+                    right: line.text, rightKind: .context))
+                index += 1
+            case .removed:
+                if index + 1 < lines.count, lines[index + 1].kind == .added {
+                    rows.append(SideBySideRow(
+                        left: line.text, leftKind: .removed,
+                        right: lines[index + 1].text, rightKind: .added))
+                    index += 2
+                } else {
+                    rows.append(SideBySideRow(
+                        left: line.text, leftKind: .removed,
+                        right: nil, rightKind: nil))
+                    index += 1
+                }
+            case .added:
+                rows.append(SideBySideRow(
+                    left: nil, leftKind: nil,
+                    right: line.text, rightKind: .added))
+                index += 1
+            }
+        }
+        return rows
     }
 
     static func diff(old: String, new: String) -> Result {

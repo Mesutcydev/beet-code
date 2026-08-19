@@ -53,6 +53,8 @@ enum ComputerUseError: Error, LocalizedError {
     case screenRecordingNotGranted
     case noFocusedApp
     case unknownKey(String)
+    case blockedShortcut(String)
+    case textTooLong(Int)
 
     var errorDescription: String? {
         switch self {
@@ -64,6 +66,10 @@ enum ComputerUseError: Error, LocalizedError {
             return "No focused application to inspect."
         case .unknownKey(let name):
             return "Unknown key '\(name)'. Named keys: return, tab, escape, space, delete, forward_delete, left, right, up, down, home, end, page_up, page_down, f1…f12."
+        case .blockedShortcut(let name):
+            return "Refused to press '\(name)' — logout, lock screen, force-quit, and quit (cmd+q) are blocked."
+        case .textTooLong(let count):
+            return "computer_type is limited to \(ComputerTypeTool.maxCharacters) characters (got \(count)). Split the text."
         }
     }
 }
@@ -95,6 +101,25 @@ enum ComputerKey {
         return chars[char]
     }
 
+    /// Combinations that log the user out, lock the screen, force-quit the
+    /// session, or quit the frontmost app (including Beet Code itself).
+    /// Approval cards are not enough — a single mis-tap is irreversible.
+    static func isBlocked(key: String, modifiers: [String]) -> Bool {
+        let key = key.lowercased()
+        var mods = Set(modifiers.map { $0.lowercased() })
+        if mods.contains("command") { mods.insert("cmd") }
+        if mods.contains("option") || mods.contains("opt") { mods.insert("alt") }
+        if mods.contains("control") { mods.insert("ctrl") }
+
+        let cmd = mods.contains("cmd")
+        let alt = mods.contains("alt")
+        // cmd+q quit · cmd+shift+q logout · ctrl+cmd+q lock · cmd+alt+shift+q force logout
+        if cmd && key == "q" { return true }
+        // cmd+opt+esc force-quit panel
+        if cmd && alt && (key == "escape" || key == "esc") { return true }
+        return false
+    }
+
     /// Modifier names → CGEventFlags.
     static func modifiers(for names: [String]) -> CGEventFlags {
         var flags: CGEventFlags = []
@@ -114,18 +139,37 @@ enum ComputerKey {
 // MARK: - Event posting
 
 enum ComputerEvents {
+    /// Union of attached displays in Quartz space (top-left origin of the
+    /// main display, y increasing downward). Matches AX frames and CGEvent.
+    static func quartzDisplayUnion() -> CGRect {
+        var bounds = CGRect.null
+        for screen in NSScreen.screens {
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                continue
+            }
+            bounds = bounds.union(CGDisplayBounds(CGDirectDisplayID(number.uint32Value)))
+        }
+        return bounds
+    }
+
     /// Clamps model-supplied coordinates to the union of all screens so a
     /// hallucinated point can never target outside the displays.
+    ///
+    /// Input is already Quartz / AX / CGEvent space (top-left origin of the
+    /// main display). Do NOT flip Y — AX `kAXPosition` and `CGEvent`
+    /// share that space. The previous Cocoa-frame flip landed every click
+    /// mirrored about the primary display's horizontal midline.
+    static func clamped(_ x: Double, _ y: Double, quartzBounds: CGRect) -> CGPoint {
+        guard !quartzBounds.isNull, quartzBounds.width > 1, quartzBounds.height > 1 else {
+            return CGPoint(x: x, y: y)
+        }
+        let clampedX = min(max(x, quartzBounds.minX), quartzBounds.maxX - 1)
+        let clampedY = min(max(y, quartzBounds.minY), quartzBounds.maxY - 1)
+        return CGPoint(x: clampedX, y: clampedY)
+    }
+
     static func clamped(_ x: Double, _ y: Double) -> CGPoint {
-        var bounds = CGRect.null
-        for screen in NSScreen.screens { bounds = bounds.union(screen.frame) }
-        // NSScreen frames are bottom-left origin; CGEvents use top-left.
-        // The primary screen's height converts between the two.
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? bounds.height
-        let cgY = primaryHeight - y
-        let clampedX = min(max(x, bounds.minX), bounds.maxX - 1)
-        let clampedYFlipped = min(max(cgY, 0), primaryHeight - 1)
-        return CGPoint(x: clampedX, y: clampedYFlipped)
+        clamped(x, y, quartzBounds: quartzDisplayUnion())
     }
 
     static func postMouseClick(at point: CGPoint, button: CGMouseButton, clickCount: Int) {
@@ -231,7 +275,11 @@ enum AXTreeWalker {
         let label = stringAttribute(kAXTitleAttribute, of: element)
             ?? stringAttribute(kAXDescriptionAttribute, of: element)
             ?? ""
-        let value = stringAttribute(kAXValueAttribute, of: element) ?? ""
+        var value = stringAttribute(kAXValueAttribute, of: element) ?? ""
+        // Password fields must never enter the model context.
+        if role == "AXSecureTextField", !value.isEmpty {
+            value = "(redacted)"
+        }
         let frame = frameAttribute(of: element)
         let enabled = boolAttribute(kAXEnabledAttribute, of: element) ?? true
 
@@ -359,6 +407,32 @@ struct ComputerUITreeTool: AgentTool {
     }
 }
 
+/// Testable window pick: prefer the frontmost app's largest on-screen
+/// standard window. The previous implementation took `windows.first` that
+/// wasn't Beet Code — ScreenCaptureKit order is not z-order.
+struct CaptureCandidate: Equatable {
+    var bundleID: String?
+    var isOnScreen: Bool
+    var layer: Int
+    var area: CGFloat
+}
+
+enum CaptureWindowPicker {
+    static func pickIndex(
+        windows: [CaptureCandidate],
+        frontmostBundleID: String?,
+        selfBundleID: String?
+    ) -> Int? {
+        guard let frontmostBundleID, frontmostBundleID != selfBundleID else { return nil }
+        let matching = windows.enumerated().filter {
+            $0.element.isOnScreen && $0.element.bundleID == frontmostBundleID
+        }
+        let standard = matching.filter { $0.element.layer == 0 }
+        let pool = standard.isEmpty ? matching : standard
+        return pool.max(by: { $0.element.area < $1.element.area })?.offset
+    }
+}
+
 struct ComputerScreenshotTool: AgentTool {
     let name = "computer_screenshot"
     let summary = "Capture the focused Mac app's window to a PNG in the workspace"
@@ -396,12 +470,23 @@ struct ComputerScreenshotTool: AgentTool {
         let filter: SCContentFilter
         if fullScreen {
             filter = SCContentFilter(display: display, excludingWindows: [])
-        } else if let window = content.windows.first(where: {
-            $0.isOnScreen && $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
-        }) {
-            filter = SCContentFilter(desktopIndependentWindow: window)
         } else {
-            filter = SCContentFilter(display: display, excludingWindows: [])
+            let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            let selfID = Bundle.main.bundleIdentifier
+            let candidates = content.windows.map { window in
+                CaptureCandidate(
+                    bundleID: window.owningApplication?.bundleIdentifier,
+                    isOnScreen: window.isOnScreen,
+                    layer: window.windowLayer,
+                    area: window.frame.width * window.frame.height)
+            }
+            if let index = CaptureWindowPicker.pickIndex(
+                windows: candidates, frontmostBundleID: frontID, selfBundleID: selfID)
+            {
+                filter = SCContentFilter(desktopIndependentWindow: content.windows[index])
+            } else {
+                filter = SCContentFilter(display: display, excludingWindows: [])
+            }
         }
         let config = SCStreamConfiguration()
         config.showsCursor = true
@@ -436,10 +521,12 @@ struct ComputerClickTool: AgentTool {
             throw ToolError.missingArgument("x/y")
         }
         let button: CGMouseButton = (call.string("button") == "right") ? .right : .left
-        let count = call.int("clickCount") ?? 1
-        let point = ComputerEvents.clamped(x, y)
-        ComputerEvents.postMouseClick(at: point, button: button, clickCount: count)
-        return "clicked \(button == .left ? "left" : "right")×\(count) at (\(Int(point.x)), \(Int(y)))"
+        let count = min(max(call.int("clickCount") ?? 1, 1), 3)
+        let point = await MainActor.run { ComputerEvents.clamped(x, y) }
+        await Task.detached(priority: .userInitiated) {
+            ComputerEvents.postMouseClick(at: point, button: button, clickCount: count)
+        }.value
+        return "clicked \(button == .left ? "left" : "right")×\(count) at (\(Int(point.x)), \(Int(point.y)))"
     }
 }
 
@@ -447,6 +534,8 @@ struct ComputerTypeTool: AgentTool {
     let name = "computer_type"
     let summary = "Type text into whatever has keyboard focus on the Mac"
     let risk = ToolRisk.execute
+
+    static let maxCharacters = 4_000
 
     let schemaText = """
         {"type":"object","properties":{
@@ -464,7 +553,12 @@ struct ComputerTypeTool: AgentTool {
             throw ComputerUseError.accessibilityNotGranted
         }
         guard let text = call.string("text") else { throw ToolError.missingArgument("text") }
-        ComputerEvents.postText(text)
+        guard text.count <= Self.maxCharacters else {
+            throw ComputerUseError.textTooLong(text.count)
+        }
+        await Task.detached(priority: .userInitiated) {
+            ComputerEvents.postText(text)
+        }.value
         return "typed \(text.count) character(s)"
     }
 }
@@ -484,6 +578,9 @@ struct ComputerKeyTool: AgentTool {
     func preview(_ call: ParsedToolCall, in context: ToolContext) -> ApprovalPreview {
         guard let key = call.string("key") else { return .none }
         let mods = call.strings("modifiers").joined(separator: "+")
+        if ComputerKey.isBlocked(key: key, modifiers: call.strings("modifiers")) {
+            return .command("BLOCKED: \(mods.isEmpty ? key : mods + "+" + key)")
+        }
         return .command("computer_key \(mods.isEmpty ? key : mods + "+" + key)")
     }
 
@@ -492,11 +589,18 @@ struct ComputerKeyTool: AgentTool {
             throw ComputerUseError.accessibilityNotGranted
         }
         guard let key = call.string("key") else { throw ToolError.missingArgument("key") }
+        let modifierNames = call.strings("modifiers")
+        if ComputerKey.isBlocked(key: key, modifiers: modifierNames) {
+            throw ComputerUseError.blockedShortcut(
+                modifierNames.isEmpty ? key : modifierNames.joined(separator: "+") + "+" + key)
+        }
         guard let code = ComputerKey.keyCode(for: key) else {
             throw ComputerUseError.unknownKey(key)
         }
-        let modifiers = ComputerKey.modifiers(for: call.strings("modifiers"))
-        ComputerEvents.postKey(code, modifiers: modifiers)
+        let modifiers = ComputerKey.modifiers(for: modifierNames)
+        await Task.detached(priority: .userInitiated) {
+            ComputerEvents.postKey(code, modifiers: modifiers)
+        }.value
         return "pressed \(key)"
     }
 }
@@ -528,8 +632,10 @@ struct ComputerScrollTool: AgentTool {
         }
         let dx = call.int("dx") ?? 0
         guard let dy = call.int("dy") else { throw ToolError.missingArgument("dy") }
-        let point = ComputerEvents.clamped(x, y)
-        ComputerEvents.postScroll(at: point, dx: dx, dy: dy)
-        return "scrolled dx=\(dx) dy=\(dy) at (\(Int(point.x)), \(Int(y)))"
+        let point = await MainActor.run { ComputerEvents.clamped(x, y) }
+        await Task.detached(priority: .userInitiated) {
+            ComputerEvents.postScroll(at: point, dx: dx, dy: dy)
+        }.value
+        return "scrolled dx=\(dx) dy=\(dy) at (\(Int(point.x)), \(Int(point.y)))"
     }
 }

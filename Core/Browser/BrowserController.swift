@@ -30,7 +30,9 @@ final class BrowserController: ObservableObject {
         return created
     }
 
-    let webView: WKWebView
+    private var storedWebView: WKWebView?
+
+    var webView: WKWebView { ensureWebView() }
 
     @Published var currentURL: URL?
     @Published var title: String = ""
@@ -40,23 +42,27 @@ final class BrowserController: ObservableObject {
     /// Test seam: tools check this instead of asserting UI state.
     private(set) var navigationCount = 0
 
-    nonisolated private init() {
+    /// WKWebView is MainActor-only on Xcode 26/27 SDKs. The singleton can be
+    /// *referenced* off-main (lock-backed); the view is created the first
+    /// time a MainActor method actually needs it.
+    nonisolated private init() {}
+
+    @MainActor
+    private func ensureWebView() -> WKWebView {
+        if let storedWebView { return storedWebView }
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        webView = WKWebView(frame: .zero, configuration: config)
-        webView.customUserAgent = "BeetCode/0.5 (agent-controlled browser)"
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.customUserAgent = "BeetCode/0.8 (agent-controlled browser)"
+        storedWebView = view
+        return view
     }
 
     // MARK: Navigation
 
     @discardableResult
-    func open(_ urlString: String) throws -> URL {
-        var raw = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { throw BrowserError.emptyURL }
-        if !raw.contains("://") { raw = "https://" + raw }
-        guard let url = URL(string: raw), let scheme = url.scheme,
-              scheme == "http" || scheme == "https" || scheme == "file"
-        else { throw BrowserError.invalidURL(raw) }
+    func open(_ urlString: String, filePolicy: BrowserURLValidator.FilePolicy = .allowAny) throws -> URL {
+        let url = try BrowserURLValidator.validatedURL(urlString, filePolicy: filePolicy)
         navigationCount += 1
         webView.load(URLRequest(url: url))
         currentURL = url
@@ -270,6 +276,7 @@ final class BrowserController: ObservableObject {
     enum BrowserError: Error, LocalizedError {
         case emptyURL
         case invalidURL(String)
+        case fileOutsideWorkspace(String)
         case scriptFailed(String)
         case noSuchElement(String)
         case snapshotFailed
@@ -278,10 +285,53 @@ final class BrowserController: ObservableObject {
             switch self {
             case .emptyURL: "No URL provided."
             case .invalidURL(let raw): "Invalid or non-http(s) URL: \(raw)"
+            case .fileOutsideWorkspace(let path): "Refused to open '\(path)' — file URLs must stay inside the open workspace."
             case .scriptFailed(let detail): "Page script failed: \(detail)"
             case .noSuchElement(let query): "No element found for: \(query)"
             case .snapshotFailed: "Could not capture the page snapshot."
             }
+        }
+    }
+}
+
+/// Scheme + confinement policy for agent and chrome navigations.
+/// `file://` is a workspace-escape if left unrestricted (`file:///etc/passwd`).
+enum BrowserURLValidator: Sendable {
+    enum FilePolicy: Sendable {
+        /// User-typed address bar: any local file the user asked to open.
+        case allowAny
+        /// Agent tools: `file://` only when the path is inside the workspace.
+        case confined(Workspace)
+        /// Reject `file://` entirely.
+        case refuse
+    }
+
+    static func validatedURL(_ urlString: String, filePolicy: FilePolicy) throws -> URL {
+        var raw = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { throw BrowserController.BrowserError.emptyURL }
+        if !raw.contains("://") { raw = "https://" + raw }
+        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased() else {
+            throw BrowserController.BrowserError.invalidURL(raw)
+        }
+        switch scheme {
+        case "http", "https":
+            return url
+        case "file":
+            switch filePolicy {
+            case .allowAny:
+                return url
+            case .refuse:
+                throw BrowserController.BrowserError.invalidURL(raw)
+            case .confined(let workspace):
+                do {
+                    _ = try workspace.resolve(url.path, access: .read)
+                    return url
+                } catch {
+                    throw BrowserController.BrowserError.fileOutsideWorkspace(url.path)
+                }
+            }
+        default:
+            throw BrowserController.BrowserError.invalidURL(raw)
         }
     }
 }

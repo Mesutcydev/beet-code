@@ -51,7 +51,7 @@ struct BeetCodeApp: App {
                 .environmentObject(appState)
                 .environmentObject(appState.sessions)
                 // A real working minimum: sidebar + chat + docked panel need room.
-                .frame(minWidth: 960, minHeight: 640)
+                .frame(minWidth: 880, minHeight: 640)
                 .preferredColorScheme(settings.appearance.colorScheme)
                 // Keep AppKit's appearance in sync so Theme's dynamic NSColors
                 // resolve to the forced scheme, not just the OS one.
@@ -72,6 +72,14 @@ struct BeetCodeApp: App {
             // ⌘M is macOS's standard Minimize shortcut; Model Manager gets
             // ⇧⌘M so neither command fights the system.
             CommandGroup(after: .newItem) {
+                Button("New Chat") {
+                    NotificationCenter.default.post(name: .newChat, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+                Button("Stop Agent") {
+                    NotificationCenter.default.post(name: .stopAgent, object: nil)
+                }
+                .keyboardShortcut(".", modifiers: [.command])
                 Button("Model Manager…") {
                     NotificationCenter.default.post(name: .openModelManager, object: nil)
                 }
@@ -89,4 +97,6 @@ struct BeetCodeApp: App {
 
 extension Notification.Name {
     static let openModelManager = Notification.Name("com.beetcode.openModelManager")
+    static let newChat = Notification.Name("com.beetcode.newChat")
+    static let stopAgent = Notification.Name("com.beetcode.stopAgent")
 }

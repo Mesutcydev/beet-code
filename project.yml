@@ -4,6 +4,8 @@ options:
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
+  # Xcode 16-era pbxproj (objectVersion 77) opens in Xcode 26.x and 27.x.
+  projectFormat: xcode16_0
 
 settings:
   base:
@@ -44,8 +46,8 @@ targets:
       properties:
         CFBundleDisplayName: "Beet Code"
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "0.8.0"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "0.8.1"
+        CFBundleVersion: "6"
         LSApplicationCategoryType: public.app-category.developer-tools
         LSMinimumSystemVersion: "15.0"
     settings:

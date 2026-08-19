@@ -191,6 +191,16 @@ actor EnginePool {
         return engine.stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
     }
 
+    func streamReplay(
+        _ turns: [ChatTurn],
+        maxTokens: Int?,
+        temperature: Double?
+    ) async throws -> AsyncThrowingStream<String, Error> {
+        guard let engine = activeEngine else { throw EngineError.notLoaded }
+        touch(activeModelID ?? "")
+        return engine.streamReplay(turns, maxTokens: maxTokens, temperature: temperature)
+    }
+
     func resetActive() async {
         await activeEngine?.reset()
     }

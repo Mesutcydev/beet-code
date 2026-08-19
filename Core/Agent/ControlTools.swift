@@ -5,10 +5,11 @@ import Foundation
 /// parser, and the permission gate all agree on their schemas.
 enum ControlTools {
 
-    static let names: Set<String> = [askUser.name, attemptCompletion.name]
+    static let names: Set<String> = [askUser.name, attemptCompletion.name, task.name]
 
     static let askUser = AskUserTool()
     static let attemptCompletion = AttemptCompletionTool()
+    static let task = TaskTool()
 }
 
 /// Suspends the loop until the user answers a question.
@@ -45,5 +46,23 @@ struct AttemptCompletionTool: AgentTool {
     func execute(_ call: ParsedToolCall, in context: ToolContext) async throws -> String {
         // The loop intercepts this tool before execution.
         throw ToolError.missingArgument("result")
+    }
+}
+
+/// Spawns a bounded read-only child loop. The parent loop intercepts this
+/// before execution — `execute` is never reached.
+struct TaskTool: AgentTool {
+    let name = "task"
+    let summary = "Delegate a focused subtask to a nested agent (reads + edits + shell, 8 turns, same approval gate)"
+    let risk = ToolRisk.read
+
+    let schemaText = """
+        {"type":"object","properties":{
+          "prompt":{"type":"string","description":"The subtask for the nested agent — be specific"}
+        },"required":["prompt"]}
+        """
+
+    func execute(_ call: ParsedToolCall, in context: ToolContext) async throws -> String {
+        throw ToolError.missingArgument("prompt")
     }
 }

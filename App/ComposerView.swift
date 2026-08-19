@@ -88,9 +88,15 @@ struct ComposerView: View {
             // Enter sends; Shift+Enter falls through to the field and
             // inserts a newline.
             .onKeyPress(keys: [.return]) { press in
-                guard !press.modifiers.contains(.shift) else { return .ignored }
-                store.send()
-                return .handled
+                if press.modifiers.contains(.command) {
+                    store.send()
+                    return .handled
+                }
+                if settings.enterSends && !press.modifiers.contains(.shift) {
+                    store.send()
+                    return .handled
+                }
+                return .ignored
             }
             // Esc stops the agent while it runs; otherwise the key belongs
             // to whatever else wants it.

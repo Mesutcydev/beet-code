@@ -34,6 +34,13 @@ actor AgentLoop {
         /// labeled context block from the ContextCompiler. The visible
         /// transcript keeps the raw user text either way.
         var intelligenceContext: Bool = true
+        /// Parent loops register the `task` tool. Nested subagents never do
+        /// (no recursion).
+        var allowSubagents: Bool = true
+        /// Nested loops must not overwrite the parent's encrypted session.
+        var persistSessions: Bool = true
+        /// Nested read-only subagents cannot suspend on ask_user (no UI).
+        var allowAskUser: Bool = true
     }
 
     // Dependencies
@@ -94,6 +101,9 @@ actor AgentLoop {
         // Control tools are part of the prompt and the executor's registry,
         // but the loop intercepts them before execution ever happens.
         var allTools = tools + [ControlTools.askUser, ControlTools.attemptCompletion]
+        if configuration.allowSubagents {
+            allTools.append(ControlTools.task)
+        }
         if memory != nil, configuration.memoryMode != .off {
             allTools += [MemoryAddTool(), MemoryDeleteTool()]
         }
@@ -490,11 +500,38 @@ actor AgentLoop {
                     return
                 }
                 if call.name == "ask_user" {
+                    if !configuration.allowAskUser {
+                        let observation = "error: ask_user is not available inside a subagent — answer with what you have or call attempt_completion"
+                        record.messages.append(
+                            SessionMessage(role: .toolResult, content: observation, toolName: call.name, timestamp: Date()))
+                        history.append(ChatTurn(role: .tool, content: observation))
+                        await compactIfNeeded()
+                        continue
+                    }
                     let question = call.string("question") ?? "Please answer."
                     let answer = await askUser(question)
                     if cancelled { finish(.cancelled); return }
                     setPhase(.working)
                     let observation = "User answered: \(answer)"
+                    record.messages.append(
+                        SessionMessage(role: .toolResult, content: observation, toolName: call.name, timestamp: Date()))
+                    history.append(ChatTurn(role: .tool, content: observation))
+                    await compactIfNeeded()
+                    continue
+                }
+                if call.name == "task" {
+                    let prompt = call.string("prompt") ?? ""
+                    let invocation = ToolInvocation(call: call, summary: "Subagent: \(prompt.prefix(80))")
+                    eventContinuation?.yield(.toolCallStarted(invocation))
+                    let observation: String
+                    if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        observation = "error: task requires a prompt"
+                    } else {
+                        observation = await runSubagent(prompt: prompt)
+                    }
+                    if cancelled { finish(.cancelled); return }
+                    eventContinuation?.yield(.toolCallFinished(
+                        invocation, output: observation, failed: observation.hasPrefix("error:")))
                     record.messages.append(
                         SessionMessage(role: .toolResult, content: observation, toolName: call.name, timestamp: Date()))
                     history.append(ChatTurn(role: .tool, content: observation))
@@ -854,11 +891,90 @@ actor AgentLoop {
     }
 
     private func persist() {
+        guard configuration.persistSessions else { return }
         record.updatedAt = Date()
         if record.title == "Session", let first = record.messages.first {
             record.title = String(first.content.prefix(60))
         }
         SessionStore.shared.save(record)
         SessionStore.shared.currentSessionID = record.id
+    }
+
+    /// Nested agent. Shares the parent's engine through IsolatedReplayEngine
+    /// so the parent conversation is not reset. Writes and commands go
+    /// through the same PermissionGate; approvals are forwarded to the
+    /// parent UI. Cannot spawn further subagents.
+    private func runSubagent(prompt: String) async -> String {
+        var childConfig = configuration
+        childConfig.maxTurns = min(8, configuration.maxTurns)
+        childConfig.planMode = false
+        childConfig.verifyAfterEdits = false
+        childConfig.intelligenceContext = false
+        childConfig.allowSubagents = false
+        childConfig.persistSessions = false
+        childConfig.allowAskUser = false
+
+        let childGate = PermissionGate(
+            autoApproveEdits: permissionGate.autoApproveEdits,
+            autoApproveCommands: permissionGate.autoApproveCommands,
+            commandPolicy: commandPolicy,
+            workspace: workspace,
+            overrides: permissionGate.overrides)
+
+        let child = AgentLoop(
+            engine: IsolatedReplayEngine(base: engine),
+            workspace: workspace,
+            tools: [
+                ReadFileTool(),
+                WriteFileTool(),
+                ApplyPatchTool(),
+                ListDirectoryTool(),
+                SearchTool(),
+                FindFilesTool(),
+                FindFilesTool(name: "glob"),
+                RunCommandTool(),
+                BuildDiagnosticsTool(),
+            ],
+            permissions: childGate,
+            configuration: childConfig,
+            commandPolicy: commandPolicy,
+            modelID: record.modelID,
+            sessionID: UUID(),
+            taskHint: prompt)
+
+        var lastAnswer = "(subagent produced no answer)"
+        let stream = await child.run(userMessage: prompt)
+        for await event in stream {
+            if cancelled {
+                await child.cancel()
+                return "error: parent cancelled — subagent stopped"
+            }
+            switch event {
+            case .awaitingApproval(let request):
+                setPhase(.awaitingApproval)
+                eventContinuation?.yield(.awaitingApproval(request))
+                let approved = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                    replacePending(.approval(request, cont))
+                }
+                setPhase(.working)
+                await child.resolve(requestID: request.id, approved: approved)
+            case .checkpointCreated(let checkpoint):
+                record.checkpoints.append(checkpoint)
+                eventContinuation?.yield(.checkpointCreated(checkpoint))
+            case .assistantMessage(let text) where !text.isEmpty:
+                lastAnswer = text
+            case .finished(.completed(let text)) where !text.isEmpty:
+                lastAnswer = text
+            case .finished(.declined(let detail)):
+                return "error: subagent declined — \(detail)"
+            case .finished(.engineError(let message)):
+                return "error: subagent engine — \(message)"
+            case .finished(.cancelled):
+                return "error: subagent cancelled"
+            default:
+                break
+            }
+        }
+        return "Subagent result:\n\(lastAnswer)"
     }
 }

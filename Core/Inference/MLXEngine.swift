@@ -64,7 +64,7 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
 
                 // Keep the Metal buffer cache modest: weights are memory-mapped
                 // and paged in on demand; a large cache would double-count RAM.
-                MLX.GPU.set(cacheLimit: 128 * 1024 * 1024)
+                MLX.Memory.cacheLimit = 128 * 1024 * 1024
 
                 self.session = ChatSession(
                     container,
@@ -74,7 +74,7 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
                 self.history.removeAll()
 
                 // Page the weights in now so the first token isn't slow.
-                try await self.session?.synchronize()
+                await self.session?.synchronize()
                 Log.engine.info(
                     "Model loaded in \(Date().timeIntervalSince(started), format: .fixed(precision: 1))s — footprint \(MemoryAdvisor.processFootprint / 1_000_000) MB")
             } catch {
@@ -169,6 +169,30 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
             continuation.onTermination = { _ in
                 generationTask.cancel()
             }
+        }
+    }
+
+    public func streamReplay(_ turns: [ChatTurn], maxTokens: Int?, temperature: Double?) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let saved = (try? await self.gate.run { () -> [ChatTurn] in
+                    let old = self.history
+                    self.history = []
+                    return old
+                }) ?? []
+                do {
+                    let inner = self.stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
+                    for try await chunk in inner {
+                        if Task.isCancelled { break }
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+                _ = try? await self.gate.run { self.history = saved }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

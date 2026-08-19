@@ -42,10 +42,11 @@ struct BrowserPanelView: View {
                     .font(.callout.monospaced())
                     .autocorrectionDisabled()
                     .focused($urlFocused)
+                    .layoutPriority(1)
                     .onSubmit {
                         let target = urlDraft.trimmingCharacters(in: .whitespaces)
                         if !target.isEmpty {
-                            try? controller.open(target)
+                            _ = try? controller.open(target)
                         }
                     }
 
@@ -86,10 +87,12 @@ struct BrowserPanelView: View {
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(1)
                 }
-                Spacer()
-                Text("The agent can drive this page with browser_* tools")
+                Spacer(minLength: 4)
+                Text("browser_* tools")
                     .font(.caption2)
                     .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)

@@ -68,6 +68,10 @@ final class ComposerStore {
     private var persistTask: Task<Void, Never>?
     private var workspaceKey: String?
     private var lastEstimateRefresh = Date.distantPast
+    /// Captured persist that has not yet hit disk. Flushed synchronously on
+    /// workspace switch so a cancelled debounce cannot drop the old draft.
+    private var pendingPersist: (url: URL, state: ComposerDraftState)?
+    private var isLoadingDraft = false
 
     // MARK: Wiring
 
@@ -75,11 +79,13 @@ final class ComposerStore {
         self.controller = controller
         self.appState = appState
 
-        // .receive(on: RunLoop.main) is load-bearing: the store is @MainActor
-        // and a direct sink from a non-run-loop context never delivers.
+        // Task { @MainActor } delivers under XCTest's cooperative executor;
+        // `.receive(on: RunLoop.main)` can sit unprocessed for seconds in
+        // async tests and flake draft restore on workspace switch.
         controller.$workspaceURL
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.workspaceDidChange() }
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.workspaceDidChange() }
+            }
             .store(in: &cancellables)
 
         // The estimate's denominator depends on the active model; throttled
@@ -101,6 +107,7 @@ final class ComposerStore {
     // MARK: Availability — driven by REAL application state
 
     private func workspaceDidChange() {
+        flushPersistNow()
         workspaceKey = controller?.workspaceURL?.path
         loadDraft(for: controller?.workspaceURL)
         refreshAvailability()
@@ -300,18 +307,27 @@ final class ComposerStore {
     }
 
     private func schedulePersist() {
+        if isLoadingDraft { return }
         persistTask?.cancel()
-        // Capture the target file and the content NOW, not at fire time:
-        // a workspace switch inside the 400 ms debounce window rekeys
-        // `draftFileURL`, so a fire-time read can write this workspace's
-        // draft into the next workspace's file (or wipe the draft the
-        // switch-back just restored).
         guard let url = draftFileURL else { return }
         let state = ComposerDraftState(prompt: prompt, selection: selection)
+        pendingPersist = (url, state)
         persistTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
             Self.persist(state, to: url)
+            if pendingPersist?.url == url { pendingPersist = nil }
+        }
+    }
+
+    /// Write any in-flight draft immediately. Called before rekeying so a
+    /// workspace switch cannot cancel the debounce and lose the old file.
+    private func flushPersistNow() {
+        persistTask?.cancel()
+        persistTask = nil
+        if let pending = pendingPersist {
+            Self.persist(pending.state, to: pending.url)
+            pendingPersist = nil
         }
     }
 
@@ -321,6 +337,8 @@ final class ComposerStore {
     }
 
     private func loadDraft(for workspace: URL?) {
+        isLoadingDraft = true
+        defer { isLoadingDraft = false }
         guard let url = draftFileURL,
               FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),

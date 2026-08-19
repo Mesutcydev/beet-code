@@ -9,13 +9,21 @@ struct MainWindowView: View {
     @State private var showBrowser = false
     @State private var showDiagnostics = false
 
+    private var dockedPanelOpen: Bool {
+        showSimulator || showBrowser || showDiagnostics
+    }
+
+    /// Chat keeps leftover space; mins drop when a docked panel is open so
+    /// the three columns fit a 960-pt window instead of overflowing.
+    private var chatMinWidth: CGFloat { dockedPanelOpen ? 300 : 380 }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
                         showDiagnostics: $showDiagnostics)
                 // The 46-pt activity rail eats into the column — keep the
                 // list's share wide enough for two-line session rows.
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 260, max: 340)
         } detail: {
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
@@ -23,12 +31,9 @@ struct MainWindowView: View {
                     Divider()
                     StatusBarView()
                 }
-                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: chatMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
 
-                // Docked side window: the simulator panel lives next to the
-                // chat instead of a modal sheet, so the transcript stays
-                // visible while the agent drives the device. Full height,
-                // fixed-ish width — never centered or overflowing.
                 if showSimulator {
                     Divider()
                     SimulatorPanelView(onClose: {
@@ -36,27 +41,26 @@ struct MainWindowView: View {
                         appState.isSimulatorPanelOpen = false
                     })
                         .environmentObject(appState)
-                        // Phone screens are ~9:19.5 — the column must be wide
-                        // enough for the stream to read as a phone, not a sliver.
-                        .frame(minWidth: 380, idealWidth: 480, maxWidth: 560, maxHeight: .infinity)
+                        .frame(minWidth: 260, idealWidth: 340, maxWidth: 440, maxHeight: .infinity)
+                        .layoutPriority(0)
                 }
 
-                // Agent-controlled browser: docked like the simulator so the
-                // transcript stays visible while the agent drives the page.
                 if showBrowser {
                     Divider()
                     BrowserPanelView(onClose: { showBrowser = false })
-                        .frame(minWidth: 420, idealWidth: 520, maxWidth: 680, maxHeight: .infinity)
+                        .frame(minWidth: 280, idealWidth: 380, maxWidth: 520, maxHeight: .infinity)
+                        .layoutPriority(0)
                 }
 
-                // Diagnostics: docked like the other panels — breadcrumb
-                // timeline + system snapshot, exportable for bug reports.
                 if showDiagnostics {
                     Divider()
                     DiagnosticsPanelView(onClose: { showDiagnostics = false })
-                        .frame(minWidth: 340, idealWidth: 420, maxWidth: 560, maxHeight: .infinity)
+                        .frame(minWidth: 240, idealWidth: 320, maxWidth: 400, maxHeight: .infinity)
+                        .layoutPriority(0)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.bg)
         }
         .navigationTitle(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
         // Engine transitions are breadcrumbs too — recorded from this single
@@ -78,6 +82,7 @@ struct MainWindowView: View {
         // stay neutral gray while Beet mode plums every themed surface.
         .toolbarBackground(Theme.bg, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
+        .background(Theme.bg)
         // No toolbar buttons on purpose: every action lives in the sidebar's
         // activity rail — one home for navigation, panels and app windows.
         .sheet(isPresented: $showModelManager) {
@@ -87,6 +92,12 @@ struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openModelManager)) { _ in
             showModelManager = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newChat)) { _ in
+            sessions.newSession()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopAgent)) { _ in
+            sessions.stop()
         }
     }
 }
@@ -120,6 +131,7 @@ private struct SidebarView: View {
     /// Live parser feedback while an import runs (source + file + count).
     @State private var importStatus: String?
     @State private var hasAutoImported = false
+    @State private var historySearch = ""
 
     private enum HistoryTab {
         case sessions, imported
@@ -295,73 +307,34 @@ private struct SidebarView: View {
 
     @ViewBuilder
     private var ownSections: some View {
-        Section("Workspace") {
-            Button {
-                chooseWorkspace()
-            } label: {
-                Label(
-                    sessions.workspaceURL?.lastPathComponent ?? "Open Project Folder…",
-                    systemImage: sessions.workspaceURL == nil
-                        ? "folder.badge.plus" : "folder.fill")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        Section("Repository") {
-            if sessions.workspaceURL == nil {
-                Text("Open a workspace to use git controls.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textSecondary)
-            } else {
-                HStack(spacing: 8) {
-                    Button("Status") { sessions.gitStatus() }
-                        .controlSize(.small)
-                    Button("Diff") { sessions.gitDiff() }
-                        .controlSize(.small)
-                    Button("Undo") { sessions.undoLastCheckpoint() }
-                        .controlSize(.small)
+        Section {
+            HStack(alignment: .center, spacing: Spacing.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Your chats")
+                        .font(.headline)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(sessions.workspaceURL?.lastPathComponent ?? "Open a project folder to start")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
                 }
-                if let output = sessions.gitOutput {
-                    ScrollView {
-                        Text(output)
-                            .font(.caption2.monospaced())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                    }
-                    .frame(maxHeight: 140)
-                    .padding(6)
-                    .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                Spacer(minLength: 8)
+                Button(action: chooseWorkspace) {
+                    Image(systemName: sessions.workspaceURL == nil ? "folder.badge.plus" : "folder")
+                        .font(.system(size: 12, weight: .semibold))
                 }
-                Text("Undo restores the latest agent checkpoint — git index state is preserved.")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textTertiary)
+                .buttonStyle(.borderless)
+                .help(sessions.workspaceURL == nil ? "Open project folder" : "Switch project folder")
             }
-        }
-        Section("Active Model") {
-            ActiveModelRow()
-        }
-        // Imported chats that belong to THIS workspace — the visible half
-        // of workspace history (the agent also gets a digest of these as
-        // context on every run in this folder).
-        if let workspace = sessions.workspaceURL {
-            let related = recentSessions.filter {
-                $0.source != .app && $0.workspacePath == workspace.path
-            }
-            if !related.isEmpty {
-                Section("From Other Tools · \(related.count)") {
-                    ForEach(related) { record in
-                        sessionRow(record, subtitle: record.source.label)
-                    }
-                }
-            }
-        }
-        Section("Recent Sessions") {
-            // Keychain re-authorization (ad-hoc re-signed builds): one
-            // visible, bounded unlock instead of a silent hang.
+            TextField("Search chats…", text: $historySearch)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
             if needsKeychainUnlock {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Session history is locked.")
+                HStack(spacing: Spacing.sm) {
+                    Text("History is locked")
                         .font(.caption)
                         .foregroundStyle(Theme.warning)
+                    Spacer()
                     Button("Unlock") {
                         if SessionCrypto.unlockInteractively() {
                             needsKeychainUnlock = false
@@ -371,22 +344,87 @@ private struct SidebarView: View {
                     .controlSize(.small)
                 }
             }
-            let recent = recentSessions.filter { $0.source == .app }.prefix(10)
-            if recent.isEmpty, !needsKeychainUnlock {
-                Text("Sessions appear here once you run a task.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textSecondary)
-            } else {
-                ForEach(Array(recent)) { record in
-                    sessionRow(record, subtitle: nil)
-                }
-            }
             if let restoreError = sessionRestoreError {
                 Label(restoreError, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(Theme.warning)
                     .lineLimit(3)
             }
+        }
+
+        if sessions.workspaceURL != nil {
+            Section {
+                HStack(spacing: 8) {
+                    Button("Status") { sessions.gitStatus() }
+                        .controlSize(.small)
+                    Button("Diff") { sessions.gitDiff() }
+                        .controlSize(.small)
+                    Button("Undo") { sessions.undoLastCheckpoint() }
+                        .controlSize(.small)
+                    Spacer()
+                }
+                if let output = sessions.gitOutput {
+                    ScrollView {
+                        Text(output)
+                            .font(.caption2.monospaced())
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 120)
+                    .padding(6)
+                    .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                }
+            } header: {
+                SidebarGroupHeader(
+                    icon: "folder.fill",
+                    appIcon: sessions.workspaceURL.flatMap { AppIconLookup.workspace($0.path) },
+                    name: sessions.workspaceURL?.lastPathComponent ?? "Project",
+                    count: nil)
+            }
+        }
+
+        let own = visibleOwnSessions
+        if own.isEmpty, !needsKeychainUnlock {
+            Section {
+                Text("Sessions appear here once you run a task.")
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        } else {
+            ForEach(projectGroups(own)) { group in
+                collapsibleGroup(key: "own:" + group.key, icon: group.icon,
+                                 name: group.name, records: group.records,
+                                 workspacePath: group.key, subtitle: nil)
+            }
+        }
+
+        if let workspace = sessions.workspaceURL {
+            let related = recentSessions.filter {
+                $0.source != .app && $0.workspacePath == workspace.path
+            }.filter { matchesSearch($0) }
+            if !related.isEmpty {
+                collapsibleGroup(key: "related:" + workspace.path,
+                                 icon: "tray.and.arrow.down",
+                                 name: "From other tools",
+                                 records: related,
+                                 workspacePath: workspace.path,
+                                 subtitle: { $0.source.label })
+            }
+        }
+    }
+
+    private var visibleOwnSessions: [SessionRecord] {
+        let own = recentSessions.filter { $0.source == .app }
+        return own.filter { matchesSearch($0) }
+    }
+
+    private func matchesSearch(_ record: SessionRecord) -> Bool {
+        let query = historySearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return true }
+        if SessionTitle.display(for: record).lowercased().contains(query) { return true }
+        if record.workspacePath.lowercased().contains(query) { return true }
+        return record.messages.contains {
+            $0.role == .user && $0.content.lowercased().contains(query)
         }
     }
 
@@ -395,17 +433,30 @@ private struct SidebarView: View {
     @ViewBuilder
     private var importedSections: some View {
         Section {
-            HStack(spacing: Spacing.sm) {
-                Button(isImporting ? "Importing…" : "Import Chat History") {
-                    runImport()
+            HStack(alignment: .center, spacing: Spacing.sm) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Imported chats")
+                        .font(.headline)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(importHeadline)
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(2)
                 }
+                Spacer(minLength: 8)
+                Button(action: runImport) {
+                    if isImporting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.borderless)
                 .disabled(isImporting)
-                if isImporting {
-                    ProgressView().controlSize(.small)
-                }
+                .help("Scan Claude, Codex and Cursor histories on this Mac")
+                .accessibilityLabel("Scan again")
             }
-            // Live parser feedback: which tool's history is being read and
-            // how far along it is — imports used to sit silent for minutes.
             if isImporting, let importStatus {
                 Text(importStatus)
                     .font(.caption2.monospacedDigit())
@@ -413,35 +464,25 @@ private struct SidebarView: View {
                     .lineLimit(2)
                     .truncationMode(.middle)
             }
-            Text("Reads Claude (~/.claude), Codex (~/.codex) and Cursor workspace histories. Everything stays on this Mac — imported sessions are encrypted exactly like your own.")
-                .font(.caption2)
-                .foregroundStyle(Theme.textTertiary)
-            if let importSummary {
-                Text(importSummary)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textSecondary)
-            }
-        } header: {
-            Label("Import", systemImage: "square.and.arrow.down")
+            TextField("Search chats, projects…", text: $historySearch)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
         }
 
         let imported = recentSessions.filter { $0.source != .app }
         if imported.isEmpty {
             Section {
-                Text("Nothing imported yet — run the import above.")
+                Text("Nothing imported yet — tap the refresh icon to scan this Mac.")
                     .font(.callout)
                     .foregroundStyle(Theme.textSecondary)
             }
         } else {
-            // Source filter pills: narrow the list to chats from one tool
-            // (Claude / Codex / Cursor) or show everything. Only sources
-            // actually present get a pill.
             Section {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Spacing.xs) {
                         sourcePill(source: nil, label: "All",
                                    icon: "tray.full", count: imported.count)
-                        ForEach(sourcesPresent(in: imported), id: \.self) { source in
+                        ForEach(importSources, id: \.self) { source in
                             sourcePill(source: source, label: source.label,
                                        icon: source.systemImage,
                                        count: imported.filter { $0.source == source }.count)
@@ -451,38 +492,95 @@ private struct SidebarView: View {
                 }
             }
 
-            let filtered = sourceFilter == nil
-                ? imported
-                : imported.filter { $0.source == sourceFilter }
+            let filtered = visibleImported(imported)
             if filtered.isEmpty {
                 Section {
-                    Text("No chats from \(sourceFilter?.label ?? "this tool").")
+                    Text(historySearch.isEmpty
+                         ? "No chats from \(sourceFilter?.label ?? "this tool")."
+                         : "No chats match “\(historySearch)”.")
                         .font(.callout)
                         .foregroundStyle(Theme.textSecondary)
                 }
             } else {
-                // Project-based grouping with collapsible headers: a chat
-                // belongs to the folder it was written in, whichever tool
-                // wrote it. Groups sort by most recent activity; the row
-                // badge still names the source tool.
                 ForEach(projectGroups(filtered)) { group in
-                    projectHeader(group)
-                    if !collapsedProjects.contains(group.key) {
-                        ForEach(group.records) { record in
-                            sessionRow(record, subtitle: record.source.label)
-                        }
-                    }
+                    collapsibleGroup(key: group.key, icon: group.icon,
+                                     name: group.name, records: group.records,
+                                     workspacePath: group.key,
+                                     subtitle: sourceFilter == nil ? { $0.source.label } : nil)
                 }
             }
         }
     }
 
-    /// Which imported sources appear in the list, in a stable order.
-    private func sourcesPresent(in records: [SessionRecord]) -> [SessionSource] {
-        SessionSource.allCases.filter { source in
-            source != .app && records.contains { $0.source == source }
+    private var importHeadline: String {
+        if let importStatus, isImporting { return importStatus }
+        if let importSummary { return importSummary }
+        return "Claude, Codex and Cursor — stays on this Mac"
+    }
+
+    private func visibleImported(_ imported: [SessionRecord]) -> [SessionRecord] {
+        let sourced = sourceFilter == nil ? imported : imported.filter { $0.source == sourceFilter }
+        let query = historySearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return sourced }
+        return sourced.filter { record in
+            if SessionTitle.display(for: record).lowercased().contains(query) { return true }
+            if record.workspacePath.lowercased().contains(query) { return true }
+            return record.messages.contains {
+                $0.role == .user && $0.content.lowercased().contains(query)
+            }
         }
     }
+
+    private func expansionBinding(_ key: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedProjects.contains(key) },
+            set: { expanded in
+                if expanded { collapsedProjects.remove(key) }
+                else { collapsedProjects.insert(key) }
+            })
+    }
+
+    /// Whole-header expand/collapse. Native `Section(isExpanded:)` only
+    /// toggles from the trailing chevron; a click on the plate must work too.
+    @ViewBuilder
+    private func collapsibleGroup(
+        key: String,
+        icon: String,
+        name: String,
+        records: [SessionRecord],
+        workspacePath: String? = nil,
+        subtitle: ((SessionRecord) -> String)? = nil
+    ) -> some View {
+        let expanded = !collapsedProjects.contains(key)
+        let path = workspacePath ?? key
+        let appIcon = AppIconLookup.header(path: path, records: records)
+        Section {
+            if expanded {
+                ForEach(records) { record in
+                    sessionRow(record, subtitle: subtitle?(record))
+                }
+            }
+        } header: {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if expanded {
+                        collapsedProjects.insert(key)
+                    } else {
+                        collapsedProjects.remove(key)
+                    }
+                }
+            } label: {
+                SidebarGroupHeader(
+                    icon: icon, appIcon: appIcon,
+                    name: name, count: records.count, expanded: expanded)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Claude, Codex and Cursor always appear as import sources — even at
+    /// count 0 — so Cursor is never hidden behind “only sources we found”.
+    private var importSources: [SessionSource] { [.claude, .codex, .cursor] }
 
     /// One source-filter pill: icon + label + count, accent-highlighted
     /// while active. `source == nil` is the "All" pill.
@@ -502,16 +600,16 @@ private struct SidebarView: View {
                 Text("\(count)")
                     .font(.caption2.weight(.bold))
                     .monospacedDigit()
-                    .foregroundStyle(isActive ? Theme.accent : Theme.textTertiary)
+                    .foregroundStyle(isActive ? Theme.textPrimary : Theme.textTertiary)
             }
-            .foregroundStyle(isActive ? Theme.accent : Theme.textSecondary)
+            .foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(isActive ? Theme.washStrong(Theme.accent) : Theme.surface,
+            .padding(.vertical, 5)
+            .background(isActive ? Theme.surface : Theme.surfaceInset,
                         in: Capsule())
             .overlay(
                 Capsule().strokeBorder(
-                    isActive ? Theme.washBorder(Theme.accent) : Theme.hairline,
+                    isActive ? Theme.hairline : Color.clear,
                     lineWidth: 1))
             .contentShape(Capsule())
         }
@@ -526,60 +624,6 @@ private struct SidebarView: View {
     /// Which imported-project groups are collapsed. Lives in view state —
     /// a convenience, not data worth persisting.
     @State private var collapsedProjects: Set<String> = []
-
-    /// A project group's header row: bold chevron, accent-filled folder
-    /// tile, headline-sized name, big count pill — an oversized tappable
-    /// card that can never be mistaken for a chat row.
-    private func projectHeader(_ group: ProjectGroup) -> some View {
-        let isCollapsed = collapsedProjects.contains(group.key)
-        return Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                if isCollapsed {
-                    collapsedProjects.remove(group.key)
-                } else {
-                    collapsedProjects.insert(group.key)
-                }
-            }
-        } label: {
-            HStack(spacing: Spacing.sm) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .black))
-                    .foregroundStyle(Theme.textSecondary)
-                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                    .frame(width: 14)
-                Image(systemName: group.icon)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(Theme.accent,
-                                in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                Text(group.name)
-                    .font(.headline)
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 4)
-                Text("\(group.records.count)")
-                    .font(.callout.weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Theme.washStrong(Theme.accent), in: Capsule())
-            }
-            .padding(.horizontal, Spacing.sm)
-            .padding(.vertical, Spacing.sm)
-            .background(Theme.surfaceInset,
-                        in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .strokeBorder(Theme.hairline, lineWidth: 1))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(group.name), \(group.records.count) chats")
-        .accessibilityHint(isCollapsed ? "Expand" : "Collapse")
-    }
 
     /// One imported-chat section: a project folder with its chats, newest
     /// activity first. Chats whose source recorded no folder (or just the
@@ -616,15 +660,26 @@ private struct SidebarView: View {
     /// line (used to badge the import source).
     private func sessionRow(_ record: SessionRecord, subtitle: String?) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(record.title)
-                .font(.callout)
-                .lineLimit(1)
-            // Distinguishes repeated titles: message count + relative time,
-            // monospaced digits so rows align and scan as a real list.
-            Text("\(subtitle.map { $0 + " · " } ?? "")\(record.messages.count) msgs · \(record.updatedAt, style: .relative)")
-                .font(.caption2)
-                .monospacedDigit()
-                .foregroundStyle(Theme.textTertiary)
+            Text(SessionTitle.display(for: record))
+                .font(.callout.weight(.medium))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(2)
+            HStack(spacing: 6) {
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                    Text("·")
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Text("\(record.messages.count)")
+                    .monospacedDigit()
+                Text("·")
+                Text(SessionTitle.compactAge(record.updatedAt))
+                    .monospacedDigit()
+            }
+            .font(.caption2)
+            .foregroundStyle(Theme.textTertiary)
         }
         .tag(record.id)
         // Every row can be exported on its own — the rail button covers the
@@ -694,7 +749,7 @@ private struct SidebarView: View {
     private func reloadSessions() async {
         // More than the visible ten: the Imported tab browses the same cache.
         let loaded = await Task.detached(priority: .utility) {
-            Array(SessionStore.shared.loadAll().prefix(60))
+            Array(SessionStore.shared.loadAll().prefix(400))
         }.value
         needsKeychainUnlock = SessionCrypto.needsInteractiveUnlock
         recentSessions = loaded

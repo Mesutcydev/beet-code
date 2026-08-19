@@ -126,9 +126,14 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
                 // stats only when no usage arrived (P9 truthfulness).
                 let elapsed = Date().timeIntervalSince(started)
                 if elapsed > 0.2, usageBox.last == nil {
+                    let serial = self.withLock { () -> UInt64 in
+                        self.statsState.usageSerial += 1
+                        return self.statsState.usageSerial
+                    }
                     self.updateStats(EngineStats(
                         tokensPerSecond: Double(tokens) / elapsed,
-                        generatedTokens: tokens))
+                        generatedTokens: tokens,
+                        usageSerial: serial))
                 }
             }
             self.setGenerationTask(task)
@@ -136,14 +141,46 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
         }
     }
 
+    func streamReplay(_ turns: [ChatTurn], maxTokens: Int?, temperature: Double?) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let saved = self.withLock { () -> [ChatTurn] in
+                    let old = self.accumulated
+                    self.accumulated = []
+                    return old
+                }
+                defer { self.withLock { self.accumulated = saved } }
+                let inner = self.stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
+                do {
+                    for try await chunk in inner {
+                        if Task.isCancelled { break }
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// Real usage accounting (P9): the provider reports completion tokens;
     /// tok/s uses wall time since stream start.
     private func noteUsage(_ usage: RemoteLLMClient.UsageInfo, startedAt: Date) {
-        guard let completion = usage.completionTokens, completion > 0 else { return }
+        let completion = usage.completionTokens ?? 0
+        let prompt = usage.promptTokens ?? 0
+        guard completion > 0 || prompt > 0 else { return }
         let elapsed = Date().timeIntervalSince(startedAt)
+        let serial = withLock { () -> UInt64 in
+            statsState.usageSerial += 1
+            return statsState.usageSerial
+        }
         updateStats(EngineStats(
-            tokensPerSecond: elapsed > 0 ? Double(completion) / elapsed : nil,
-            generatedTokens: completion))
+            tokensPerSecond: elapsed > 0 && completion > 0 ? Double(completion) / elapsed : nil,
+            generatedTokens: completion,
+            promptTokens: prompt,
+            usageSerial: serial))
     }
 
     /// Per-run usage state shared between the stream closure and callbacks.
@@ -321,6 +358,31 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
             }
         }
         return local.stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
+    }
+
+    func streamReplay(_ turns: [ChatTurn], maxTokens: Int?, temperature: Double?) -> AsyncThrowingStream<String, Error> {
+        if let remote = withLock({ currentRemote }) {
+            return remote.streamReplay(turns, maxTokens: maxTokens, temperature: temperature)
+        }
+        if let pool {
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        let inner = try await pool.streamReplay(
+                            turns, maxTokens: maxTokens, temperature: temperature)
+                        for try await chunk in inner {
+                            if Task.isCancelled { break }
+                            continuation.yield(chunk)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+        return local.streamReplay(turns, maxTokens: maxTokens, temperature: temperature)
     }
 
     func cancelGeneration() async {

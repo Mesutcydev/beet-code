@@ -182,4 +182,75 @@ final class ProviderAuditTests: XCTestCase {
         XCTAssertEqual(BrowserController.jsLiteral("line\nbreak"), "\"line\\nbreak\"")
         XCTAssertEqual(BrowserController.jsLiteral("sep\u{2028}line"), "\"sep\\u2028line\"")
     }
+
+    // MARK: Browser URL confinement
+
+    func testBrowserAllowsHTTPSAndBareHosts() throws {
+        let url = try BrowserURLValidator.validatedURL("example.com", filePolicy: .refuse)
+        XCTAssertEqual(url.absoluteString, "https://example.com")
+        let https = try BrowserURLValidator.validatedURL("https://beetcode.app/docs", filePolicy: .refuse)
+        XCTAssertEqual(https.host, "beetcode.app")
+    }
+
+    func testBrowserRejectsJavascriptAndDataSchemes() {
+        XCTAssertThrowsError(try BrowserURLValidator.validatedURL("javascript:alert(1)", filePolicy: .allowAny))
+        XCTAssertThrowsError(try BrowserURLValidator.validatedURL("data:text/html,hi", filePolicy: .allowAny))
+    }
+
+    func testBrowserFileURLConfinedToWorkspace() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beet-url-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("index.html")
+        try "<p>hi</p>".write(to: file, atomically: true, encoding: .utf8)
+        let workspace = Workspace(root: root)
+
+        let allowed = try BrowserURLValidator.validatedURL(
+            file.absoluteString, filePolicy: .confined(workspace))
+        XCTAssertEqual(allowed.path, file.path)
+
+        XCTAssertThrowsError(
+            try BrowserURLValidator.validatedURL("file:///etc/passwd", filePolicy: .confined(workspace)))
+        XCTAssertThrowsError(
+            try BrowserURLValidator.validatedURL("file:///etc/passwd", filePolicy: .refuse))
+    }
+
+    func testWebFetchRejectsNonHTTPSchemes() {
+        XCTAssertThrowsError(try WebFetchPolicy.validatedURL("file:///etc/passwd"))
+        XCTAssertThrowsError(try WebFetchPolicy.validatedURL("javascript:alert(1)"))
+        XCTAssertThrowsError(try WebFetchPolicy.validatedURL("data:text/html,hi"))
+    }
+
+    func testWebFetchAllowsHTTPSAndBareHosts() throws {
+        XCTAssertEqual(try WebFetchPolicy.validatedURL("example.com").absoluteString, "https://example.com")
+        XCTAssertEqual(try WebFetchPolicy.validatedURL("https://beetcode.app/docs").host, "beetcode.app")
+    }
+
+    func testHTMLTextStripsTagsAndScripts() {
+        let html = "<html><script>secret()</script><style>p{}</style><p>Hello &amp; world</p></html>"
+        let text = HTMLText.extract(html, limit: 200)
+        XCTAssertTrue(text.contains("Hello & world"), text)
+        XCTAssertFalse(text.contains("secret"), text)
+        XCTAssertFalse(text.contains("<p>"), text)
+    }
+
+    func testHTMLTextTruncates() {
+        let text = HTMLText.extract(String(repeating: "a", count: 80), limit: 20)
+        XCTAssertTrue(text.hasSuffix("…[truncated]"))
+        XCTAssertTrue(text.hasPrefix("aaaaaaaaaaaaaaaaaaaa"))
+    }
+
+    func testSessionUsageAccumulatesAndEstimates() {
+        var usage = SessionUsage()
+        usage.add(prompt: 1000, completion: 400)
+        usage.add(prompt: 500, completion: 100)
+        XCTAssertEqual(usage.promptTokens, 1500)
+        XCTAssertEqual(usage.completionTokens, 500)
+        XCTAssertEqual(usage.totalTokens, 2000)
+        XCTAssertEqual(usage.turns, 2)
+        XCTAssertNotNil(usage.estimatedUSD(provider: .openAI))
+        XCTAssertNil(usage.estimatedUSD(provider: .custom))
+        XCTAssertTrue(usage.compactLabel(provider: .openAI).contains("tok"))
+    }
 }

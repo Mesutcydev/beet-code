@@ -58,6 +58,8 @@ final class AgentSessionController: ObservableObject {
 
     /// Supplies the active model ID (AppState owns that truth).
     var activeModelIDHandler: () -> String = { "" }
+    /// Called when the user starts a fresh chat — AppState resets session usage.
+    var onSessionReset: (() -> Void)?
     /// Supplies the context window compaction should target: the engine's
     /// real launched ctx when known (GGUF fits it to RAM), else the catalog
     /// window. nil → the Configuration default (32 K).
@@ -243,6 +245,7 @@ final class AgentSessionController: ObservableObject {
         gitOutput = nil
         transcript = []
         SessionStore.shared.currentSessionID = nil
+        onSessionReset?()
     }
 
     /// Stops the active run and WAITS for the loop to reach its terminal
@@ -797,6 +800,10 @@ final class AgentSessionController: ObservableObject {
         ListDirectoryTool(),
         SearchTool(),
         FindFilesTool(),
+        FindFilesTool(name: "glob"),
+        WebFetchTool(),
+        BackgroundProcessTool(),
+        BackgroundStatusTool(),
         ApplyPatchTool(),
         RunCommandTool(),
         BuildDiagnosticsTool(),

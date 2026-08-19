@@ -88,6 +88,17 @@ final class FileOperationToolTests: XCTestCase {
         XCTAssertFalse(output.contains("README.md"), output)
     }
 
+    func testGlobAliasMatchesFindFiles() async throws {
+        try "x".write(to: tempDir.appendingPathComponent("App.swift"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent("Tests"), withIntermediateDirectories: true)
+        try "x".write(to: tempDir.appendingPathComponent("Tests/AppTests.swift"), atomically: true, encoding: .utf8)
+        let context = ToolContext(workspace: workspace)
+        let output = try await FindFilesTool(name: "glob").execute(
+            call("glob", ["pattern": .string("*Tests.swift")]), in: context)
+        XCTAssertTrue(output.contains("Tests/AppTests.swift"), output)
+    }
+
     func testFindFilesSkipsNoiseAndSymlinks() async throws {
         try FileManager.default.createDirectory(
             at: tempDir.appendingPathComponent("node_modules"), withIntermediateDirectories: true)
@@ -111,5 +122,29 @@ final class FileOperationToolTests: XCTestCase {
         // Config without weights is not loadable.
         XCTAssertFalse(ModelStore.isCompleteSnapshot(dirNames: ["config.json", "tokenizer.json"]))
         XCTAssertFalse(ModelStore.isCompleteSnapshot(dirNames: []))
+    }
+
+    // MARK: background processes
+
+    func testBackgroundProcessStartListStop() async throws {
+        BackgroundProcessStore.resetAll()
+        defer { BackgroundProcessStore.resetAll() }
+        let context = ToolContext(workspace: workspace)
+        let start = try await BackgroundProcessTool().execute(
+            call("background_process", [
+                "action": .string("start"),
+                "command": .string("sleep 30"),
+            ]),
+            in: context)
+        XCTAssertTrue(start.contains("started bg-"), start)
+        let listed = try await BackgroundStatusTool().execute(
+            call("background_status", ["action": .string("list")]), in: context)
+        XCTAssertTrue(listed.contains("running"), listed)
+        XCTAssertTrue(listed.contains("sleep 30"), listed)
+        let id = listed.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? ""
+        let stopped = try await BackgroundProcessTool().execute(
+            call("background_process", ["action": .string("stop"), "id": .string(id)]),
+            in: context)
+        XCTAssertTrue(stopped.contains("stopped"), stopped)
     }
 }

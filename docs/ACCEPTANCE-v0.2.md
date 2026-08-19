@@ -70,13 +70,13 @@ Expected: all tests green, no model weights downloaded, no Metal touched
 
 ## 5. Model lifecycle
 
-- Load model A, then load model B: A is unloaded before B is admitted; RAM
-  never holds both.
-- Unload/Remove clears the active-model badge; relaunch does NOT auto-load a
-  stale model.
+- Load model A, then load model B: with EnginePool both can stay resident
+  (up to 4, LRU eviction). RAM is admitted by MemoryAdvisor, not "never
+  both".
+- Unload/Remove clears the active-model badge; relaunch auto-reloads the
+  last chat model when it is still installed.
 - During critical thermal state the agent stops and generation is cancelled;
-  on severe memory pressure the resident model is dumped and chat is
-  disabled until a model is loaded again.
+  on severe memory pressure the largest idle resident is dumped first.
 
 ## 6. Build diagnostics
 

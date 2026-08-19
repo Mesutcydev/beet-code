@@ -349,6 +349,30 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         }
     }
 
+    func streamReplay(_ turns: [ChatTurn], maxTokens: Int?, temperature: Double?) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let saved = self.withLock { () -> [ChatTurn] in
+                    let old = self.accumulated
+                    self.accumulated = []
+                    return old
+                }
+                defer { self.withLock { self.accumulated = saved } }
+                let inner = self.stream(adding: turns, maxTokens: maxTokens, temperature: temperature)
+                do {
+                    for try await chunk in inner {
+                        if Task.isCancelled { break }
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     func cancelGeneration() async {
         // In-flight HTTP generation stops when the caller cancels the stream;
         // nothing queued exists on the local server.

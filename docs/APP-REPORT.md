@@ -16,14 +16,21 @@
 > `README.md` (v0.8) and `docs/MTP-FEASIBILITY.md`; sections below describing
 > the pre-v0.8 UI are historical.
 >
-> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
-> (README v0.6) and the simulator tools were registered but the system prompt
-> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now
-> derives a "Built-in browser & simulator" section from the registered tool
-> list: browser tools teach the navigate → read/click/type → screenshot →
-> `describe_image` visual-verify loop; sim tools teach `sim_build_run` as the
-> one-shot build → install → launch → screenshot → describe loop plus the
-> granular `sim_*` controls. Covered by `Tests/PromptCapabilityGuidanceTests.swift`.
+|> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
+|> (README v0.6) and the simulator tools were registered but the system prompt
+|> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now
+|> derives a "Built-in browser & simulator" section from the registered tool
+|> list: browser tools teach the navigate → read/click/type → screenshot →
+|> `describe_image` visual-verify loop; sim tools teach `sim_build_run` as the
+|> one-shot build → install → launch → screenshot → describe loop plus the
+|> granular `sim_*` controls. Covered by `Tests/PromptCapabilityGuidanceTests.swift`.
+|>
+|> **Addendum (2026-08-19, remaining-audit pass):** `glob` is an alias of
+|> `find_files`; `web_fetch` is an approval-gated bounded HTTP GET; session
+|> token/cost totals show in the status bar; `task` is a read-only nested
+|> agent (8 turns, IsolatedReplayEngine so the parent conversation is not
+|> reset). EnginePool holds up to 4 local models. See `docs/AUDIT-2026-08-19.md`
+|> and `docs/COMPARISON.md`.
 
 ## 1. Identity
 

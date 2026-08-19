@@ -263,6 +263,15 @@ private struct GeneralTab: View {
                 SettingToggle(label: "Animated border", isOn: $settings.composerBorderAnimation)
             }
 
+            SettingsCard(title: "Keyboard", icon: "keyboard", footer: "⌘N starts a new chat, ⌘. stops the agent, ⇧⌘M opens Model Manager. Esc also stops a running agent.") {
+                SettingToggle(label: "Enter sends", isOn: $settings.enterSends)
+                Text(settings.enterSends
+                     ? "Enter sends the message; Shift+Enter inserts a newline. ⌘↩ always sends."
+                     : "Enter inserts a newline. Only ⌘↩ sends.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
             SettingsCard(title: "Appearance", icon: "paintbrush", footer: "Light is the default. Choose System to follow macOS, or Dark to force dark mode.") {
                 SettingRow(label: "Appearance") {
                     Picker("Appearance", selection: $settings.appearance) {

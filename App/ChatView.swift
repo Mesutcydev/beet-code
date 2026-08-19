@@ -23,7 +23,7 @@ struct ChatView: View {
             ComposerView(store: composerStore)
                 .environmentObject(controller)
         }
-        .background(surfaceBackground)
+        .background { AtmosphereBackground() }
         .task {
             composerStore.attach(controller: controller, appState: appState)
         }
@@ -252,16 +252,12 @@ struct ChatView: View {
 
     private var emptyTitle: String {
         switch appState.enginePhase {
-        case .idle: "No model loaded — open the Model Manager (⇧⌘M)"
+        case .idle: "Load a model to start"
         case .loading: "Loading model…"
-        case .ready: "Ready — describe a task"
-        case .failed: "Model failed to load — check the Model Manager"
+        case .ready: "Describe a task"
+        case .failed: "Model failed to load"
         }
     }
-
-
-    /// Deepest app surface behind the transcript.
-    private var surfaceBackground: Color { Theme.bg }
 
     /// ⌘V: paste images (screenshots) or file URLs.
     private func handlePaste(_ providers: [NSItemProvider]) {
@@ -384,7 +380,7 @@ private struct UserBubble: View {
                         .padding(.vertical, 10)
                         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                            .strokeBorder(Theme.hairline, lineWidth: 1))
+                            .strokeBorder(Theme.washBorder(Theme.accent), lineWidth: 1))
                         .frame(maxWidth: 760, alignment: .leading)
                         .textSelection(.enabled)
                     Spacer(minLength: 0)
@@ -399,7 +395,7 @@ private struct UserBubble: View {
                         .padding(.vertical, 10)
                         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                            .strokeBorder(Theme.hairline, lineWidth: 1))
+                            .strokeBorder(Theme.washBorder(Theme.accent), lineWidth: 1))
                         .frame(maxWidth: 520, alignment: .trailing)
                         .textSelection(.enabled)
                 }
@@ -895,33 +891,84 @@ private struct ApprovalCard: View {
 
 private struct DiffPreview: View {
     let diff: DiffEngine.Result
+    @State private var split = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // The +/− counts get their own header row — as an overlay they
-            // sat on top of the diff's first lines.
             HStack(spacing: Spacing.xs) {
                 Text("+\(diff.addedCount)")
                     .foregroundStyle(Theme.success)
                 Text("−\(diff.removedCount)")
                     .foregroundStyle(Theme.danger)
                 Spacer()
+                Picker("Diff layout", selection: $split) {
+                    Text("Split").tag(true)
+                    Text("Unified").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+                .controlSize(.mini)
+                .labelsHidden()
             }
             .font(.caption2.monospaced().bold())
             .padding(.horizontal, Spacing.sm)
             .padding(.vertical, 5)
             Divider().overlay(Theme.hairline)
             ScrollView {
-                Text(diff.unified)
-                    .font(.caption.monospaced())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(Spacing.sm)
+                if split {
+                    sideBySide
+                } else {
+                    Text(diff.unified)
+                        .font(.caption.monospaced())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(Spacing.sm)
+                }
             }
             .frame(maxHeight: 320)
         }
         .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
         .foregroundStyle(diff.isEmpty ? Theme.textSecondary : Theme.textPrimary)
+    }
+
+    private var sideBySide: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(diff.sideBySide.enumerated()), id: \.offset) { _, row in
+                HStack(alignment: .top, spacing: 0) {
+                    diffCell(row.left, kind: row.leftKind)
+                    Divider().overlay(Theme.hairline)
+                    diffCell(row.right, kind: row.rightKind)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func diffCell(_ text: String?, kind: DiffEngine.LineKind?) -> some View {
+        Text(text ?? " ")
+            .font(.caption.monospaced())
+            .foregroundStyle(diffColor(kind))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, 1)
+            .background(diffFill(kind))
+            .textSelection(.enabled)
+    }
+
+    private func diffColor(_ kind: DiffEngine.LineKind?) -> Color {
+        switch kind {
+        case .added: Theme.success
+        case .removed: Theme.danger
+        default: Theme.textPrimary
+        }
+    }
+
+    private func diffFill(_ kind: DiffEngine.LineKind?) -> Color {
+        switch kind {
+        case .added: Theme.success.opacity(0.08)
+        case .removed: Theme.danger.opacity(0.08)
+        default: Color.clear
+        }
     }
 }
 

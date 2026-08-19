@@ -114,6 +114,50 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(collector.finish, .completed("The file says hello world. Task complete."))
     }
 
+    func testTaskSubagentReturnsChildAnswerWithoutTouchingParentHistory() async throws {
+        workspace!.write("hello from readme", to: "README.md")
+        engine.enqueue(texts: [
+            "Delegating.\n" + toolCall("task", "{\"prompt\": \"What does README.md say?\"}"),
+            "The readme says hello from readme.",
+            "Subagent finished. Task complete.",
+        ])
+        let loop = makeLoop()
+        let collector = await runToCompletion(loop, timeout: 15)
+
+        XCTAssertEqual(collector.toolCalls().map(\.name), ["task"])
+        let finished = collector.events { event in
+            if case .toolCallFinished(let invocation, let output, let failed) = event {
+                return (invocation.name, output, failed)
+            }
+            return nil
+        }
+        XCTAssertEqual(finished.count, 1)
+        XCTAssertEqual(finished[0].0, "task")
+        XCTAssertFalse(finished[0].2, finished[0].1)
+        XCTAssertTrue(finished[0].1.contains("hello from readme"), finished[0].1)
+        XCTAssertEqual(collector.finish, .completed("Subagent finished. Task complete."))
+        // Parent engine still holds the scripted FIFO — child used streamReplay,
+        // so the third response belongs to the parent, not a stolen turn.
+        XCTAssertGreaterThanOrEqual(engine.streamCallCount, 3)
+    }
+
+    func testTaskSubagentCanWriteWhenEditsAutoApproved() async throws {
+        var config = AgentLoop.Configuration()
+        config.checkpointingEnabled = false
+        engine.enqueue(texts: [
+            "Delegating write.\n" + toolCall("task", "{\"prompt\": \"create hello.txt\"}"),
+            toolCall("write_file", "{\"path\": \"hello.txt\", \"content\": \"hello nested\"}"),
+            "Created hello.txt.",
+            "Subagent wrote the file.",
+        ])
+        let loop = makeLoop(config: config, autoApproveEdits: true)
+        let collector = await runToCompletion(loop, timeout: 15)
+        XCTAssertEqual(collector.finish, .completed("Subagent wrote the file."))
+        let written = try String(
+            contentsOf: workspace!.url.appendingPathComponent("hello.txt"), encoding: .utf8)
+        XCTAssertEqual(written, "hello nested")
+    }
+
     // MARK: Reasoning-only replies (Qwythos-style hybrids)
 
     /// A reasoning model can spend the whole token budget inside its think

@@ -508,6 +508,10 @@ enum ExternalHistoryImporter {
         text.hasPrefix("<environment_context>")
             || text.hasPrefix("<user_instructions>")
             || text.hasPrefix("<system-reminder>")
+            || text.hasPrefix("<system_reminder>")
+            || text.hasPrefix("<recommended_plugins>")
+            || text.hasPrefix("<permissions")
+            || SessionTitle.isNoise(text)
     }
 
     /// Tool results are a plain string, an array of text blocks, or (Codex)
@@ -544,13 +548,7 @@ enum ExternalHistoryImporter {
     /// First user line, single-spaced and capped — the same shape native
     /// session titles have.
     private static func makeTitle(from messages: [SessionMessage]) -> String {
-        let basis = messages.first(where: { $0.role == .user })?.content
-            ?? messages.first?.content
-            ?? "Imported chat"
-        let oneLine = basis
-            .split(separator: "\n").first.map(String.init)?
-            .trimmingCharacters(in: .whitespaces) ?? "Imported chat"
-        return oneLine.count > 80 ? String(oneLine.prefix(80)) + "…" : oneLine
+        return SessionTitle.from(messages: messages) ?? "Imported chat"
     }
 
     private static func parseISO8601(_ string: String?) -> Date? {

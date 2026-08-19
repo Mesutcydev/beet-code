@@ -84,10 +84,10 @@ final class VisionEngine: @unchecked Sendable {
                     using: HFTokenizerLoader())
                 // Same discipline as MLXEngine: weights are memory-mapped, a
                 // big Metal cache would double-count RAM.
-                MLX.GPU.set(cacheLimit: 128 * 1024 * 1024)
+                MLX.Memory.cacheLimit = 128 * 1024 * 1024
                 self.session = ChatSession(container)
                 self.lock.withLock { self.loadedModelID = modelID }
-                try await self.session?.synchronize()
+                await self.session?.synchronize()
                 Log.engine.info(
                     "Vision model loaded in \(Date().timeIntervalSince(started), format: .fixed(precision: 1))s")
             } catch {

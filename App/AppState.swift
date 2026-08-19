@@ -40,6 +40,8 @@ final class AppState: ObservableObject {
     @Published var currentFootprint: UInt64 = 0
     @Published var availableBudget: UInt64 = 0
     @Published var lastEngineStats = EngineStats()
+    @Published var sessionUsage = SessionUsage()
+    private var lastUsageSerial: UInt64 = 0
 
     private var pressureCoordinator: MemoryPressureCoordinator?
     private var statsTask: Task<Void, Never>?
@@ -77,6 +79,10 @@ final class AppState: ObservableObject {
             settings: SettingsStore.shared,
             thermal: thermal)
         sessions.activeModelIDHandler = { [weak self] in self?.activeModelID ?? "" }
+        sessions.onSessionReset = { [weak self] in
+            self?.sessionUsage = SessionUsage()
+            self?.lastUsageSerial = 0
+        }
         // The loop compacts against the engine's REAL launched window (GGUF
         // fits ctx to RAM), falling back to the catalog window for engines
         // that size context themselves.
@@ -225,7 +231,12 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 self.currentFootprint = MemoryAdvisor.processFootprint
                 self.availableBudget = MemoryAdvisor.availableBudget
-                self.lastEngineStats = await self.engine.stats
+                let stats = await self.engine.stats
+                if stats.usageSerial > self.lastUsageSerial {
+                    self.lastUsageSerial = stats.usageSerial
+                    self.sessionUsage.add(prompt: stats.promptTokens, completion: stats.generatedTokens)
+                }
+                self.lastEngineStats = stats
                 try? await Task.sleep(for: .seconds(2))
             }
         }

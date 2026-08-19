@@ -142,8 +142,14 @@ struct SearchTool: AgentTool {
 /// contents). "Where are the test files" is a file-name question, not a
 /// grep.
 struct FindFilesTool: AgentTool {
-    let name = "find_files"
+    /// Registered twice (`find_files` + `glob`) so Claude/OpenCode-trained
+    /// models hit the same implementation under the name they already know.
+    let name: String
     let summary = "Find files by name pattern (glob like *Tests.swift) without reading contents"
+
+    init(name: String = "find_files") {
+        self.name = name
+    }
     let risk = ToolRisk.read
 
     // Tree listings drift between turns; a short TTL absorbs repeat lookups

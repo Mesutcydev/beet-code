@@ -55,9 +55,9 @@ enum Theme {
     // step darker, hairlines stay inside the beet family — one hue, four
     // depths, so the whole window reads as solid beet.
     static let bg           = Color.dynamic(light: 0xF6F7F9, dark: 0x0C0E14, beet: 0x7A1F3D)
-    static let surface      = Color.dynamic(light: 0xFFFFFF, dark: 0x181C26, beet: 0x90304E)
+    static let surface      = Color.dynamic(light: 0xFFFFFF, dark: 0x181C26, beet: 0xA84462)
     static let surfaceInset = Color.dynamic(light: 0xE3E6EB, dark: 0x232837, beet: 0x5E1630)
-    static let hairline     = Color.dynamic(light: 0xE1E4EA, dark: 0x343B4E, beet: 0xA84668)
+    static let hairline     = Color.dynamic(light: 0xE1E4EA, dark: 0x343B4E, beet: 0xC45A7C)
 
     // Text tiers. Dark secondary/tertiary sit a touch brighter than the
     // neutrals around them so captions stay legible on the lifted surfaces;
@@ -115,6 +115,12 @@ enum Theme {
         case .system: nil
         case .light:  NSAppearance(named: .aqua)
         case .dark, .beet: NSAppearance(named: .darkAqua)
+        }
+        // NavigationSplitView's unused trailing gutter is the window
+        // background — leave it themed, never default black.
+        let fill = NSColor(Theme.bg)
+        for window in NSApplication.shared.windows {
+            window.backgroundColor = fill
         }
     }
 }

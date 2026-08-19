@@ -46,6 +46,14 @@ content; these are the explicit trust boundaries and where each is enforced.
 11. **Unsafe project rule injection** — repository rule files are context
     *data*: they flow through the same sanitizer and are labeled by
     confidence, never granted system-prompt authority.
+12. **In-app browser `file://`** — agent `browser_navigate` may only open
+    `http(s)` or a `file://` path that `Workspace.resolve` accepts. User
+    chrome may open local files they typed. `javascript:` / `data:` rejected.
+13. **Computer use** — observation is `.read`; every click/key/scroll is
+    `.execute` and cannot be auto-approved (no `command` argument). Logout,
+    lock, force-quit, and `cmd+q` are hard-blocked. `AXSecureTextField`
+    values are redacted before they enter the model context. Coordinates
+    stay in Quartz/AX space (top-left of the main display).
 
 ## Failure principle
 

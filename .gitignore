@@ -4,8 +4,11 @@
 
 # Xcode / build artifacts
 .derived/
+.derived-xcode27/
 DerivedData/
 build/
+dist/
+*.dmg
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcuserstate

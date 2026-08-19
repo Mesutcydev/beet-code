@@ -93,7 +93,7 @@ enum ShellRunner {
         posix_spawn_file_actions_addclose(&fileActions, writeFD)
         // posix_spawn does NOT inherit the caller's working directory — it
         // must be set explicitly or the child starts in the parent's cwd.
-        workingDirectory.path.withCString { path in
+        _ = workingDirectory.path.withCString { path in
             if #available(macOS 26.0, *) {
                 posix_spawn_file_actions_addchdir(&fileActions, path)
             } else {

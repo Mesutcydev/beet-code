@@ -20,15 +20,26 @@ Audit of the BeetCode tree including the new Workspace Intelligence layer
 | 9 | CLI smoke (real binary, real repo) | `lf intel index/search/impact` on BeetCode itself: 177 files / 1.56 s, correct answers |
 | 10 | Data hygiene | No workspace content committed; all intelligence stores live under Application Support; `beetcode-models/` and `.derived/` gitignored |
 
+## Addendum (2026-08-19, second pass)
+
+- **Agent loop wired**: `IntelligenceContextProvider` injects a bounded
+  context block per task message; all failure modes degrade to the raw
+  message (5 integration tests). Workspace switches kick a background
+  incremental index.
+- **All pre-existing warnings fixed** — including a real OAuth deadlock
+  found via the warning sweep (`waitForCallback` was awaited before the
+  browser opened; now concurrent via `async let`).
+- **Release builds**: app + CLI targets, zero warnings in project sources.
+- **Suite**: 496 tests; the only failure observed was a network-bound
+  download-resume test under full-suite load — passes in isolation (21.7 s),
+  confirmed flake, not a regression.
+
 ## Notes (accepted, not blockers)
 
 - **App sandbox is off** (`ENABLE_APP_SANDBOX: NO`) — a deliberate upstream
   design decision: a coding agent needs shell/git/process access.
   Confinement is enforced in code (`AgentTool` realpath containment,
   `PathSafety`) instead of by the kernel sandbox.
-- **Pre-existing warnings** in `Core/MCP/MCPOAuth.swift`, `ShellRunner.swift`,
-  etc. (concurrency annotations, unused results) — upstream code, outside
-  this audit's scope; none are in the intelligence layer.
 - **Signing**: `CODE_SIGN_STYLE: Automatic`, ad-hoc identity for local
   builds. Distribution signing is a release-engineering decision left to the
   maintainers.

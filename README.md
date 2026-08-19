@@ -58,6 +58,10 @@ no LLM in retrieval, every fact provenance-labeled:
   verification (`callExists`, `testCoversSymbol`, …) with evidence.
 - **Framework semantics**: SwiftUI/SwiftData entity detection (screens,
   providers, models, permissions, entitlements, endpoints…).
+- **Agent-loop integration**: every task message is prefixed with a
+  bounded `<workspace_intelligence>` block compiled for that task
+  (configurable via `AgentLoop.Configuration.intelligenceContext`);
+  workspace switches trigger a background incremental index.
 - **Surfaces**: in-app Context Inspector (status bar pill), `lf intel …`
   CLI, a 12-tool MCP server (`lf intel serve-mcp`), and the
   `WorkspaceIntelligence` Swift facade.

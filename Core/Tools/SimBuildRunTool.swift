@@ -79,7 +79,7 @@ struct SimBuildRunTool: AgentTool {
         let shotsDir = workspace.root.appendingPathComponent(".beetcode/screenshots", isDirectory: true)
         try? FileManager.default.createDirectory(at: shotsDir, withIntermediateDirectories: true)
         let shotURL = shotsDir.appendingPathComponent("sim-\(Int(Date().timeIntervalSince1970)).png")
-        let shotLog = await SimctlRunner.run(["io", udid, "screenshot", shotURL.path])
+        _ = await SimctlRunner.run(["io", udid, "screenshot", shotURL.path])
 
         // 8. Inspect via the vision provider when available.
         var inspection = "(no vision provider configured — attach the screenshot manually or use describe_image)"

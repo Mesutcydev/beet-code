@@ -371,8 +371,8 @@ final class SessionStore: @unchecked Sendable {
         return names
             .filter { $0.hasSuffix(".session") }
             .compactMap { name in
-                let id = UUID(uuidString: String(name.dropLast(".session".count)))
-                guard let id else { return nil }
+                guard UUID(uuidString: String(name.dropLast(".session".count))) != nil
+                else { return nil }
                 let url = dir.appendingPathComponent(name)
                 guard let data = try? Data(contentsOf: url) else { return nil }
                 if let decrypted = SessionCrypto.decrypt(data),

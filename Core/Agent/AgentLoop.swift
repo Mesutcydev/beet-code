@@ -29,6 +29,11 @@ actor AgentLoop {
         var memoryMode: MemoryMode = .off
         /// How aggressively old tool outputs are compacted (v0.3).
         var compressionLevel: CompressionLevel = .standard
+        /// Workspace intelligence injection: when the workspace has an
+        /// intelligence index, each task message is prefixed with a bounded,
+        /// labeled context block from the ContextCompiler. The visible
+        /// transcript keeps the raw user text either way.
+        var intelligenceContext: Bool = true
     }
 
     // Dependencies
@@ -291,7 +296,22 @@ actor AgentLoop {
                     }
                 })
             }
-            history.append(ChatTurn(role: .user, content: userMessage))
+            // Workspace intelligence: a bounded, labeled context block
+            // compiled for THIS task message. Degrades to the raw message
+            // whenever no index exists or compilation fails.
+            var effectiveMessage = userMessage
+            if configuration.intelligenceContext,
+               let section = IntelligenceContextProvider.section(
+                   workspaceRoot: workspace.root, task: userMessage) {
+                effectiveMessage = """
+                <workspace_intelligence>
+                \(section)
+                </workspace_intelligence>
+
+                \(userMessage)
+                """
+            }
+            history.append(ChatTurn(role: .user, content: effectiveMessage))
 
             while turns < configuration.maxTurns && !cancelled {
                 turns += 1

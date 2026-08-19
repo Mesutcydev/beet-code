@@ -308,7 +308,7 @@ final class SmartFileDownloader: @unchecked Sendable {
             throw DownloadError.io("cannot open \(incompleteURL.path)")
         }
         defer { try? handle.close() }
-        try? handle.seekToEnd()
+        _ = try? handle.seekToEnd()
 
         var lastPersist = Date()
         var lastProgress = Date()

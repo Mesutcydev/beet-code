@@ -35,3 +35,22 @@ full index via `lf intel index`.
 - Memory usage is not asserted in tests; stores are SQLite (paged) and
   parse working sets are per-file. A pathological-regression guard
   (order-of-magnitude) is asserted instead of wall-clock budgets.
+
+## Agent exploration benchmark (Phase 24)
+
+`AgentBenchmarkTests` runs a **simulated-agent** A/B (deterministic
+exploration policies, not live LLM sessions — see the honesty note in
+`Core/Intelligence/Benchmark/AgentBenchmark.swift`) over a 60-file
+synthetic repo:
+
+| task | files opened A→B | input tokens A→B | tool calls A→B | false assumptions A→B |
+|---|---|---|---|---|
+| fix refreshToken retry | 2 → 2 | 54 → 251 | 2 → 2 | 1 → 0 |
+| trace send flow | 60 → 1 | 646 → 185 | 60 → 2 | 1 → 0 |
+
+Reading: a lucky grep on a small, well-ordered repo can win a single
+targeted task on raw tokens (capsule overhead dominates at that scale).
+The intelligence path wins in aggregate (700 → 436 tokens, 62 → 3 files),
+wins decisively whenever the task requires tracing beyond the first
+directory, and always wins on verifiability — claim verification catches
+the false structural assumption the grep agent has no oracle for.

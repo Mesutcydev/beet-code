@@ -599,6 +599,7 @@ private struct ComputerControlCard: View {
 // MARK: - Providers tab
 
 private struct ProvidersTab: View {
+    @EnvironmentObject private var appState: AppState
     @ObservedObject private var keyStore = APIKeyStore.shared
     /// Keys that survived the LocalForge rename inside the OLD Keychain
     /// services but could not be copied silently (their ACLs demand one
@@ -618,6 +619,24 @@ private struct ProvidersTab: View {
                 text: "Run the agent on a remote model instead of a local download. Keys live in the Keychain only. After saving a key, use **Test** to verify the connection, then activate the provider in the Model Manager.")
             ForEach(LLMProvider.allCases) { provider in
                 ProviderCard(provider: provider)
+            }
+            SettingsCard(
+                title: "Compatible provider presets",
+                icon: "network",
+                footer: "These gateways use the OpenAI-compatible protocol. Save a key, refresh models, then choose an exact provider/model pair from the composer. The key is stored in the macOS Keychain.") {
+                ForEach(KnownRemoteProvider.all) { provider in
+                    KnownProviderRow(provider: provider)
+                }
+            }
+            if !appState.openCodeCatalog.providers.isEmpty {
+                SettingsCard(
+                    title: "Imported OpenCode providers",
+                    icon: "arrow.down.circle",
+                    footer: "Imported from opencode.json / opencode.jsonc. Keys referenced by environment or file are used in memory only; keys entered here are stored in the macOS Keychain.") {
+                    ForEach(appState.openCodeCatalog.providers) { provider in
+                        OpenCodeProviderRow(provider: provider)
+                    }
+                }
             }
         }
         .task { pendingRestore = LegacyMigration.needsInteractiveKeyMigration() }
@@ -677,6 +696,313 @@ private struct ProvidersTab: View {
                 } else {
                     restoreResult = "Nothing restored — approve the Keychain prompt and try again."
                 }
+            }
+        }
+    }
+}
+
+private struct KnownProviderRow: View {
+    let provider: KnownRemoteProvider
+    @ObservedObject private var keyStore = APIKeyStore.shared
+    @State private var keyDraft = ""
+    @State private var modelDraft = ""
+    @State private var liveProfiles: [RemoteModelProfile] = []
+    @State private var state: ProviderRowState = .idle
+
+    private enum ProviderRowState: Equatable {
+        case idle
+        case running(String)
+        case success(String)
+        case failure(String)
+    }
+
+    private var configured: Bool { keyStore.hasKey(forProviderID: provider.id) }
+
+    private var resolvedKey: String {
+        let draft = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return draft.isEmpty ? (keyStore.key(forProviderID: provider.id) ?? "") : draft
+    }
+
+    private var selectedModel: String {
+        let value = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? provider.defaultModel : value
+    }
+
+    private var modelChoices: [String] {
+        var seen = Set<String>()
+        return (liveProfiles.map(\.model) + provider.suggestedModels)
+            .filter { !seen.insert($0).inserted ? false : true }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: "shippingbox.fill")
+                    .foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(provider.displayName)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("OpenAI-compatible · \(provider.id)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Spacer()
+                if configured {
+                    Label("Configured", systemImage: "checkmark.seal.fill")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.success)
+                }
+            }
+
+            Text(provider.baseURL.absoluteString)
+                .font(.caption2.monospaced())
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            HStack(spacing: Spacing.sm) {
+                SecureField(configured ? "API key (replace)" : "API key", text: $keyDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                Button("Save") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .disabled(keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Test") { test() }
+                    .buttonStyle(.bordered)
+                    .disabled(resolvedKey.isEmpty || isRunning)
+                Button("Refresh") { refreshModels() }
+                    .buttonStyle(.bordered)
+                    .disabled(resolvedKey.isEmpty || isRunning)
+            }
+
+            HStack(spacing: Spacing.sm) {
+                TextField("Model id", text: $modelDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout.monospaced())
+                    .onSubmit { persistModel() }
+                if !modelChoices.isEmpty {
+                    Menu {
+                        ForEach(modelChoices, id: \.self) { model in
+                            Button {
+                                modelDraft = model
+                                persistModel()
+                            } label: {
+                                Text(model)
+                            }
+                        }
+                    } label: {
+                        Label("Models", systemImage: "list.bullet")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            switch state {
+            case .idle: EmptyView()
+            case .running(let message):
+                Label(message, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            case .success(let message):
+                Label(message, systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.success)
+            case .failure(let message):
+                Label(message, systemImage: "xmark.octagon.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.danger)
+            }
+        }
+        .padding(.vertical, Spacing.sm)
+        .task { restoreModel() }
+    }
+
+    private var isRunning: Bool {
+        if case .running = state { return true }
+        return false
+    }
+
+    private func restoreModel() {
+        if let saved = AppPreferencesStore.shared.current.remoteModelProfiles.values.first(where: {
+            $0.providerKey == provider.id
+        }) {
+            modelDraft = saved.model
+            liveProfiles = [saved]
+        } else {
+            modelDraft = provider.defaultModel
+        }
+    }
+
+    private func save() {
+        let key = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, keyStore.save(key: key, forProviderID: provider.id) else {
+            state = .failure("Could not save this key to the Keychain.")
+            return
+        }
+        keyDraft = ""
+        persistModel()
+        state = .success("Key saved securely.")
+    }
+
+    private func persistModel() {
+        let model = selectedModel
+        guard !model.isEmpty else { return }
+        let profile = RemoteModelProfile(
+            provider: .custom,
+            model: model,
+            supportsTools: true,
+            providerKey: provider.id,
+            providerDisplayName: provider.displayName,
+            apiProtocol: provider.apiProtocol,
+            baseURL: provider.baseURL.absoluteString)
+        AppPreferencesStore.shared.saveRemoteModelProfiles([profile])
+    }
+
+    private func test() {
+        let key = resolvedKey
+        guard !key.isEmpty else { return }
+        state = .running("Testing \(selectedModel)…")
+        Task {
+            do {
+                let answer = try await RemoteLLMClient.testConnection(
+                    endpoint: provider.endpoint(model: selectedModel), apiKey: key)
+                state = .success("Connected — \(answer)")
+                persistModel()
+            } catch {
+                state = .failure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            }
+        }
+    }
+
+    private func refreshModels() {
+        let key = resolvedKey
+        guard !key.isEmpty else { return }
+        state = .running("Loading model list…")
+        Task {
+            do {
+                let profiles = try await RemoteLLMClient.fetchModelProfiles(
+                    endpoint: provider.endpoint(model: selectedModel), apiKey: key)
+                liveProfiles = profiles
+                AppPreferencesStore.shared.saveRemoteModelProfiles(profiles)
+                if let first = profiles.first, modelDraft.isEmpty {
+                    modelDraft = first.model
+                }
+                state = .success("Loaded \(profiles.count) models.")
+            } catch {
+                state = .failure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            }
+        }
+    }
+}
+
+private struct OpenCodeProviderRow: View {
+    let provider: OpenCodeCompatibility.ProviderProfile
+    @ObservedObject private var keyStore = APIKeyStore.shared
+    @State private var keyDraft = ""
+    private enum TestState: Equatable {
+        case idle
+        case running
+        case ok(String)
+        case failed(String)
+    }
+    @State private var testState: TestState = .idle
+
+    private var firstModel: OpenCodeCompatibility.ModelProfile? { provider.models.first }
+    private var configured: Bool {
+        provider.apiKey?.isEmpty == false || keyStore.hasKey(forProviderID: provider.id)
+    }
+    private var resolvedKey: String {
+        let draft = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !draft.isEmpty { return draft }
+        return keyStore.key(forProviderID: provider.id) ?? provider.apiKey ?? ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: "shippingbox.fill")
+                    .foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(provider.displayName)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("\(provider.id) · \(provider.apiProtocol.label)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Spacer()
+                if configured {
+                    Label("Configured", systemImage: "checkmark.seal.fill")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.success)
+                }
+            }
+            if let baseURL = provider.baseURL {
+                Text(baseURL.absoluteString)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if !provider.models.isEmpty {
+                Text(provider.models.map(\.modelID).joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2)
+            } else {
+                Text("No model definitions were imported; add models to opencode.json or use the model id in the composer.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            HStack(spacing: Spacing.sm) {
+                SecureField(configured ? "API key (replace)" : "API key", text: $keyDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                Button("Save") {
+                    guard !keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                    _ = keyStore.save(key: keyDraft, forProviderID: provider.id)
+                    keyDraft = ""
+                    testState = .idle
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                Button("Test") { test() }
+                    .buttonStyle(.bordered)
+                    .disabled(firstModel == nil || testState == .running || resolvedKey.isEmpty)
+            }
+            switch testState {
+            case .idle: EmptyView()
+            case .running:
+                Label("Contacting provider…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            case .ok(let detail):
+                Label(detail, systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.success)
+            case .failed(let detail):
+                Label(detail, systemImage: "xmark.octagon.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.danger)
+            }
+        }
+        .padding(.vertical, Spacing.sm)
+    }
+
+    private func test() {
+        guard let model = firstModel else { return }
+        testState = .running
+        var endpoint = model.endpoint()
+        endpoint.apiKey = resolvedKey
+        Task {
+            do {
+                let answered = try await RemoteLLMClient.testConnection(endpoint: endpoint, apiKey: resolvedKey)
+                testState = .ok("Connected — \(answered)")
+            } catch {
+                testState = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
             }
         }
     }
@@ -1187,8 +1513,10 @@ private struct ProviderCard: View {
         testState = .running
         Task {
             do {
+                var endpoint = RemoteEndpoint(provider: provider, model: model)
+                endpoint.apiKey = key
                 let answered = try await RemoteLLMClient.testConnection(
-                    provider: provider, apiKey: key, model: model)
+                    endpoint: endpoint, apiKey: key)
                 testState = .ok("Connected — answered as \(answered) (\(model))")
             } catch {
                 // A valid credential can still be paired with a stale or
@@ -1264,7 +1592,7 @@ private struct PluginsTab: View {
             SettingsCard(
                 title: "Slash commands",
                 icon: "slash.circle",
-                footer: "Scanned: .claude/skills/<name>/SKILL.md, .claude/commands/*.md, .codex/prompts/*.md, .beetcode/commands/*.md — in the workspace first, then your home folder; the workspace wins name collisions. MCP server config import (~/.claude.json, .cursor/mcp.json, ~/.codex/config.toml) is not supported yet.") {
+                footer: "Scanned: Claude, Codex, Beet Code, and OpenCode command conventions — workspace first, then your home folder. OpenCode MCP servers, agents, and permission rules are also imported from opencode.json / opencode.jsonc.") {
                 if commands.isEmpty {
                     Text("No external commands discovered yet.")
                         .font(.callout)
@@ -1291,6 +1619,25 @@ private struct PluginsTab: View {
                     }
                 }
             }
+            if !appState.openCodeCatalog.agents.isEmpty || !appState.openCodeCatalog.mcpServers.isEmpty {
+                SettingsCard(
+                    title: "OpenCode compatibility",
+                    icon: "arrow.triangle.branch",
+                    footer: "Build and Plan are native Beet Code profiles. Imported agents and MCP servers keep their source configuration and are applied through Beet Code's approval flow.") {
+                    if !appState.openCodeCatalog.agents.isEmpty {
+                        SettingRow(label: "Agents", value: appState.openCodeCatalog.agents.map(\.name).joined(separator: " · ")) {
+                            Image(systemName: "person.2.fill")
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    if !appState.openCodeCatalog.mcpServers.isEmpty {
+                        SettingRow(label: "MCP servers", value: appState.openCodeCatalog.mcpServers.keys.sorted().joined(separator: " · ")) {
+                            Image(systemName: "network")
+                                .foregroundStyle(Theme.info)
+                        }
+                    }
+                }
+            }
         }
         .onAppear(perform: reload)
     }
@@ -1298,7 +1645,7 @@ private struct PluginsTab: View {
     /// Commands grouped by origin, in a stable Claude → Codex → BeetCode
     /// order so the list doesn't reshuffle between scans.
     private var grouped: [(String, [ExternalCommand])] {
-        let order: [ExternalCommand.Origin] = [.claude, .codex, .beetcode]
+        let order: [ExternalCommand.Origin] = [.claude, .codex, .beetcode, .openCode]
         return order.compactMap { origin in
             let items = commands.filter { $0.origin == origin }
             return items.isEmpty ? nil : (origin.rawValue, items)

@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.8.3](https://img.shields.io/badge/Download-Beet%20Code%200.8.3%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.3.zip)
+[![Download Beet Code 0.8.4](https://img.shields.io/badge/Download-Beet%20Code%200.8.4%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.4.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,11 +32,11 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.3.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.4.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
-> Phase 1 deliberately focuses on one polished path: MLX + MLX-quantized safetensors + core coding tools. GGUF/llama.cpp has since shipped (v0.2+, see the GGUF entries in the model catalog); MCP support is stdio-only.
+> Phase 1 deliberately focuses on one polished path: MLX + MLX-quantized safetensors + core coding tools. GGUF/llama.cpp has since shipped (v0.2+, see the GGUF entries in the model catalog).
 
 
 ## v0.2 — safety, durability, diagnostics
@@ -261,6 +261,28 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   automatically, with a self-healing retry without the flag when the server
   binary is too old. See [`docs/MTP-FEASIBILITY.md`](docs/MTP-FEASIBILITY.md).
 
+## v0.8.4 — provider interoperability
+
+- **OpenCode compatibility**: imports opencode.json / opencode.jsonc,
+  provider and model definitions, Markdown commands and agents, ordered
+  permission rules, and local or remote MCP servers. Build and Plan agents
+  are available natively in the composer.
+- **Major provider coverage**: OpenAI Responses and chat completions,
+  Anthropic Messages, Gemini, OpenRouter, DeepSeek, Alibaba DashScope,
+  LongCat, OpenCode Zen/Go, Mistral, Groq, xAI, Together AI, Fireworks,
+  Cerebras, Perplexity, Cohere, Hugging Face, NVIDIA NIM, and DeepInfra.
+  Custom OpenAI-compatible endpoints continue to cover Ollama, LM Studio,
+  vLLM, llama.cpp, and private gateways.
+- **Provider-aware model picker**: API and local models have separate
+  menus; each remote model keeps its provider, protocol, endpoint, headers,
+  capabilities, and model id together so a model-list refresh cannot select
+  the wrong gateway.
+- **Credential safety**: imported {env:…} / {file:…} values stay in memory,
+  saved credentials remain in the macOS Keychain, and no endpoint or session
+  export includes an API key.
+- **Responsive composer**: the provider, agent, Auto/Goal, Plan, and
+  Reasoning controls remain usable in narrow and portrait-sized windows.
+
 ## Requirements
 
 - Apple Silicon Mac (arm64)
@@ -327,8 +349,8 @@ The UI never directly manipulates MLX, files, or shell commands.
 `MemoryAdvisor` is the single model-load authority:
 
 - Measures `phys_footprint`, not `resident_size`.
-- Uses a 70% usable-RAM budget, 1.3× working-set overhead, and a configurable 500 MB headroom reserve.
-- Verdicts: fit (<60%), marginal (60–90%), won't fit (>90%).
+- Uses an 80% usable-RAM budget, 1.3× working-set overhead, and a configurable 500 MB headroom reserve.
+- Verdicts: fit (<60%), marginal (60–95%), won't fit (>95%).
 - Memory pressure warning clears MLX caches; critical pressure dumps the model only when this process is low on headroom, then blocks reloads for 20 seconds.
 - Thermal hysteresis: 8 seconds heating / 15 seconds cooling; critical is immediate.
 - Serious thermal state caps generation at 1,536 tokens; critical blocks new loads and caps at 512.
@@ -385,7 +407,12 @@ Catalog entries are ordinary Swift values; adding a user model later does not re
 
 ## Current limitations
 
-- MCP support is stdio-only (no HTTP/SSE transports or OAuth yet).
+- OpenCode configuration is imported into Beet Code's native runtime; provider
+  SDK plugins that depend on JavaScript-only middleware still need a native
+  endpoint or a custom OpenAI-compatible gateway.
+- OpenAI API access uses an OpenAI Platform API key. A ChatGPT web
+  subscription is a separate product and is not silently converted into API
+  credits; Beet Code does not use private ChatGPT session cookies.
 - GGUF models require a system `llama-server` (`brew install llama.cpp`); the
   in-process MLX engine has no such dependency.
 - Multi-model residency is bounded by the memory advisor; on smaller tiers

@@ -531,7 +531,7 @@ final class MCPServerConfigTransportTests: XCTestCase {
             at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         // Decode a raw entry: empty object = neither command nor url.
         try Data("{\"mcpServers\":{\"broken\":{}}}".utf8).write(to: configURL)
-        let (servers, errors) = MCPConfig.load(workspaceRoot: dir)
+        let (servers, errors) = MCPConfig.load(workspaceRoot: dir, includeOpenCode: false)
         XCTAssertTrue(servers.isEmpty)
         XCTAssertEqual(errors.count, 1)
         XCTAssertTrue(errors[0].contains("broken"))
@@ -547,7 +547,7 @@ final class MCPServerConfigTransportTests: XCTestCase {
             at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("{\"mcpServers\":{\"remote\":{\"url\":\"https://mcp.example.com/v1\"}}}".utf8)
             .write(to: configURL)
-        let (servers, errors) = MCPConfig.load(workspaceRoot: dir)
+        let (servers, errors) = MCPConfig.load(workspaceRoot: dir, includeOpenCode: false)
         XCTAssertTrue(errors.isEmpty)
         XCTAssertEqual(servers.count, 1)
         XCTAssertEqual(servers["remote"]?.transport, .http)

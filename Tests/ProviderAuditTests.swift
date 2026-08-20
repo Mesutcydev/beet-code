@@ -180,7 +180,7 @@ final class ProviderAuditTests: XCTestCase {
     // MARK: P4/P5 — provider registry additions
 
     func testProviderRegistryExtensions() {
-        XCTAssertEqual(LLMProvider.allCases.count, 10)
+        XCTAssertEqual(LLMProvider.allCases.count, 11)
         XCTAssertNotNil(LLMProvider.anthropic.anthropicBaseURL)
         XCTAssertEqual(LLMProvider.anthropic.anthropicBaseURL?.host, "api.anthropic.com")
         XCTAssertNil(LLMProvider.anthropic.openAICompatibleBaseURL)

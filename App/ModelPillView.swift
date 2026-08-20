@@ -125,6 +125,7 @@ struct ModelSelectionPill: View {
 private struct ModelPickerPopover: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var keyStore = APIKeyStore.shared
     private enum Source: String, CaseIterable, Identifiable {
         case local, api
         var id: String { rawValue }
@@ -147,7 +148,11 @@ private struct ModelPickerPopover: View {
     private var remoteModels: [RemoteModelProfile] {
         let configured = Set(remoteProviders)
         var profiles = AppPreferencesStore.shared.current.remoteModelProfiles.values
-            .filter { configured.contains($0.provider) }
+            .filter { profile in
+                if configured.contains(profile.provider) { return true }
+                guard let providerKey = profile.providerKey else { return false }
+                return keyStore.hasKey(forProviderID: providerKey)
+            }
         for provider in remoteProviders {
             guard !profiles.contains(where: { $0.provider == provider }) else { continue }
             let model = AppPreferencesStore.shared.current.remoteModel[provider.rawValue]
@@ -157,9 +162,33 @@ private struct ModelPickerPopover: View {
                 provider: provider, model: model,
                 supportsVision: provider.supportsVision, supportsTools: true))
         }
+        // OpenCode project/global configs are first-class API model sources.
+        // Keep their provider id and protocol on the profile so selecting a
+        // row cannot accidentally route the same model name through another
+        // provider's chat endpoint.
+        for model in appState.openCodeCatalog.models {
+            let profile = model.remoteProfile()
+            if !profiles.contains(where: { $0.id == profile.id }) {
+                profiles.append(profile)
+            }
+        }
+        // Named compatible gateways use the same dynamic endpoint identity as
+        // imported OpenCode providers, but are also available when no
+        // opencode.json file exists.
+        for provider in KnownRemoteProvider.all where keyStore.hasKey(forProviderID: provider.id) {
+            guard !profiles.contains(where: { $0.providerKey == provider.id }) else { continue }
+            profiles.append(RemoteModelProfile(
+                provider: .custom,
+                model: provider.defaultModel,
+                supportsTools: true,
+                providerKey: provider.id,
+                providerDisplayName: provider.displayName,
+                apiProtocol: provider.apiProtocol,
+                baseURL: provider.baseURL.absoluteString))
+        }
         return profiles.sorted {
-            if $0.provider.displayName != $1.provider.displayName {
-                return $0.provider.displayName < $1.provider.displayName
+            if $0.displayProviderName != $1.displayProviderName {
+                return $0.displayProviderName < $1.displayProviderName
             }
             return $0.model.localizedStandardCompare($1.model) == .orderedAscending
         }
@@ -327,14 +356,15 @@ private struct ModelPickerPopover: View {
 
     private func apiModelRow(_ profile: RemoteModelProfile) -> some View {
         let provider = profile.provider
+        let activeEndpoint = appState.engine.activeRemoteEndpoint
         let isActive = appState.isRemoteActive
-            && appState.engine.activeRemoteEndpoint?.provider == provider
-            && appState.engine.activeRemoteEndpoint?.model == profile.model
+            && activeEndpoint?.provider == provider
+            && activeEndpoint?.providerID == profile.providerKey
+            && activeEndpoint?.model == profile.model
         return Button {
             dismiss()
             Task {
-                _ = await appState.activateRemote(endpoint: RemoteEndpoint(
-                    provider: provider, model: profile.model))
+                _ = await appState.activateRemote(endpoint: profile.endpoint())
             }
         } label: {
             HStack(spacing: 8) {
@@ -347,7 +377,7 @@ private struct ModelPickerPopover: View {
                         .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
-                    Text("\(provider.displayName) · \(profile.model)")
+                    Text("\(profile.displayProviderName) · \(profile.model)")
                         .font(.system(size: 10.5).monospaced())
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)

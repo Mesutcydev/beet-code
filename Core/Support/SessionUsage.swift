@@ -55,7 +55,7 @@ struct SessionUsage: Sendable, Equatable {
         case .gemini: return Rate(prompt: 0.10, completion: 0.40)
         case .openRouter: return Rate(prompt: 0.50, completion: 1.50)
         case .alibaba, .alibabaTokenPlan: return Rate(prompt: 0.40, completion: 1.20)
-        case .longCat, .openCode, .custom: return nil
+        case .longCat, .openCode, .openCodeGo, .custom: return nil
         }
     }
 }

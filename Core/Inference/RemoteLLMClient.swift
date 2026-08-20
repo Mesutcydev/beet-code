@@ -60,6 +60,26 @@ enum RemoteLLMClient {
         }
     }
 
+    /// OpenAI Responses-compatible request. OpenCode and several newer
+    /// gateways expose Responses as a separate route instead of accepting a
+    /// Chat Completions payload. Keeping this wire type separate prevents
+    /// provider-specific fields from leaking into ordinary chat requests.
+    struct ResponsesRequest: Encodable, Sendable {
+        var model: String
+        var input: [OpenAIMessage]
+        var temperature: Double?
+        var max_output_tokens: Int?
+        var stream: Bool = true
+        var tools: [ResponsesTool]?
+
+        struct ResponsesTool: Encodable, Sendable {
+            var type: String = "function"
+            var name: String
+            var description: String
+            var parameters: NativeToolBridge.JSONBox
+        }
+    }
+
     struct OpenAIChunk: Codable, Sendable {
         struct Choice: Codable, Sendable {
             struct Delta: Codable, Sendable {
@@ -205,7 +225,7 @@ enum RemoteLLMClient {
 
     // MARK: Public API
 
-    static let userAgent = "BeetCode/0.8.3 (macOS coding agent)"
+    static let userAgent = "BeetCode/0.8.4 (macOS coding agent)"
 
     // MARK: Message preparation (P2/P7 — provider-safe role mapping)
 
@@ -325,6 +345,12 @@ enum RemoteLLMClient {
         return nil
     }
 
+    private static func apply(_ headers: [String: String], to request: inout URLRequest) {
+        for (name, value) in headers where !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+    }
+
     /// Executes a streaming request with: one bounded retry on 429/503
     /// (honoring Retry-After, capped at 8s), byte-level SSE consumption
     /// with an inactivity watchdog, and UTF-8-safe decoding.
@@ -380,6 +406,70 @@ enum RemoteLLMClient {
 
     /// Streams a chat completion from an OpenAI-compatible endpoint.
     /// Yields content deltas; finish without error = completion.
+    static func stream(
+        endpoint: RemoteEndpoint,
+        apiKey: String,
+        model: String,
+        turns: [ChatTurn],
+        temperature: Double?,
+        maxTokens: Int?,
+        tools: [NativeToolSpec] = [],
+        onUsage: (@Sendable (UsageInfo) -> Void)? = nil
+    ) -> AsyncThrowingStream<String, Error> {
+        guard let baseURL = endpoint.effectiveBaseURL else {
+            return AsyncThrowingStream { continuation in
+                continuation.finish(throwing: RemoteLLMError.invalidConfiguration("no endpoint URL"))
+            }
+        }
+        switch endpoint.effectiveProtocol {
+        case .gemini:
+            return streamGemini(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: model,
+                turns: turns,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                tools: tools,
+                headers: endpoint.headers,
+                onUsage: onUsage)
+        case .anthropicMessages:
+            return streamAnthropic(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: model,
+                turns: turns,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                tools: tools,
+                headers: endpoint.headers,
+                onUsage: onUsage)
+        case .openAIResponses:
+            return streamOpenAIResponses(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: model,
+                turns: turns,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                tools: tools,
+                headers: endpoint.headers,
+                onUsage: onUsage)
+        case .openAIChatCompletions:
+            return streamOpenAICompatible(
+                provider: endpoint.provider,
+                baseURL: baseURL,
+                apiKey: apiKey,
+                model: model,
+                turns: turns,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                tools: tools,
+                headers: endpoint.headers,
+                onUsage: onUsage)
+        }
+    }
+
     static func streamOpenAICompatible(
         provider: LLMProvider,
         baseURL: URL,
@@ -389,6 +479,7 @@ enum RemoteLLMClient {
         temperature: Double?,
         maxTokens: Int?,
         tools: [NativeToolSpec] = [],
+        headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
@@ -398,7 +489,7 @@ enum RemoteLLMClient {
                         provider: provider, baseURL: baseURL, apiKey: apiKey,
                         model: model, turns: turns, temperature: temperature,
                         maxTokens: maxTokens, includeStreamOptions: true,
-                        tools: tools, onUsage: onUsage)
+                        tools: tools, headers: headers, onUsage: onUsage)
                     for try await chunk in first {
                         if Task.isCancelled { throw RemoteLLMError.cancelled }
                         continuation.yield(chunk)
@@ -410,7 +501,7 @@ enum RemoteLLMClient {
                             provider: provider, baseURL: baseURL, apiKey: apiKey,
                             model: model, turns: turns, temperature: temperature,
                             maxTokens: maxTokens, includeStreamOptions: false,
-                            tools: tools, onUsage: onUsage)
+                            tools: tools, headers: headers, onUsage: onUsage)
                         for try await chunk in retry {
                             if Task.isCancelled { throw RemoteLLMError.cancelled }
                             continuation.yield(chunk)
@@ -423,7 +514,7 @@ enum RemoteLLMClient {
                                 provider: provider, baseURL: baseURL, apiKey: apiKey,
                                 model: model, turns: turns, temperature: temperature,
                                 maxTokens: maxTokens, includeStreamOptions: false,
-                                tools: [], onUsage: onUsage)
+                                tools: [], headers: headers, onUsage: onUsage)
                             for try await chunk in plain {
                                 if Task.isCancelled { throw RemoteLLMError.cancelled }
                                 continuation.yield(chunk)
@@ -455,6 +546,7 @@ enum RemoteLLMClient {
         maxTokens: Int?,
         includeStreamOptions: Bool,
         tools: [NativeToolSpec] = [],
+        headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)?
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
@@ -476,7 +568,11 @@ enum RemoteLLMClient {
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
                 request.httpMethod = "POST"
-                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                apply(headers, to: &request)
+                if !apiKey.isEmpty, request.value(forHTTPHeaderField: "Authorization") == nil,
+                   request.value(forHTTPHeaderField: "x-api-key") == nil {
+                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                }
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
                 request.timeoutInterval = 120
@@ -485,6 +581,52 @@ enum RemoteLLMClient {
                     request.setValue("Beet Code", forHTTPHeaderField: "HTTP-Referer")
                     request.setValue("Beet Code", forHTTPHeaderField: "X-Title")
                 }
+                request.httpBody = try JSONEncoder().encode(body)
+                return request
+            }, continuation: continuation, onUsage: onUsage)
+        }
+    }
+
+    /// Streams an OpenAI Responses-compatible model. The Responses wire
+    /// format is deliberately separate from Chat Completions because the two
+    /// APIs use different request keys and tool shapes, even when a gateway
+    /// exposes both below the same base URL.
+    static func streamOpenAIResponses(
+        baseURL: URL,
+        apiKey: String,
+        model: String,
+        turns: [ChatTurn],
+        temperature: Double?,
+        maxTokens: Int?,
+        tools: [NativeToolSpec] = [],
+        headers: [String: String] = [:],
+        onUsage: (@Sendable (UsageInfo) -> Void)? = nil
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
+            let responseTools = tools.map { spec in
+                ResponsesRequest.ResponsesTool(
+                    name: spec.name,
+                    description: spec.description,
+                    parameters: NativeToolBridge.JSONBox.parse(spec.schemaText))
+            }
+            let body = ResponsesRequest(
+                model: model,
+                input: prepareOpenAIMessages(turns),
+                temperature: omitsTemperature(model) ? nil : temperature,
+                max_output_tokens: maxTokens,
+                stream: true,
+                tools: responseTools.isEmpty ? nil : responseTools)
+            runStreamingRequest(makeRequest: {
+                var request = URLRequest(url: baseURL.appendingPathComponent("responses"))
+                request.httpMethod = "POST"
+                apply(headers, to: &request)
+                if !apiKey.isEmpty, request.value(forHTTPHeaderField: "Authorization") == nil,
+                   request.value(forHTTPHeaderField: "x-api-key") == nil {
+                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                }
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                request.timeoutInterval = 120
                 request.httpBody = try JSONEncoder().encode(body)
                 return request
             }, continuation: continuation, onUsage: onUsage)
@@ -502,6 +644,7 @@ enum RemoteLLMClient {
         temperature: Double?,
         maxTokens: Int?,
         tools: [NativeToolSpec] = [],
+        headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
@@ -520,8 +663,11 @@ enum RemoteLLMClient {
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
+                apply(headers, to: &request)
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+                if !apiKey.isEmpty, request.value(forHTTPHeaderField: "x-goog-api-key") == nil {
+                    request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+                }
                 request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
                 request.timeoutInterval = 120
                 request.httpBody = try JSONEncoder().encode(body)
@@ -540,6 +686,7 @@ enum RemoteLLMClient {
         temperature: Double?,
         maxTokens: Int?,
         tools: [NativeToolSpec] = [],
+        headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
@@ -555,8 +702,14 @@ enum RemoteLLMClient {
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("messages"))
                 request.httpMethod = "POST"
-                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                apply(headers, to: &request)
+                if !apiKey.isEmpty, request.value(forHTTPHeaderField: "x-api-key") == nil,
+                   request.value(forHTTPHeaderField: "Authorization") == nil {
+                    request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                }
+                if request.value(forHTTPHeaderField: "anthropic-version") == nil {
+                    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                }
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
                 request.timeoutInterval = 120
@@ -575,6 +728,103 @@ enum RemoteLLMClient {
     /// (DeepSeek reasoner, OpenAI o-series) reject explicit temperature
     /// values, which made the Test button fail for models that worked fine
     /// in real chat.
+    static func testConnection(
+        endpoint: RemoteEndpoint,
+        apiKey: String
+    ) async throws -> String {
+        guard let base = endpoint.effectiveBaseURL else {
+            throw RemoteLLMError.invalidConfiguration("no endpoint URL")
+        }
+        let request: URLRequest
+        switch endpoint.effectiveProtocol {
+        case .gemini:
+            let modelID = normalizedGeminiModelID(endpoint.model)
+            var r = URLRequest(url: base.appendingPathComponent("models/\(modelID):generateContent"))
+            r.httpMethod = "POST"
+            apply(endpoint.headers, to: &r)
+            if !apiKey.isEmpty, r.value(forHTTPHeaderField: "x-goog-api-key") == nil {
+                r.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            }
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            r.timeoutInterval = 30
+            r.httpBody = try JSONEncoder().encode(GeminiRequest(
+                contents: [.init(role: "user", parts: [.init(text: "ping")])],
+                generationConfig: .init(maxOutputTokens: 4)))
+            request = r
+        case .anthropicMessages:
+            var r = URLRequest(url: base.appendingPathComponent("messages"))
+            r.httpMethod = "POST"
+            apply(endpoint.headers, to: &r)
+            if !apiKey.isEmpty, r.value(forHTTPHeaderField: "x-api-key") == nil,
+               r.value(forHTTPHeaderField: "Authorization") == nil {
+                r.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            }
+            if r.value(forHTTPHeaderField: "anthropic-version") == nil {
+                r.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            }
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            r.timeoutInterval = 30
+            r.httpBody = try JSONEncoder().encode(AnthropicRequest(
+                model: endpoint.model,
+                max_tokens: 4,
+                messages: [.init(role: "user", content: "ping")],
+                stream: false))
+            request = r
+        case .openAIResponses:
+            var r = URLRequest(url: base.appendingPathComponent("responses"))
+            r.httpMethod = "POST"
+            apply(endpoint.headers, to: &r)
+            if !apiKey.isEmpty, r.value(forHTTPHeaderField: "Authorization") == nil,
+               r.value(forHTTPHeaderField: "x-api-key") == nil {
+                r.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            r.timeoutInterval = 30
+            r.httpBody = try JSONEncoder().encode(ResponsesRequest(
+                model: endpoint.model,
+                input: [.init(role: "user", content: "ping")],
+                max_output_tokens: 4,
+                stream: false))
+            request = r
+        case .openAIChatCompletions:
+            var r = URLRequest(url: base.appendingPathComponent("chat/completions"))
+            r.httpMethod = "POST"
+            apply(endpoint.headers, to: &r)
+            if !apiKey.isEmpty, r.value(forHTTPHeaderField: "Authorization") == nil,
+               r.value(forHTTPHeaderField: "x-api-key") == nil {
+                r.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            r.timeoutInterval = 30
+            let reasoningCap = usesMaxCompletionTokens(endpoint.model)
+            r.httpBody = try JSONEncoder().encode(OpenAIRequest(
+                model: endpoint.model,
+                messages: [.init(role: "user", content: "ping")],
+                max_tokens: reasoningCap ? nil : 4,
+                max_completion_tokens: reasoningCap ? 4 : nil,
+                stream: false))
+            request = r
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw RemoteLLMError.transport("non-HTTP response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let text = String(decoding: data, as: UTF8.self)
+            let detail = errorDetail(from: text) ?? String(text.prefix(220))
+            throw RemoteLLMError.badStatus(http.statusCode, detail)
+        }
+        if let chunk = try? JSONDecoder().decode(OpenAICompletion.self, from: data) {
+            return chunk.model ?? endpoint.model
+        }
+        return endpoint.model
+    }
+
     static func testConnection(
         provider: LLMProvider,
         apiKey: String,
@@ -667,6 +917,89 @@ enum RemoteLLMClient {
     }
 
     // MARK: Live model discovery (P10)
+
+    static func fetchModels(
+        endpoint: RemoteEndpoint,
+        apiKey: String?,
+        session: URLSession = .shared
+    ) async throws -> [String] {
+        try await fetchModelProfiles(endpoint: endpoint, apiKey: apiKey, session: session).map(\.model)
+    }
+
+    /// Model discovery for imported providers. It uses the imported base URL
+    /// and headers, then carries the provider id through to the picker so two
+    /// providers serving the same model id never collide.
+    static func fetchModelProfiles(
+        endpoint: RemoteEndpoint,
+        apiKey: String?,
+        session: URLSession = .shared
+    ) async throws -> [RemoteModelProfile] {
+        guard let base = endpoint.effectiveBaseURL else {
+            throw RemoteLLMError.invalidConfiguration("no models endpoint")
+        }
+        var request = URLRequest(url: base.appendingPathComponent("models"))
+        request.timeoutInterval = 15
+        apply(endpoint.headers, to: &request)
+        if let apiKey, !apiKey.isEmpty,
+           request.value(forHTTPHeaderField: "Authorization") == nil,
+           request.value(forHTTPHeaderField: "x-api-key") == nil,
+           request.value(forHTTPHeaderField: "x-goog-api-key") == nil {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        let data = try await get(request, provider: endpoint.provider, session: session)
+
+        let profiles: [RemoteModelProfile]
+        switch endpoint.effectiveProtocol {
+        case .gemini:
+            let decoded = try JSONDecoder().decode(GeminiModels.self, from: data)
+            profiles = decoded.models.compactMap { entry in
+                guard let model = geminiModelID(from: entry) else { return nil }
+                return RemoteModelProfile(
+                    provider: endpoint.provider,
+                    model: model,
+                    displayName: entry.displayName,
+                    contextWindow: entry.inputTokenLimit,
+                    maxOutputTokens: entry.outputTokenLimit,
+                    supportsVision: entry.supportsVision,
+                    supportsTools: entry.supportedGenerationMethods.contains("generateContent"),
+                    supportsTemperature: true,
+                    providerKey: endpoint.providerID,
+                    providerDisplayName: endpoint.effectiveDisplayName,
+                    apiProtocol: endpoint.effectiveProtocol,
+                    baseURL: base.absoluteString,
+                    headers: endpoint.headers,
+                    apiKey: apiKey)
+            }
+        case .anthropicMessages:
+            let decoded = try JSONDecoder().decode(AnthropicModels.self, from: data)
+            profiles = decoded.data.compactMap { model in
+                guard let id = model.id else { return nil }
+                return RemoteModelProfile(
+                    provider: endpoint.provider,
+                    model: id,
+                    providerKey: endpoint.providerID,
+                    providerDisplayName: endpoint.effectiveDisplayName,
+                    apiProtocol: endpoint.effectiveProtocol,
+                    baseURL: base.absoluteString,
+                    headers: endpoint.headers,
+                    apiKey: apiKey)
+            }
+        default:
+            profiles = try compatibleModelProfiles(from: data, provider: endpoint.provider).map { profile in
+                var profile = profile
+                profile.providerKey = endpoint.providerID
+                profile.providerDisplayName = endpoint.effectiveDisplayName
+                profile.apiProtocol = endpoint.effectiveProtocol
+                profile.baseURL = base.absoluteString
+                profile.headers = endpoint.headers
+                profile.apiKey = apiKey
+                return profile
+            }
+        }
+        return deduplicatedProfiles(profiles)
+    }
 
     /// Fetches the provider's live model catalog. Errors are preserved so the
     /// settings UI can tell the user whether the key, endpoint, or provider
@@ -1059,6 +1392,11 @@ enum RemoteLLMClient {
         let looksGemini = topLevel["candidates"] != nil || topLevel["usageMetadata"] != nil
         let looksAnthropic = topLevel["type"] != nil
 
+        if let responseType = topLevel["type"] as? String,
+           responseType.hasPrefix("response.") {
+            return extractResponses(from: topLevel)
+        }
+
         if looksOpenAI, let chunk = try? JSONDecoder().decode(OpenAIChunk.self, from: data) {
             var usage: UsageInfo?
             if let u = chunk.usage {
@@ -1166,6 +1504,44 @@ enum RemoteLLMClient {
             return nil
         }
         return nil
+    }
+
+    private static func extractResponses(from object: [String: Any]) -> Extracted? {
+        guard let type = object["type"] as? String else { return nil }
+        switch type {
+        case "response.output_text.delta":
+            guard let delta = object["delta"] as? String, !delta.isEmpty else { return nil }
+            return Extracted(text: delta, usage: nil, tool: nil)
+        case "response.function_call_arguments.delta":
+            guard let delta = object["delta"] as? String else { return nil }
+            let index = (object["output_index"] as? Int) ?? 0
+            return Extracted(
+                text: nil,
+                usage: nil,
+                tool: .init(index: index, name: nil, arguments: delta))
+        case "response.output_item.added":
+            guard let item = object["item"] as? [String: Any],
+                  (item["type"] as? String) == "function_call"
+            else { return nil }
+            let index = (object["output_index"] as? Int) ?? 0
+            return Extracted(
+                text: nil,
+                usage: nil,
+                tool: .init(index: index, name: item["name"] as? String, arguments: nil))
+        case "response.completed", "response.done":
+            guard let response = object["response"] as? [String: Any],
+                  let usage = response["usage"] as? [String: Any]
+            else { return nil }
+            let prompt = (usage["input_tokens"] as? Int) ?? (usage["prompt_tokens"] as? Int)
+            let completion = (usage["output_tokens"] as? Int) ?? (usage["completion_tokens"] as? Int)
+            guard prompt != nil || completion != nil else { return nil }
+            return Extracted(
+                text: nil,
+                usage: UsageInfo(promptTokens: prompt, completionTokens: completion),
+                tool: nil)
+        default:
+            return nil
+        }
     }
 
     /// OpenAI-compatible reasoning is not standardized. OpenRouter and

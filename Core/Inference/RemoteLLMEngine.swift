@@ -20,14 +20,16 @@ final class RemoteLLMEngine: LLMEngine, NativeToolConfigurable, @unchecked Senda
     init?(endpoint: RemoteEndpoint) {
         // Custom/local servers may run without auth; every other provider
         // requires a Keychain key.
-        let key = APIKeyStore.key(provider: endpoint.provider)
+        let key = endpoint.apiKey
+            ?? endpoint.providerID.flatMap { APIKeyStore.key(providerID: $0) }
+            ?? APIKeyStore.key(provider: endpoint.provider)
         if key == nil && !endpoint.provider.keyOptional { return nil }
         self.endpoint = endpoint
         self.apiKey = key ?? ""
     }
 
     var loadedModelID: String? {
-        get async { endpoint.provider.rawValue + ":" + endpoint.model }
+        get async { endpoint.effectiveProviderKey + ":" + endpoint.model }
     }
 
     var stats: EngineStats {
@@ -74,47 +76,12 @@ final class RemoteLLMEngine: LLMEngine, NativeToolConfigurable, @unchecked Senda
         // request boundary so a model that advertises no tools or temperature
         // support does not receive parameters it will reject.
         let profile = AppPreferencesStore.shared
-            .remoteModelProfile(provider: endpoint.provider, model: endpoint.model)
-            .map { $0.applying(AppPreferencesStore.shared.remoteModelOverride(
-                provider: endpoint.provider, model: endpoint.model)) }
+            .remoteModelProfile(endpoint: endpoint)
+            .map { $0.applying(AppPreferencesStore.shared.remoteModelOverride(endpoint: endpoint)) }
         let tools = withLock { nativeTools }
         let effectiveTools = profile?.supportsTools == false ? [] : tools
         let effectiveTemperature = profile?.supportsTemperature == false ? nil : temperature
-        let stream: AsyncThrowingStream<String, Error>
-        if endpoint.provider == .anthropic,
-           let base = endpoint.provider.anthropicBaseURL {
-            stream = RemoteLLMClient.streamAnthropic(
-                baseURL: base,
-                apiKey: apiKey,
-                model: endpoint.model,
-                turns: allTurns,
-                temperature: effectiveTemperature,
-                maxTokens: maxTokens,
-                tools: effectiveTools,
-                onUsage: onUsage)
-        } else if endpoint.provider == .gemini,
-                  let base = endpoint.provider.geminiBaseURL {
-            stream = RemoteLLMClient.streamGemini(
-                baseURL: base,
-                apiKey: self.apiKey,
-                model: endpoint.model,
-                turns: allTurns,
-                temperature: effectiveTemperature,
-                maxTokens: maxTokens,
-                tools: effectiveTools,
-                onUsage: onUsage)
-        } else if let base = endpoint.provider.openAICompatibleBaseURL {
-            stream = RemoteLLMClient.streamOpenAICompatible(
-                provider: endpoint.provider,
-                baseURL: base,
-                apiKey: apiKey,
-                model: endpoint.model,
-                turns: allTurns,
-                temperature: effectiveTemperature,
-                maxTokens: maxTokens,
-                tools: effectiveTools,
-                onUsage: onUsage)
-        } else {
+        guard endpoint.effectiveBaseURL != nil else {
             return AsyncThrowingStream { continuation in
                 continuation.finish(throwing: RemoteLLMError.invalidConfiguration(
                     endpoint.provider == .custom
@@ -122,6 +89,15 @@ final class RemoteLLMEngine: LLMEngine, NativeToolConfigurable, @unchecked Senda
                         : "no endpoint URL"))
             }
         }
+        let stream = RemoteLLMClient.stream(
+            endpoint: endpoint,
+            apiKey: apiKey,
+            model: endpoint.model,
+            turns: allTurns,
+            temperature: effectiveTemperature,
+            maxTokens: maxTokens,
+            tools: effectiveTools,
+            onUsage: onUsage)
 
         return AsyncThrowingStream { continuation in
             let task = Task {

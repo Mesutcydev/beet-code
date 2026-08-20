@@ -39,6 +39,9 @@ final class AppState: ObservableObject {
     /// Effective remote metadata after applying the cached provider profile
     /// and any user override. Local models leave this nil.
     @Published private(set) var activeRemoteProfile: RemoteModelProfile?
+    /// OpenCode-compatible workspace catalog. It is read-only discovery data;
+    /// credentials referenced by its config stay in memory or Keychain.
+    @Published private(set) var openCodeCatalog: OpenCodeCompatibility.Catalog = .empty
     /// True while the simulator side panel is docked — the window must be
     /// allowed to grow so sidebar + chat + simulator never clip each other.
     @Published var isSimulatorPanelOpen = false
@@ -111,6 +114,14 @@ final class AppState: ObservableObject {
         sessions.maxTokensHandler = { [weak self] in
             self?.activeRemoteProfile?.maxOutputTokens
         }
+        sessions.openCodeCatalogHandler = { [weak self] in
+            self?.openCodeCatalog ?? .empty
+        }
+        sessions.$workspaceURL
+            .sink { [weak self] workspace in
+                self?.refreshOpenCodeCatalog(workspace: workspace)
+            }
+            .store(in: &cancellables)
         // `/model <id>` slash command: resolve against the catalog and
         // activate (load) the model, exactly like the Model Manager does.
         sessions.modelSwitchHandler = { [weak self] modelID in
@@ -161,8 +172,13 @@ final class AppState: ObservableObject {
         startPressureMonitoring()
         startStatsRefresh()
         restoreLaunchState()
+        refreshOpenCodeCatalog(workspace: sessions.workspaceURL)
         // Honor a persisted "server enabled" across launches.
         syncServers()
+    }
+
+    private func refreshOpenCodeCatalog(workspace: URL?) {
+        openCodeCatalog = OpenCodeCompatibility.load(workspace: workspace)
     }
 
     // MARK: Launch restore (Phase 3.1)
@@ -383,21 +399,26 @@ final class AppState: ObservableObject {
             clearPersistedModel()
         }
         guard engine.useRemote(endpoint) else {
-            enginePhase = .failed("No API key configured for \(endpoint.provider.displayName).")
+            enginePhase = .failed("No API key configured for \(endpoint.effectiveDisplayName).")
             return false
         }
-        let baseProfile = preferences.remoteModelProfile(
-            provider: endpoint.provider, model: endpoint.model)
+        let baseProfile = preferences.remoteModelProfile(endpoint: endpoint)
             ?? RemoteModelProfile(
                 provider: endpoint.provider,
                 model: endpoint.model,
                 supportsVision: endpoint.provider.supportsVision,
                 supportsTools: true,
-                supportsTemperature: true)
+                supportsTemperature: true,
+                providerKey: endpoint.providerID,
+                providerDisplayName: endpoint.effectiveDisplayName,
+                apiProtocol: endpoint.effectiveProtocol,
+                baseURL: endpoint.effectiveBaseURL?.absoluteString,
+                headers: endpoint.headers,
+                apiKey: endpoint.apiKey)
         activeRemoteProfile = baseProfile.applying(
-            preferences.remoteModelOverride(provider: endpoint.provider, model: endpoint.model))
+            preferences.remoteModelOverride(endpoint: endpoint))
         effectiveContextWindow = activeRemoteProfile?.contextWindow
-        enginePhase = .ready("\(endpoint.provider.displayName) · \(endpoint.model)")
+        enginePhase = .ready("\(endpoint.effectiveDisplayName) · \(endpoint.model)")
         return true
     }
 

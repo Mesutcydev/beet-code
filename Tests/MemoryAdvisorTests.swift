@@ -11,10 +11,10 @@ final class MemoryAdvisorTests: XCTestCase {
         XCTAssertEqual(MemoryAdvisor.verdict(projected: 6 * gb, budget: budget), .fits)
         // 61% → marginal
         XCTAssertEqual(MemoryAdvisor.verdict(projected: 6_100_000_000, budget: budget), .marginal)
-        // 90% → marginal boundary
-        XCTAssertEqual(MemoryAdvisor.verdict(projected: 9 * gb, budget: budget), .marginal)
-        // 91% → wontFit
-        if case .wontFit = MemoryAdvisor.verdict(projected: 9_100_000_000, budget: budget) {
+        // 95% → marginal boundary
+        XCTAssertEqual(MemoryAdvisor.verdict(projected: 9_500_000_000, budget: budget), .marginal)
+        // 96% → wontFit
+        if case .wontFit = MemoryAdvisor.verdict(projected: 9_600_000_000, budget: budget) {
             // expected
         } else {
             XCTFail("expected wontFit")

@@ -84,9 +84,21 @@ enum MCPConfig {
     /// Merged servers: user-global plus workspace-local (local wins on name
     /// collision). Invalid files are ignored with a reason string so the UI
     /// can surface them without breaking the agent.
-    static func load(workspaceRoot: URL) -> (servers: [String: MCPServerConfig], errors: [String]) {
+    static func load(
+        workspaceRoot: URL,
+        includeOpenCode: Bool = true
+    ) -> (servers: [String: MCPServerConfig], errors: [String]) {
         var merged: [String: MCPServerConfig] = [:]
         var errors: [String] = []
+
+        // OpenCode uses the same transport vocabulary with an `mcp` root
+        // object. Import it before Beet Code's native files so an explicit
+        // `.beetcode/mcp.json` entry remains the local override.
+        if includeOpenCode {
+            let openCode = OpenCodeCompatibility.load(workspace: workspaceRoot)
+            merged.merge(openCode.mcpServers) { _, local in local }
+            errors.append(contentsOf: openCode.warnings)
+        }
 
         for (label, url) in [("user", userConfigURL), ("workspace", workspaceConfigURL(root: workspaceRoot))] {
             guard FileManager.default.fileExists(atPath: url.path) else { continue }

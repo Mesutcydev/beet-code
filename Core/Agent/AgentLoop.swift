@@ -33,6 +33,11 @@ actor AgentLoop {
         var memoryMode: MemoryMode = .off
         /// How aggressively old tool outputs are compacted (v0.3).
         var compressionLevel: CompressionLevel = .standard
+        /// OpenCode-compatible agent profile prompt and identity. The
+        /// controller resolves the selected profile before constructing the
+        /// loop, so nested loops can stay fully native and deterministic.
+        var agentName: String?
+        var agentPrompt: String?
         /// Workspace intelligence injection: when the workspace has an
         /// intelligence index, each task message is prefixed with a bounded,
         /// labeled context block from the ContextCompiler. The visible
@@ -127,6 +132,7 @@ actor AgentLoop {
             tools: allTools, workspace: workspace, repoIndex: repoIndex,
             memorySection: memorySection, projectInstructions: projectInstructions,
             workspaceHistory: historySection,
+            agentPrompt: configuration.agentPrompt,
             planMode: configuration.planMode,
             goalMode: configuration.goalMode,
             contextWindowTokens: configuration.contextWindowTokens,
@@ -583,7 +589,16 @@ actor AgentLoop {
                         toolName: call.name, timestamp: Date()))
 
                 let risk = executor.tool(named: call.name)?.risk
-                if permissionGate.decision(for: call, risk: risk) == .needsApproval {
+                switch permissionGate.decision(for: call, risk: risk) {
+                case .denied(let reason):
+                    let message = "denied by OpenCode permission: \(reason)"
+                    record.messages.append(
+                        SessionMessage(role: .toolResult, content: message, toolName: call.name, timestamp: Date()))
+                    history.append(ChatTurn(role: .tool, content: message))
+                    eventContinuation?.yield(.toolCallFinished(invocation, output: message, failed: true))
+                    await compactIfNeeded()
+                    continue
+                case .needsApproval:
                     guard await requestApproval(for: call, invocation: invocation) != nil else {
                         if cancelled { finish(.cancelled); return }
                         let declined = "declined by user"
@@ -595,6 +610,8 @@ actor AgentLoop {
                     }
                     // Approved: back to work.
                     setPhase(.working)
+                case .auto:
+                    break
                 }
 
                 // 3c½. PreToolUse hooks may deny or rewrite arguments.
@@ -809,7 +826,15 @@ actor AgentLoop {
         record.messages.append(
             SessionMessage(role: .toolCall, content: call.argumentsJSON, toolName: call.name, timestamp: Date()))
 
-        if permissionGate.decision(for: call, risk: .execute) == .needsApproval {
+        switch permissionGate.decision(for: call, risk: .execute) {
+        case .denied(let reason):
+            let message = "verification denied by OpenCode permission: \(reason)"
+            eventContinuation?.yield(.toolCallFinished(invocation, output: message, failed: true))
+            record.messages.append(
+                SessionMessage(role: .toolResult, content: message, toolName: call.name, timestamp: Date()))
+            setPhase(.working)
+            return
+        case .needsApproval:
             guard await requestApproval(for: call, invocation: invocation) != nil else {
                 let declined = "verification build declined by user"
                 eventContinuation?.yield(.toolCallFinished(invocation, output: declined, failed: true))
@@ -819,6 +844,8 @@ actor AgentLoop {
                 return
             }
             setPhase(.verifying)
+        case .auto:
+            break
         }
         let result = await executor.execute(call)
         lastVerificationFailed = result.failed
@@ -1086,7 +1113,8 @@ actor AgentLoop {
             autoApproveCommands: permissionGate.autoApproveCommands,
             commandPolicy: commandPolicy,
             workspace: workspace,
-            overrides: permissionGate.overrides)
+            overrides: permissionGate.overrides,
+            openCodePermissions: permissionGate.openCodePermissions)
 
         let child = AgentLoop(
             engine: IsolatedReplayEngine(base: engine),

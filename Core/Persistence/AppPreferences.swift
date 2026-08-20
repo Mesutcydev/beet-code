@@ -61,15 +61,25 @@ final class AppPreferencesStore: @unchecked Sendable {
         current.remoteModelOverrides[remoteModelKey(provider: provider, model: model)]
     }
 
+    func remoteModelOverride(endpoint: RemoteEndpoint) -> RemoteModelOverride? {
+        current.remoteModelOverrides[remoteModelKey(endpoint: endpoint)]
+            ?? remoteModelOverride(provider: endpoint.provider, model: endpoint.model)
+    }
+
     func remoteModelProfile(provider: LLMProvider, model: String) -> RemoteModelProfile? {
         current.remoteModelProfiles[remoteModelKey(provider: provider, model: model)]
+    }
+
+    func remoteModelProfile(endpoint: RemoteEndpoint) -> RemoteModelProfile? {
+        current.remoteModelProfiles[remoteModelKey(endpoint: endpoint)]
+            ?? remoteModelProfile(provider: endpoint.provider, model: endpoint.model)
     }
 
     func saveRemoteModelProfiles(_ profiles: [RemoteModelProfile]) {
         guard !profiles.isEmpty else { return }
         var preferences = current
         for profile in profiles {
-            preferences.remoteModelProfiles[remoteModelKey(provider: profile.provider, model: profile.model)] = profile
+            preferences.remoteModelProfiles[remoteModelKey(profile: profile)] = profile
         }
         save(preferences)
     }
@@ -87,6 +97,22 @@ final class AppPreferencesStore: @unchecked Sendable {
 
     private func remoteModelKey(provider: LLMProvider, model: String) -> String {
         "\(provider.rawValue):\(model.trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
+
+    private func remoteModelKey(profile: RemoteModelProfile) -> String {
+        if let providerKey = profile.providerKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerKey.isEmpty {
+            return "opencode:\(providerKey):\(profile.model.trimmingCharacters(in: .whitespacesAndNewlines))"
+        }
+        return remoteModelKey(provider: profile.provider, model: profile.model)
+    }
+
+    private func remoteModelKey(endpoint: RemoteEndpoint) -> String {
+        if let providerID = endpoint.providerID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerID.isEmpty {
+            return "opencode:\(providerID):\(endpoint.model.trimmingCharacters(in: .whitespacesAndNewlines))"
+        }
+        return remoteModelKey(provider: endpoint.provider, model: endpoint.model)
     }
 
     /// Validates the stored workspace and returns a restore-safe URL.

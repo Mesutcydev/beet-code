@@ -12,6 +12,7 @@ enum PromptBuilder {
         memorySection: String? = nil,
         projectInstructions: String? = nil,
         workspaceHistory: String? = nil,
+        agentPrompt: String? = nil,
         planMode: Bool = false,
         goalMode: Bool = false,
         contextWindowTokens: Int? = nil,
@@ -48,6 +49,10 @@ enum PromptBuilder {
             partial change; use attempt_completion only when the goal is done
             or a concrete blocker needs the user's input.
             """)
+        }
+
+        if let agentPrompt, !agentPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append("# Active agent profile\n\n\(bounded(agentPrompt, characters: 12_000))")
         }
 
         sections.append("""

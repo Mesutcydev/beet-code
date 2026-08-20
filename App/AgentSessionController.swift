@@ -41,6 +41,10 @@ final class AgentSessionController: ObservableObject {
     @Published private(set) var finishReason: AgentFinish?
     @Published private(set) var workspaceURL: URL?
     @Published private(set) var gitOutput: String?
+    /// Selected OpenCode-compatible primary agent. Build is the native
+    /// default; Plan is also available from the composer without changing
+    /// the rest of the session surface.
+    @Published var selectedOpenCodeAgentName: String? = "build"
     private(set) var activeSessionID: UUID?
 
     private var loop: AgentLoop?
@@ -75,6 +79,8 @@ final class AgentSessionController: ObservableObject {
     /// Supplies a remote model's declared output ceiling when known. Local
     /// models continue to use the user's configured per-turn budget.
     var maxTokensHandler: () -> Int? = { nil }
+    /// AppState owns the workspace-scoped compatibility catalog.
+    var openCodeCatalogHandler: () -> OpenCodeCompatibility.Catalog = { .empty }
 
     let engine: any LLMEngine
     private let settings: SettingsStore
@@ -155,16 +161,21 @@ final class AgentSessionController: ObservableObject {
         let temperature = settings.temperature
         let checkpointingEnabled = settings.checkpointingEnabled
         let showReasoning = settings.showReasoning
-        let planMode = settings.planMode
+        let catalog = openCodeCatalogHandler()
+        let selectedAgent = catalog.agent(named: selectedOpenCodeAgentName)
+            ?? catalog.agent(named: "build")
+        let planMode = settings.planMode || selectedAgent?.name.caseInsensitiveCompare("plan") == .orderedSame
         let goalMode = settings.agentMode == .goal
+        let compatibilityPermissions = catalog.permissions.merged(with: selectedAgent?.permissions ?? .empty)
         // Per-run live overrides: "Always approve" on an approval card flips
         // these, taking effect immediately for THIS running loop.
         let runOverrides = ApprovalOverrides()
-        let permissions = PermissionGate(
+        var permissions = PermissionGate(
             autoApproveEdits: autoApproveEdits,
             autoApproveCommands: autoApproveCommands,
             workspace: workspaceScope,
             overrides: runOverrides)
+        permissions.openCodePermissions = compatibilityPermissions
         approvalOverrides = runOverrides
 
         // Long-term memory is per-workspace; built when the setting is on.
@@ -193,7 +204,9 @@ final class AgentSessionController: ObservableObject {
                 planMode: planMode,
                 goalMode: goalMode,
                 memoryMode: settings.memoryMode,
-                compressionLevel: settings.compressionLevel),
+                compressionLevel: settings.compressionLevel,
+                agentName: selectedAgent?.name,
+                agentPrompt: selectedAgent?.prompt),
             modelID: activeModelIDHandler(),
             sessionID: sessionID,
             seedRecord: continuationSeed,
@@ -606,7 +619,13 @@ final class AgentSessionController: ObservableObject {
                 return true
             }
             notice("Running \(command.origin.rawValue) \(command.kind.label) '/\(name)'.")
-            let message = args.isEmpty ? command.text : command.text + "\n\nUser input:\n" + args
+            let rendered = command.render(arguments: args)
+            let message: String
+            if command.origin == .openCode || args.isEmpty {
+                message = rendered.isEmpty ? args : rendered
+            } else {
+                message = rendered + "\n\nUser input:\n" + args
+            }
             send(message, attachments: [])
         }
         return true

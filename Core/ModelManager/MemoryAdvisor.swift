@@ -9,9 +9,9 @@ import Foundation
 /// `resident_size`, which double-counts Metal/GPU buffers on Apple Silicon).
 ///
 /// Formulas adapted from the ios-local-llm project (MIT):
-/// - available budget = physical RAM × (1 − osReserveFraction)  → 70% usable
+/// - available budget = physical RAM × (1 − osReserveFraction)  → 80% usable
 /// - projected footprint = on-disk weights × workingSetOverhead + headroomReserve
-/// - verdict: fits < 60% of budget, marginal < 90%, otherwise won't fit
+/// - verdict: fits < 60% of budget, marginal < 95%, otherwise won't fit
 enum MemoryAdvisor {
 
     struct Budget: Sendable, Equatable {
@@ -55,7 +55,12 @@ enum MemoryAdvisor {
     // MARK: Tunables (kept internal so they can be adjusted after real-world testing)
 
     /// Fraction of physical RAM reserved for the OS and other apps.
-    nonisolated(unsafe) static var osReserveFraction: Double = 0.30
+    ///
+    /// This leaves a little more room for large quantized models on Macs with
+    /// attached cooling while still reserving 20% of physical RAM outside the
+    /// model budget. Thermal and memory-pressure admission guards remain in
+    /// force independently of this budget.
+    nonisolated(unsafe) static var osReserveFraction: Double = 0.20
     /// On-disk weights → peak working-set multiplier (page-in spike + KV cache slack).
     nonisolated(unsafe) static var workingSetOverhead: Double = 1.3
     /// Fixed headroom kept free above the projected working set.
@@ -126,10 +131,10 @@ enum MemoryAdvisor {
         guard budget > 0 else { return .wontFit("No memory budget available to evaluate.") }
         let ratio = Double(projected) / Double(budget)
         if ratio <= 0.60 { return .fits }
-        if ratio <= 0.90 { return .marginal }
+        if ratio <= 0.95 { return .marginal }
         return .wontFit(
             "Projected peak \(ByteFormatter.bytes(projected)) exceeds the safe memory budget "
-                + "\(ByteFormatter.bytes(budget)) (needs ≤ 90%). Try a smaller quantization.")
+                + "\(ByteFormatter.bytes(budget)) (needs ≤ 95%). Try a smaller quantization.")
     }
 
     // MARK: Admission gate

@@ -9,6 +9,7 @@ struct ExternalCommand: Sendable, Equatable, Identifiable {
         case claude = "Claude"
         case codex = "Codex"
         case beetcode = "Beet Code"
+        case openCode = "OpenCode"
     }
 
     enum Kind: String, Sendable {
@@ -25,8 +26,21 @@ struct ExternalCommand: Sendable, Equatable, Identifiable {
     let kind: Kind
     let location: URL
     let text: String
+    let description: String?
+    let agent: String?
+    let model: String?
+    let subtask: Bool
 
     var id: String { "\(origin.rawValue)-\(kind.rawValue)-\(name)" }
+
+    func render(arguments: String) -> String {
+        let parts = arguments.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        var result = text.replacingOccurrences(of: "$ARGUMENTS", with: arguments)
+        for (index, value) in parts.enumerated() {
+            result = result.replacingOccurrences(of: "$\(index + 1)", with: value)
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 /// Universal compatibility discovery. Scans the convention directories of
@@ -45,14 +59,32 @@ enum ExternalCommands {
         var commands: [ExternalCommand] = []
         var seen: Set<String> = []
 
-        func add(name: String, origin: ExternalCommand.Origin, kind: ExternalCommand.Kind, url: URL) {
+        func add(
+            name: String,
+            origin: ExternalCommand.Origin,
+            kind: ExternalCommand.Kind,
+            url: URL,
+            description: String? = nil,
+            agent: String? = nil,
+            model: String? = nil,
+            subtask: Bool = false,
+            textOverride: String? = nil
+        ) {
             let key = name.lowercased()
             guard !seen.contains(key),
-                  let text = boundedText(url)
+                  let text = textOverride ?? boundedText(url)
             else { return }
             seen.insert(key)
             commands.append(ExternalCommand(
-                name: key, origin: origin, kind: kind, location: url, text: text))
+                name: key,
+                origin: origin,
+                kind: kind,
+                location: url,
+                text: text,
+                description: description,
+                agent: agent,
+                model: model,
+                subtask: subtask))
         }
 
         // Scopes in precedence order: workspace first, then home.
@@ -85,6 +117,24 @@ enum ExternalCommands {
                 add(name: file.deletingPathExtension().lastPathComponent,
                     origin: .beetcode, kind: .command, url: file)
             }
+        }
+
+        // OpenCode commands can be Markdown files or JSON command entries.
+        // The compatibility reader already applies project-over-global
+        // precedence and resolves bounded templates; expose the same command
+        // through Beet Code's slash-command surface.
+        let openCode = OpenCodeCompatibility.load(home: home, workspace: workspace)
+        for command in openCode.commands {
+            add(
+                name: command.name,
+                origin: .openCode,
+                kind: .command,
+                url: command.sourceURL,
+                description: command.description,
+                agent: command.agent,
+                model: command.model,
+                subtask: command.subtask,
+                textOverride: command.template)
         }
 
         return commands.sorted { $0.name < $1.name }

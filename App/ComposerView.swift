@@ -365,35 +365,40 @@ private struct AccessoryRow: View {
     let store: ComposerStore
 
     var body: some View {
-        HStack(spacing: Spacing.sm) {
-            AttachChip(store: store)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Spacing.sm) {
+                AttachChip(store: store)
 
-            AccessoryDivider()
+                AccessoryDivider()
 
-            ModelSelectionPill()
-                .environmentObject(appState)
+                ModelSelectionPill()
+                    .environmentObject(appState)
 
-            AccessoryDivider()
+                AccessoryDivider()
 
-            IntentChipButton(store: store)
-            AgentModeChip()
-            SettingsToggleChip(
-                title: "Plan", glyph: "list.bullet.clipboard",
-                isOn: Binding(get: { settings.planMode }, set: { settings.planMode = $0 }),
-                help: "Plan mode — the agent proposes a plan before any tool runs")
-            SettingsToggleChip(
-                title: "Reasoning", glyph: "brain.head.profile",
-                isOn: Binding(get: { settings.showReasoning }, set: { settings.showReasoning = $0 }),
-                help: "Show the model's chain-of-thought blocks in the transcript")
+                IntentChipButton(store: store)
+                AgentModeChip()
+                AgentProfileChip()
+                SettingsToggleChip(
+                    title: "Plan", glyph: "list.bullet.clipboard",
+                    isOn: Binding(get: { settings.planMode }, set: { settings.planMode = $0 }),
+                    help: "Plan mode — the agent proposes a plan before any tool runs")
+                SettingsToggleChip(
+                    title: "Reasoning", glyph: "brain.head.profile",
+                    isOn: Binding(get: { settings.showReasoning }, set: { settings.showReasoning = $0 }),
+                    help: "Show the model's reasoning blocks in the transcript")
 
-            Spacer(minLength: 8)
+                Spacer(minLength: 8)
 
-            ContextMeter(
-                estimate: store.estimate,
-                canCompact: store.canCompactHistory,
-                compact: { controller.compactNow() })
+                ContextMeter(
+                    estimate: store.estimate,
+                    canCompact: store.canCompactHistory,
+                    compact: { controller.compactNow() })
+            }
+            .padding(.trailing, 4)
         }
         .frame(minHeight: 28)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -527,6 +532,51 @@ private struct AgentModeChip: View {
         .help(settings.agentMode.help)
         .accessibilityLabel("Agent mode")
         .accessibilityValue(settings.agentMode.label)
+    }
+}
+
+/// OpenCode-compatible agent selector. Build and Plan are native profiles;
+/// workspace/global OpenCode agents are shown beside them when discovered.
+private struct AgentProfileChip: View {
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var controller: AgentSessionController
+
+    private var selected: OpenCodeCompatibility.AgentProfile? {
+        appState.openCodeCatalog.agent(named: controller.selectedOpenCodeAgentName)
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(appState.openCodeCatalog.agents.filter(\.visibleInPicker)) { agent in
+                Button {
+                    controller.selectedOpenCodeAgentName = agent.name
+                    if agent.name.caseInsensitiveCompare("plan") == .orderedSame {
+                        SettingsStore.shared.planMode = true
+                    }
+                } label: {
+                    Label {
+                        Text(agent.name.capitalized)
+                    } icon: {
+                        Image(systemName: agent.name.caseInsensitiveCompare("plan") == .orderedSame
+                            ? "list.bullet.clipboard"
+                            : "hammer.fill")
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: selected?.name.caseInsensitiveCompare("plan") == .orderedSame
+                    ? "list.bullet.clipboard"
+                    : "hammer.fill")
+                    .font(.system(size: 11, weight: .medium))
+                Text(selected?.name.capitalized ?? "Build")
+            }
+            .lfComposerPill(active: selected != nil)
+        }
+        .menuStyle(.borderlessButton)
+        .help(selected?.description ?? "Choose the active agent profile")
+        .accessibilityLabel("Agent profile")
+        .accessibilityValue(selected?.name.capitalized ?? "Build")
     }
 }
 

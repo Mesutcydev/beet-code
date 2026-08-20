@@ -25,7 +25,7 @@ jobs:
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: docs/site
+          path: docs
 
   deploy:
     needs: build

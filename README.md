@@ -72,6 +72,8 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 [`SDK.md`](docs/SDK.md) · [`BENCHMARKS.md`](docs/BENCHMARKS.md) ·
 [`SECURITY.md`](docs/SECURITY.md)
 
+Release readiness and the visual architecture explainer: [`RELEASE-AUDIT.md`](docs/RELEASE-AUDIT.md) · [`docs/site`](docs/site/)
+
 ## v0.3 — BYOK, simulator, memory, reasoning
 
 - **BYOK remote engines**: OpenAI, DeepSeek, LongCat, Alibaba DashScope,

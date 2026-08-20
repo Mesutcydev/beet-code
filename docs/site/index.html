@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Beet Code architecture, security model, and release readiness.">
+  <title>Beet Code — Architecture & Release</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="Beet Code home"><span class="beet-mark">✦</span> Beet Code</a>
+    <nav aria-label="Primary navigation">
+      <a href="#architecture">Architecture</a>
+      <a href="#security">Security</a>
+      <a href="#logic">Logic</a>
+      <a href="#release">Release</a>
+      <a class="nav-button" href="../RELEASE-AUDIT.md">Audit document</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="eyebrow">Native macOS coding agent · Swift 6 · Apple Silicon</div>
+      <h1>Local intelligence with<br><span>visible boundaries.</span></h1>
+      <p class="lede">Beet Code combines local MLX/GGUF inference, remote BYOK providers, workspace-aware tools, and an approval-first agent loop in one native macOS app.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#architecture">Explore the system</a>
+        <a class="button secondary" href="#release">Release status</a>
+      </div>
+      <div class="status-grid" aria-label="Project status">
+        <div class="status-card"><strong>545</strong><span>tests passing</span></div>
+        <div class="status-card"><strong>0</strong><span>test failures</span></div>
+        <div class="status-card"><strong>arm64</strong><span>native target</span></div>
+        <div class="status-card"><strong>0.8.0</strong><span>build 5</span></div>
+      </div>
+    </section>
+
+    <section id="architecture" class="section shell">
+      <div class="section-heading">
+        <div class="eyebrow">01 · System map</div>
+        <h2>One path from intent to action.</h2>
+        <p>The UI owns presentation. The agent actor owns orchestration. Every tool crosses a policy boundary before it can mutate the workspace or run a process.</p>
+      </div>
+      <div class="diagram-card">
+        <svg class="architecture-diagram" viewBox="0 0 1100 430" role="img" aria-labelledby="architecture-title architecture-desc">
+          <title id="architecture-title">Beet Code architecture flow</title>
+          <desc id="architecture-desc">The user interface flows through AppState and AgentSessionController into the AgentLoop, then through PermissionGate and ToolExecutor to workspace tools and model engines. Persistence and diagnostics observe the flow.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#ffb6c9"/></marker>
+            <linearGradient id="node" x1="0" x2="1"><stop offset="0" stop-color="#4a1830"/><stop offset="1" stop-color="#24121f"/></linearGradient>
+          </defs>
+          <g class="svg-label"><text x="550" y="32" text-anchor="middle">approved execution path</text></g>
+          <g class="svg-node"><rect x="24" y="160" width="150" height="74" rx="16"/><text x="99" y="190" text-anchor="middle">SwiftUI</text><text x="99" y="212" text-anchor="middle" class="sub">user intent</text></g>
+          <g class="svg-node"><rect x="210" y="160" width="170" height="74" rx="16"/><text x="295" y="190" text-anchor="middle">AppState</text><text x="295" y="212" text-anchor="middle" class="sub">session + engine</text></g>
+          <g class="svg-node accent"><rect x="418" y="145" width="190" height="104" rx="16"/><text x="513" y="183" text-anchor="middle">AgentLoop</text><text x="513" y="207" text-anchor="middle" class="sub">actor-owned loop</text><text x="513" y="229" text-anchor="middle" class="sub">generate → observe</text></g>
+          <g class="svg-node"><rect x="646" y="160" width="170" height="74" rx="16"/><text x="731" y="190" text-anchor="middle">PermissionGate</text><text x="731" y="212" text-anchor="middle" class="sub">risk decision</text></g>
+          <g class="svg-node"><rect x="854" y="160" width="220" height="74" rx="16"/><text x="964" y="190" text-anchor="middle">ToolExecutor</text><text x="964" y="212" text-anchor="middle" class="sub">workspace + MCP + browser</text></g>
+          <path class="svg-arrow" d="M174 197 H210"/><path class="svg-arrow" d="M380 197 H418"/><path class="svg-arrow" d="M608 197 H646"/><path class="svg-arrow" d="M816 197 H854"/>
+          <g class="svg-node small"><rect x="300" y="320" width="180" height="62" rx="14"/><text x="390" y="347" text-anchor="middle">Persistence</text><text x="390" y="367" text-anchor="middle" class="sub">AES-GCM sessions</text></g>
+          <g class="svg-node small"><rect x="520" y="320" width="180" height="62" rx="14"/><text x="610" y="347" text-anchor="middle">EngineRouter</text><text x="610" y="367" text-anchor="middle" class="sub">MLX · GGUF · BYOK</text></g>
+          <g class="svg-node small"><rect x="740" y="320" width="180" height="62" rx="14"/><text x="830" y="347" text-anchor="middle">Diagnostics</text><text x="830" y="367" text-anchor="middle" class="sub">metadata-only trail</text></g>
+          <path class="svg-dashed" d="M295 234 V290 H390 V320"/><path class="svg-dashed" d="M513 249 V320"/><path class="svg-dashed" d="M731 234 V290 H830 V320"/>
+        </svg>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <caption>Core responsibilities</caption>
+          <thead><tr><th>Layer</th><th>Owns</th><th>Safety property</th></tr></thead>
+          <tbody>
+            <tr><td>SwiftUI</td><td>Transcript, approvals, settings, panels</td><td>Never calls engines or the shell directly</td></tr>
+            <tr><td>AgentLoop</td><td>Turns, tool parsing, checkpoints, hooks</td><td>Single actor; one active task per session</td></tr>
+            <tr><td>PermissionGate</td><td>Risk classification and approvals</td><td>Writes and execution require a policy decision</td></tr>
+            <tr><td>Workspace</td><td>Canonical file resolution</td><td>Traversal and symlink escapes fail closed</td></tr>
+            <tr><td>EngineRouter</td><td>Local and remote model selection</td><td>Shared state is serialized where required</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="security" class="section tinted">
+      <div class="shell">
+        <div class="section-heading">
+          <div class="eyebrow">02 · Security model</div>
+          <h2>Trust is explicit, local, and reversible.</h2>
+          <p>Project files can contain automation. Beet Code does not treat their presence as permission to execute them.</p>
+        </div>
+        <div class="trust-flow" aria-label="Workspace automation trust flow">
+          <div class="flow-step"><span>01</span><strong>Open a workspace</strong><small>Project files are inspected as data.</small></div>
+          <div class="flow-connector">→</div>
+          <div class="flow-step"><span>02</span><strong>Trust exact path?</strong><small>Settings stores the canonical folder path.</small></div>
+          <div class="flow-connector">→</div>
+          <div class="flow-step"><span>03</span><strong>Start automation</strong><small>Only then can local MCP/hooks run.</small></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption>Boundary decisions</caption>
+            <thead><tr><th>Input</th><th>Default</th><th>When enabled</th><th>Additional control</th></tr></thead>
+            <tbody>
+              <tr><td>Workspace MCP</td><td>Off</td><td>User trusts the exact workspace</td><td>Sanitized environment; user server names cannot be replaced</td></tr>
+              <tr><td>Workspace hooks</td><td>Off</td><td>User trusts the exact workspace</td><td>Sanitized environment; 30-second cap; detached runner</td></tr>
+              <tr><td>Local API</td><td>Off</td><td>User enables the setting</td><td>Per-run bearer token; loopback binding; bounded connections</td></tr>
+              <tr><td>Browser navigation</td><td>HTTP(S) only</td><td>Approval-gated actions</td><td>No `file://`; screenshots resolve inside workspace</td></tr>
+              <tr><td>Session save</td><td>Encrypted</td><td>Keychain key available</td><td>Encryption failure aborts the write</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="logic" class="section shell">
+      <div class="section-heading">
+        <div class="eyebrow">03 · Request logic</div>
+        <h2>Stateless at the edge, serialized at the core.</h2>
+        <p>The local API accepts complete conversations. The shared model engine is reset and replayed for each request, with a gate covering the full generation—including streaming.</p>
+      </div>
+      <div class="request-diagram">
+        <div class="request-node"><span class="node-number">A</span><strong>HTTP client</strong><small>JSON or SSE request</small></div>
+        <div class="request-arrow">↓</div>
+        <div class="request-node"><span class="node-number">B</span><strong>Authentication</strong><small>Bearer token except health</small></div>
+        <div class="request-arrow">↓</div>
+        <div class="request-node"><span class="node-number">C</span><strong>Request gate</strong><small>one engine mutation at a time</small></div>
+        <div class="request-arrow">↓</div>
+        <div class="request-node"><span class="node-number">D</span><strong>Reset + replay</strong><small>full conversation restored</small></div>
+        <div class="request-arrow">↓</div>
+        <div class="request-node success"><span class="node-number">E</span><strong>Generate / stream</strong><small>release gate after response</small></div>
+      </div>
+      <div class="logic-grid">
+        <article class="logic-card"><div class="card-icon">↗</div><h3>Why the gate exists</h3><p>MLX, GGUF, and remote engines keep mutable session state. Without serialization, request A can reset or append turns while request B is generating.</p></article>
+        <article class="logic-card"><div class="card-icon">⌁</div><h3>Why CORS is opt-in</h3><p>Loopback is not the same as browser isolation. A website can reach local ports when CORS permits it, so origins must be explicitly allowlisted.</p></article>
+        <article class="logic-card"><div class="card-icon">▣</div><h3>Why saves fail closed</h3><p>A session contains conversation and tool history. Writing plaintext during a Keychain failure would silently violate the storage contract.</p></article>
+      </div>
+    </section>
+
+    <section id="release" class="section tinted">
+      <div class="shell">
+        <div class="section-heading">
+          <div class="eyebrow">04 · Release readiness</div>
+          <h2>Green for code. Yellow for distribution.</h2>
+          <p>The hardening work is verified locally. Public distribution still depends on Apple signing and notarization assets that belong outside the source tree.</p>
+        </div>
+        <div class="release-grid">
+          <div class="release-panel good"><span class="pill">Verified</span><h3>Internal release testing</h3><ul><li>Debug build succeeds</li><li>545 tests pass</li><li>New security regression tests pass</li><li>GitHub Pages workflow is ready</li></ul></div>
+          <div class="release-panel pending"><span class="pill">External dependency</span><h3>Public distribution</h3><ul><li>Developer ID certificate</li><li>Notarization credentials</li><li>Hardened-runtime Release signing</li><li>DMG/ZIP packaging job</li></ul></div>
+        </div>
+        <div class="footer-callout"><strong>Source of truth:</strong> read the full <a href="../RELEASE-AUDIT.md">release audit</a> for commands, coverage, and follow-ups.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer shell"><span>Beet Code · architecture and release notes</span><a href="../RELEASE-AUDIT.md">Open the audit</a></footer>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Minimal HTTP/1.1 server over POSIX sockets — zero dependencies, matching
@@ -22,17 +23,36 @@ public actor LocalAPIServer {
         /// `Authorization: Bearer <token>` header (LM Studio-style). nil =
         /// open access, which is still loopback-only.
         public var bearerToken: String?
+        /// Browser origins allowed to call the server. Empty means no CORS
+        /// access, which is the safe default for a local inference endpoint.
+        public var allowedOrigins: Set<String>
+        /// Maximum simultaneously open client connections.
+        public var maxConnections: Int
+        /// Maximum time between bytes while reading a request.
+        public var requestIdleTimeoutSeconds: TimeInterval
         /// Optional idle TTL: when no request arrives for this many seconds,
         /// the engine is unloaded (model leaves RAM/Metal). nil = keep
         /// resident. Mirrors LM Studio's "unload after idle".
         public var idleTTLSeconds: Int?
 
-        public init(port: Int = 1234, bindIPv6: Bool = false, modelIDOverride: String? = nil, bearerToken: String? = nil, idleTTLSeconds: Int? = nil) {
+        public init(
+            port: Int = 1234,
+            bindIPv6: Bool = false,
+            modelIDOverride: String? = nil,
+            bearerToken: String? = nil,
+            idleTTLSeconds: Int? = nil,
+            allowedOrigins: Set<String> = [],
+            maxConnections: Int = 64,
+            requestIdleTimeoutSeconds: TimeInterval = 30
+        ) {
             self.port = port
             self.bindIPv6 = bindIPv6
             self.modelIDOverride = modelIDOverride
             self.bearerToken = bearerToken
             self.idleTTLSeconds = idleTTLSeconds
+            self.allowedOrigins = allowedOrigins
+            self.maxConnections = max(1, maxConnections)
+            self.requestIdleTimeoutSeconds = max(1, requestIdleTimeoutSeconds)
         }
     }
 
@@ -105,13 +125,44 @@ public actor LocalAPIServer {
     private var listeningFD: Int32 = -1
     private var acceptTask: Task<Void, Never>?
     private var idleMonitorTask: Task<Void, Never>?
-    private var connectionTasks: [Task<Void, Never>] = []
+    private var connectionTasks: [UUID: Task<Void, Never>] = [:]
+    private var connectionFDs: [UUID: Int32] = [:]
+    private var activeConnections = 0
     private(set) public var isRunning = false
     /// The real bound port — differs from config.port when it was 0.
     private(set) public var actualPort: Int = 0
     /// Shared with off-actor connection handlers so requests can stamp the
     /// last-activity time without hopping to the actor per byte.
     private let activity = ActivityBox()
+
+    /// The underlying engine is stateful, while the HTTP surface is
+    /// stateless. This gate covers reset → replay → generation, including the
+    /// full streaming response, so concurrent clients cannot interleave turns.
+    private actor RequestGate {
+        private var busy = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func acquire() async {
+            guard busy else {
+                busy = true
+                return
+            }
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+
+        func release() {
+            if let continuation = waiters.first {
+                waiters.removeFirst()
+                continuation.resume()
+            } else {
+                busy = false
+            }
+        }
+    }
+
+    private let requestGate = RequestGate()
 
     private final class ActivityBox: @unchecked Sendable {
         private let lock = NSLock()
@@ -195,7 +246,11 @@ public actor LocalAPIServer {
 
         let engine = self.engine
         let bearerToken = config.bearerToken
+        let allowedOrigins = config.allowedOrigins
+        let maxConnections = config.maxConnections
+        let requestIdleTimeout = config.requestIdleTimeoutSeconds
         let activityBox = activity
+        let requestGate = self.requestGate
         let weakResolver: RouteResolver = { [weak self] request in
             guard let self else { return nil }
             return await self.defaultRoute(for: request)
@@ -207,7 +262,16 @@ public actor LocalAPIServer {
             while true {
                 let clientFD = accept(fd, nil, nil)
                 guard clientFD >= 0 else { return }  // listener closed or fatal errno
-                await self?.handleAccepted(clientFD, engine: engine, resolver: weakResolver, bearerToken: bearerToken, activity: activityBox)
+                await self?.handleAccepted(
+                    clientFD,
+                    engine: engine,
+                    resolver: weakResolver,
+                    bearerToken: bearerToken,
+                    allowedOrigins: allowedOrigins,
+                    maxConnections: maxConnections,
+                    requestIdleTimeout: requestIdleTimeout,
+                    requestGate: requestGate,
+                    activity: activityBox)
             }
         }
 
@@ -241,20 +305,52 @@ public actor LocalAPIServer {
         acceptTask = nil
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
-        for task in connectionTasks { task.cancel() }
+        for fd in connectionFDs.values { _ = shutdown(fd, SHUT_RDWR) }
+        for task in connectionTasks.values { task.cancel() }
         connectionTasks.removeAll()
+        connectionFDs.removeAll()
+        activeConnections = 0
         Log.app.info("[api] Local API server stopped")
     }
 
-    private func handleAccepted(_ fd: Int32, engine: any LLMEngine, resolver: @escaping RouteResolver, bearerToken: String?, activity: ActivityBox) {
+    private func handleAccepted(
+        _ fd: Int32,
+        engine: any LLMEngine,
+        resolver: @escaping RouteResolver,
+        bearerToken: String?,
+        allowedOrigins: Set<String>,
+        maxConnections: Int,
+        requestIdleTimeout: TimeInterval,
+        requestGate: RequestGate,
+        activity: ActivityBox
+    ) {
+        guard activeConnections < maxConnections else {
+            _ = shutdown(fd, SHUT_RDWR)
+            close(fd)
+            return
+        }
+        let id = UUID()
+        activeConnections += 1
+        connectionFDs[id] = fd
         let task = Task.detached(priority: .utility) {
-            await Self.serveConnection(fd, engine: engine, resolver: resolver, bearerToken: bearerToken, activity: activity)
+            await Self.serveConnection(
+                fd,
+                engine: engine,
+                resolver: resolver,
+                bearerToken: bearerToken,
+                allowedOrigins: allowedOrigins,
+                requestIdleTimeout: requestIdleTimeout,
+                requestGate: requestGate,
+                activity: activity)
+            await self.connectionDidFinish(id: id)
         }
-        connectionTasks.append(task)
-        // Bound the bookkeeping list: drop finished tasks occasionally.
-        if connectionTasks.count > 64 {
-            connectionTasks.removeAll { $0.isCancelled }
-        }
+        connectionTasks[id] = task
+    }
+
+    private func connectionDidFinish(id: UUID) {
+        connectionTasks.removeValue(forKey: id)
+        connectionFDs.removeValue(forKey: id)
+        activeConnections = max(0, activeConnections - 1)
     }
 
     // MARK: Default routing (OpenAI-compatible surface)
@@ -269,15 +365,17 @@ public actor LocalAPIServer {
 
     private static func serveConnection(
         _ fd: Int32, engine: any LLMEngine, resolver: @escaping RouteResolver,
-        bearerToken: String?, activity: ActivityBox
+        bearerToken: String?, allowedOrigins: Set<String>,
+        requestIdleTimeout: TimeInterval, requestGate: RequestGate,
+        activity: ActivityBox
     ) async {
         defer { close(fd) }
         while !Task.isCancelled {
-            guard let request = await readRequest(fd) else { return }
+            guard let request = await readRequest(fd, idleTimeout: requestIdleTimeout) else { return }
             activity.lastActivity = Date()
             // CORS: browser-based clients (e.g. lattice-composer) need these
             // on every response, errors included.
-            let extra = corsHeaders(for: request)
+            let extra = corsHeaders(for: request, allowedOrigins: allowedOrigins)
 
             // Bearer auth (when configured). Health checks are exempt so
             // monitoring stays trivial; everything else must authenticate.
@@ -293,6 +391,7 @@ public actor LocalAPIServer {
                 }
             }
 
+            await requestGate.acquire()
             let result = await OpenAIRoutes.route(request, engine: engine, resolver: resolver)
             switch result {
             case .response(let response):
@@ -302,18 +401,23 @@ public actor LocalAPIServer {
                 // connection after the stream instead of expecting more
                 // requests on the same socket.
                 await writeStreamedResponse(fd, response, extraHeaders: extra, lines: lines)
+                await requestGate.release()
                 return
             }
+            await requestGate.release()
             if !request.isKeepAlive { return }
         }
     }
 
-    private static func corsHeaders(for request: Request) -> [(String, String)] {
-        let origin = request.headers["origin"] ?? "*"
+    private static func corsHeaders(for request: Request, allowedOrigins: Set<String>) -> [(String, String)] {
+        guard let origin = request.headers["origin"], allowedOrigins.contains(origin) else {
+            return []
+        }
         return [
             ("Access-Control-Allow-Origin", origin),
             ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
             ("Access-Control-Allow-Headers", "Content-Type, Authorization"),
+            ("Vary", "Origin"),
         ]
     }
 
@@ -321,11 +425,11 @@ public actor LocalAPIServer {
 
     static let maxBodyBytes = 32 * 1024 * 1024  // 32 MiB request cap
 
-    private static func readRequest(_ fd: Int32) async -> Request? {
+    private static func readRequest(_ fd: Int32, idleTimeout: TimeInterval) async -> Request? {
         var buffer = Data()
         var headerEnd: Int?
         while headerEnd == nil {
-            guard let chunk = await readChunk(fd, limit: 65_536) else { return nil }
+            guard let chunk = await readChunk(fd, limit: 65_536, timeout: idleTimeout) else { return nil }
             if chunk.isEmpty { return nil }  // clean EOF before a complete request
             buffer.append(chunk)
             if buffer.count > 1_048_576 { return nil }  // header section cap: 1 MiB
@@ -358,7 +462,10 @@ public actor LocalAPIServer {
         let contentLength = headers["content-length"].flatMap(Int.init) ?? 0
         guard contentLength <= maxBodyBytes else { return nil }
         while body.count < contentLength {
-            guard let chunk = await readChunk(fd, limit: min(65_536, contentLength - body.count)) else { return nil }
+            guard let chunk = await readChunk(
+                fd,
+                limit: min(65_536, contentLength - body.count),
+                timeout: idleTimeout) else { return nil }
             if chunk.isEmpty { return nil }
             body.append(chunk)
         }
@@ -399,8 +506,11 @@ public actor LocalAPIServer {
 
     /// Blocking read isolated on a utility thread. Returns nil on error,
     /// empty Data on clean EOF.
-    private static func readChunk(_ fd: Int32, limit: Int) async -> Data? {
+    private static func readChunk(_ fd: Int32, limit: Int, timeout: TimeInterval) async -> Data? {
         await Task.detached(priority: .utility) { () -> Data? in
+            var pollDescriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let milliseconds = Int32(min(timeout, 300) * 1_000)
+            guard poll(&pollDescriptor, 1, milliseconds) > 0 else { return nil }
             let buffer = UnsafeMutableRawPointer.allocate(byteCount: limit, alignment: 8)
             defer { buffer.deallocate() }
             var n = -1
@@ -487,6 +597,8 @@ public actor LocalAPIServer {
         case 400: "Bad Request"
         case 404: "Not Found"
         case 405: "Method Not Allowed"
+        case 401: "Unauthorized"
+        case 403: "Forbidden"
         case 500: "Internal Server Error"
         case 503: "Service Unavailable"
         default: "Unknown"

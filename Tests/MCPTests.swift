@@ -59,7 +59,9 @@ final class MCPTests: XCTestCase {
         let data = try JSONEncoder().encode(config)
         try data.write(to: configURL)
 
-        let (servers, errors) = MCPConfig.load(workspaceRoot: tempDir)
+        let (servers, errors) = MCPConfig.load(
+            workspaceRoot: tempDir,
+            includeWorkspaceConfig: true)
         XCTAssertTrue(errors.isEmpty, "errors: \(errors)")
         XCTAssertNotNil(servers["fake"])
         XCTAssertEqual(servers["fake"]?.command, "/usr/bin/python3")
@@ -70,7 +72,9 @@ final class MCPTests: XCTestCase {
         try? FileManager.default.createDirectory(
             at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: configURL)
-        let (servers, errors) = MCPConfig.load(workspaceRoot: tempDir)
+        let (servers, errors) = MCPConfig.load(
+            workspaceRoot: tempDir,
+            includeWorkspaceConfig: true)
         XCTAssertTrue(servers.isEmpty)
         XCTAssertEqual(errors.count, 1)
     }
@@ -81,7 +85,9 @@ final class MCPTests: XCTestCase {
             at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let config = MCPConfigFile(mcpServers: ["bad": MCPServerConfig(command: "")])
         try JSONEncoder().encode(config).write(to: configURL)
-        let (servers, errors) = MCPConfig.load(workspaceRoot: tempDir)
+        let (servers, errors) = MCPConfig.load(
+            workspaceRoot: tempDir,
+            includeWorkspaceConfig: true)
         XCTAssertTrue(servers.isEmpty)
         XCTAssertEqual(errors.count, 1)
     }
@@ -117,6 +123,19 @@ final class MCPTests: XCTestCase {
 
     // MARK: Adapter + Registry
 
+    func testWorkspaceConfigIsDisabledUnlessExplicitlyIncluded() throws {
+        let configURL = MCPConfig.workspaceConfigURL(root: tempDir)
+        try? FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(MCPConfigFile(mcpServers: [
+            "local": MCPServerConfig(command: "/usr/bin/python3", args: [serverScript.path])
+        ])).write(to: configURL)
+
+        let (servers, errors) = MCPConfig.load(workspaceRoot: tempDir)
+        XCTAssertTrue(servers.isEmpty)
+        XCTAssertTrue(errors.isEmpty)
+    }
+
     func testAdapterShapesLikeAgentTool() async throws {
         let connection = MCPConnection(
             name: "fake",
@@ -146,7 +165,9 @@ final class MCPTests: XCTestCase {
         try JSONEncoder().encode(config).write(to: configURL)
 
         let registry = MCPRegistry()
-        let result = await registry.start(workspaceRoot: tempDir)
+        let result = await registry.start(
+            workspaceRoot: tempDir,
+            includeWorkspaceConfig: true)
         XCTAssertTrue(result.errors.isEmpty, "errors: \(result.errors)")
         XCTAssertEqual(result.connectedServers, ["fake"])
         XCTAssertEqual(result.tools.count, 1)

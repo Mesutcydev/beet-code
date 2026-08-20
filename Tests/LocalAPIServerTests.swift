@@ -45,6 +45,15 @@ final class LocalAPIServerTests: XCTestCase {
         return (status, data)
     }
 
+    private static func postRequest(baseURL: String, json: String) async throws -> (Int, Data) {
+        var request = URLRequest(url: URL(string: baseURL + "/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data(json.utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return ((response as! HTTPURLResponse).statusCode, data)
+    }
+
     // MARK: Models & health
 
     func testModelsEndpointListsOverrideModel() async throws {
@@ -180,7 +189,34 @@ final class LocalAPIServerTests: XCTestCase {
         let (_, response) = try await URLSession.shared.data(for: request)
         let httpResponse = response as! HTTPURLResponse
         XCTAssertEqual(httpResponse.statusCode, 204)
-        XCTAssertNotNil(httpResponse.value(forHTTPHeaderField: "Access-Control-Allow-Origin"))
+        XCTAssertNil(httpResponse.value(forHTTPHeaderField: "Access-Control-Allow-Origin"),
+                     "CORS must be opt-in")
+    }
+
+    func testConcurrentCompletionsAreSerialized() async throws {
+        engine.enqueue(texts: ["first", "second"])
+        engine.holdNextStream()
+        let body = #"{"messages":[{"role":"user","content":"hello"}]}"#
+
+        let requestBaseURL = baseURL
+        async let firstResponse = Self.postRequest(baseURL: requestBaseURL, json: body)
+        for _ in 0..<50 where engine.streamCallCount == 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(engine.streamCallCount, 1)
+
+        async let secondResponse = Self.postRequest(baseURL: requestBaseURL, json: body)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(engine.resetCallCount, 1,
+                       "the second request must wait for the first generation")
+
+        engine.release()
+        let firstResult = try await firstResponse
+        let secondResult = try await secondResponse
+        XCTAssertEqual(firstResult.0, 200)
+        XCTAssertEqual(secondResult.0, 200)
+        XCTAssertEqual(engine.resetCallCount, 2)
+        XCTAssertEqual(engine.turnHistory.count, 2)
     }
 
     // MARK: Anthropic-format /v1/messages

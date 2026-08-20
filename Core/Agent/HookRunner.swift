@@ -2,7 +2,7 @@ import Foundation
 
 /// Project/user hooks — ZCode-style subprocess JSON, not JS plugins.
 ///
-/// Config (merged user-global then workspace-local):
+/// Config (user-global by default; workspace-local only after explicit trust):
 /// ```json
 /// { "hooks": {
 ///     "PreToolUse": [{ "command": "/usr/bin/python3", "args": ["hook.py"], "timeout": 5 }],
@@ -52,11 +52,15 @@ struct HookRunner: Sendable {
         root.appendingPathComponent(".beetcode/hooks.json")
     }
 
-    static func load(workspaceRoot: URL) -> HookRunner {
+    static func load(workspaceRoot: URL, includeWorkspaceConfig: Bool = false) -> HookRunner {
         var pre: [HookConfig] = []
         var post: [HookConfig] = []
         var stop: [HookConfig] = []
-        for url in [userConfigURL, workspaceConfigURL(root: workspaceRoot)] {
+        var locations = [userConfigURL]
+        if includeWorkspaceConfig {
+            locations.append(workspaceConfigURL(root: workspaceRoot))
+        }
+        for url in locations {
             guard FileManager.default.fileExists(atPath: url.path),
                   let data = try? Data(contentsOf: url),
                   let file = try? JSONDecoder().decode(HookFile.self, from: data)
@@ -126,6 +130,9 @@ struct HookRunner: Sendable {
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = stderr
+        // Workspace automation must not inherit provider or cloud credentials
+        // from the app's ambient process environment.
+        process.environment = ShellRunner.sanitizedEnvironment()
         do {
             try process.run()
         } catch {
@@ -134,7 +141,8 @@ struct HookRunner: Sendable {
         stdin.fileHandleForWriting.write(Data(payload.encoded().utf8))
         try? stdin.fileHandleForWriting.close()
 
-        let timeout = max(0.2, hook.timeout)
+        // A malformed or hostile hook file must not pin the agent forever.
+        let timeout = min(max(0.2, hook.timeout), 30)
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)

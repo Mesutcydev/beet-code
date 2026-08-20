@@ -66,8 +66,8 @@ struct MCPConfigFile: Codable, Equatable, Sendable {
     var mcpServers: [String: MCPServerConfig] = [:]
 }
 
-/// Loads MCP server definitions from two locations; workspace-local entries
-/// override user-global ones with the same name:
+/// Loads MCP server definitions from the user profile and, only when the
+/// caller has explicitly trusted the workspace, its local configuration.
 ///   1. `~/.beetcode/mcp.json`            (user-global)
 ///   2. `<workspace>/.beetcode/mcp.json`  (project-local)
 enum MCPConfig {
@@ -81,14 +81,22 @@ enum MCPConfig {
         root.appendingPathComponent(".beetcode/mcp.json")
     }
 
-    /// Merged servers: user-global plus workspace-local (local wins on name
-    /// collision). Invalid files are ignored with a reason string so the UI
-    /// can surface them without breaking the agent.
-    static func load(workspaceRoot: URL) -> (servers: [String: MCPServerConfig], errors: [String]) {
+    /// Merged servers: user-global plus optionally trusted workspace-local
+    /// entries. A local entry can never replace a user-global server with the
+    /// same name, which also prevents a project from redirecting a stored OAuth
+    /// token for a trusted server.
+    static func load(
+        workspaceRoot: URL,
+        includeWorkspaceConfig: Bool = false
+    ) -> (servers: [String: MCPServerConfig], errors: [String]) {
         var merged: [String: MCPServerConfig] = [:]
         var errors: [String] = []
 
-        for (label, url) in [("user", userConfigURL), ("workspace", workspaceConfigURL(root: workspaceRoot))] {
+        var locations: [(String, URL)] = [("user", userConfigURL)]
+        if includeWorkspaceConfig {
+            locations.append(("workspace", workspaceConfigURL(root: workspaceRoot)))
+        }
+        for (label, url) in locations {
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             do {
                 let data = try Data(contentsOf: url)
@@ -101,7 +109,11 @@ enum MCPConfig {
                         errors.append("\(label) config: server '\(name)' has neither a command nor a valid url")
                         continue
                     }
-                    merged[name] = config
+                    if merged[name] != nil {
+                        errors.append("workspace config: server '\(name)' ignored because a user server already owns that name")
+                    } else {
+                        merged[name] = config
+                    }
                 }
             } catch {
                 errors.append("\(label) config (\(url.lastPathComponent)): \(error.localizedDescription)")
@@ -201,7 +213,10 @@ actor MCPConnection: MCPTransport {
         }
         child.executableURL = Self.resolveExecutable(command)
         child.arguments = config.args
-        var environment = ProcessInfo.processInfo.environment
+        // Project automation must never receive the app's ambient credentials
+        // (cloud tokens, provider keys, CI secrets, etc.). Configuration may
+        // add deliberate values, but the inherited base is intentionally tiny.
+        var environment = ShellRunner.sanitizedEnvironment()
         for (key, value) in config.env { environment[key] = value }
         // Keep the child's stdio protocol clean.
         environment["PYTHONUNBUFFERED"] = "1"

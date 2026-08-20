@@ -87,6 +87,27 @@ final class SessionStoreTests: XCTestCase {
                       "sessions must be encrypted at rest")
         XCTAssertNotNil(SessionCrypto.decrypt(data), "payload must use the session cipher")
     }
+
+    func testSaveFailsClosedWhenEncryptionIsUnavailable() throws {
+        let (store, temp) = isolatedStore()
+        defer {
+            SessionCrypto.forceEncryptionFailure = false
+            try? FileManager.default.removeItem(at: temp)
+        }
+        let record = SessionRecord(
+            id: UUID(),
+            title: "must not downgrade",
+            createdAt: Date(),
+            updatedAt: Date(),
+            workspacePath: "/tmp",
+            modelID: "m",
+            messages: [SessionMessage(role: .user, content: "secret", toolName: nil, timestamp: Date())],
+            checkpoints: [])
+        SessionCrypto.forceEncryptionFailure = true
+        XCTAssertFalse(store.save(record))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: temp.appendingPathComponent("\(record.id.uuidString).session").path))
+    }
 }
 
 final class AppPreferencesTests: XCTestCase {

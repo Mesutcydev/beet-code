@@ -51,6 +51,8 @@ final class AppState: ObservableObject {
     private var apiServer: LocalAPIServer?
     @Published var apiServerRunning = false
     @Published var apiServerError: String?
+    @Published private(set) var apiServerToken: String?
+    private var apiServerSyncGeneration = 0
 
     init(
         engine: EngineRouter = EngineRouter(pool: EnginePool()),
@@ -374,29 +376,53 @@ final class AppState: ObservableObject {
     /// Reconciles the running server with the Settings toggle + port. Called
     /// whenever either changes; idempotent otherwise.
     private func syncAPIServer() {
-        let enabled = settings.apiServerEnabled
-        let port = settings.apiServerPort
+        apiServerSyncGeneration &+= 1
+        let generation = apiServerSyncGeneration
         Task { [weak self] in
             guard let self else { return }
-            if enabled {
-                await self.startAPIServer(port: port)
-            } else {
-                await self.stopAPIServer()
-            }
+            await self.reconcileAPIServer(generation: generation)
+        }
+    }
+
+    private func reconcileAPIServer(generation: Int) async {
+        guard generation == apiServerSyncGeneration else { return }
+        let enabled = settings.apiServerEnabled
+        let port = settings.apiServerPort
+        if enabled {
+            await startAPIServer(port: port, generation: generation)
+        } else {
+            await stopAPIServer()
         }
     }
 
     /// Starts the loopback server. Restarted if the port differs from the
     /// currently bound port.
-    private func startAPIServer(port: Int) async {
+    private func startAPIServer(port: Int, generation: Int) async {
         if let existing = apiServer, await existing.isRunning {
             if await existing.actualPort == port { return }  // already right
             await existing.stop()
         }
+        guard generation == apiServerSyncGeneration,
+              settings.apiServerEnabled,
+              settings.apiServerPort == port
+        else { return }
         let server = apiServer ?? LocalAPIServer(engine: engine)
         apiServer = server
+        let token = apiServerToken ?? UUID().uuidString
+        apiServerToken = token
         do {
-            try await server.start(.init(port: port, bindIPv6: false, modelIDOverride: activeModelID))
+            try await server.start(.init(
+                port: port,
+                bindIPv6: false,
+                modelIDOverride: activeModelID,
+                bearerToken: token))
+            guard generation == apiServerSyncGeneration,
+                  settings.apiServerEnabled,
+                  settings.apiServerPort == port
+            else {
+                await server.stop()
+                return
+            }
             apiServerRunning = true
             apiServerError = nil
         } catch {
@@ -411,6 +437,7 @@ final class AppState: ObservableObject {
         await server.stop()
         apiServerRunning = false
         apiServerError = nil
+        apiServerToken = nil
     }
 
     /// The URL a client should point at (shown in Settings).

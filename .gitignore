@@ -4,6 +4,7 @@
 
 # Xcode / build artifacts
 .derived/
+.derived-release/
 DerivedData/
 build/
 *.xcodeproj/xcuserdata/

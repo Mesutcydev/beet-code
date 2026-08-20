@@ -110,6 +110,7 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.composerBorderAnimation: true,
             DefaultsKeys.apiServerEnabled: false,
             DefaultsKeys.apiServerPort: 1234,
+            DefaultsKeys.trustedWorkspacePaths: [],
         ])
     }
 
@@ -279,6 +280,30 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Workspace-local MCP servers and hooks are executable project
+    /// automation. Trust is stored by canonical path and is opt-in per
+    /// workspace, never inferred from a file inside the project.
+    func isWorkspaceTrusted(_ url: URL) -> Bool {
+        let canonical = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return trustedWorkspacePaths.contains(canonical)
+    }
+
+    func setWorkspaceTrusted(_ url: URL, trusted: Bool) {
+        let canonical = url.standardizedFileURL.resolvingSymlinksInPath().path
+        var paths = trustedWorkspacePaths
+        if trusted {
+            if !paths.contains(canonical) { paths.append(canonical) }
+        } else {
+            paths.removeAll { $0 == canonical }
+        }
+        defaults.set(paths, forKey: DefaultsKeys.trustedWorkspacePaths)
+        objectWillChange.send()
+    }
+
+    private var trustedWorkspacePaths: [String] {
+        defaults.stringArray(forKey: DefaultsKeys.trustedWorkspacePaths) ?? []
+    }
+
     private enum DefaultsKeys {
         static let autoApproveEdits = "autoApproveEdits"
         static let autoApproveCommands = "autoApproveCommands"
@@ -297,5 +322,6 @@ final class SettingsStore: ObservableObject {
         static let composerBorderAnimation = "composerBorderAnimation"
         static let apiServerEnabled = "apiServerEnabled"
         static let apiServerPort = "apiServerPort"
+        static let trustedWorkspacePaths = "trustedWorkspacePaths"
     }
 }

@@ -1,171 +1,124 @@
-# Beet Code — Release Audit (v0.8.0)
+# Beet Code — Release Audit
 
-Generated 2026-08-19 against the current tree. All numbers below are from real
-runs in this session, not claims. Supersedes the v0.7.0 audit.
-
-**Tree audited:** v0.8.0 (build 5) — activity rail, chat import/export,
-Pantone-anchored Beet theme, diagnostics panel, KV-aware GGUF context, MTP
-speculative decoding, tool-call transcript sanitization, ShellRunner
-EXC_GUARD fix; hermetic suite.
+Audit date: **2026-08-20**
+Source version: **0.8.0 (build 5)**
+Scope: current working tree after the security and concurrency hardening pass.
 
 ## Verdict
 
-**Shippable today as a personal/insider build on your own Macs.**
-Not shippable to strangers: Developer ID signing + notarization remain
-blocked — certificates revoked (see §4.1).
+**Code status: ready for internal release testing.** The app builds and the
+full suite passes. **Public distribution is still blocked by signing,
+notarization, and packaging credentials**, which cannot be completed from this
+checkout alone.
 
-## 1. Build & test evidence (this session)
+## 1. Verification evidence
 
-| Check | Result |
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Debug app build | ✅ Passed | `xcodebuild ... build` → `BUILD SUCCEEDED` |
+| Release app build | ✅ Passed (local ad-hoc signing) | `xcodebuild -configuration Release ... build` → `BUILD SUCCEEDED` |
+| Full test suite | ✅ **545 / 545, 0 failures** | `xcodebuild ... test` → `TEST SUCCEEDED` |
+| Architecture | ✅ arm64 | `project.yml` |
+| Minimum OS | ✅ macOS 15 | `project.yml` |
+| Local API E2E | ✅ Passed | OpenAI, Anthropic, SSE, auth, concurrency tests |
+| Workspace trust boundary | ✅ Covered | MCP and hook default-deny regression tests |
+| Session encryption failure | ✅ Covered | fail-closed persistence regression test |
+| Redirect host validation | ✅ Covered | lookalike-host regression test |
+
+The test runner emitted existing SwiftUI runtime warnings in some UI-hosted
+tests. They did not cause failures, but should remain a follow-up for UI
+polish. The generated `.derived` directory is ignored build output and is not
+part of the release artifact.
+
+## 2. Hardening completed
+
+| Area | Previous risk | Current behavior |
+| --- | --- | --- |
+| Project MCP | Local config auto-spawned processes and inherited credentials | Local MCP is disabled by default, enabled only for an explicitly trusted workspace, and receives a sanitized environment |
+| MCP name collisions | Workspace config could replace a user server | User-global server names win; local collisions are rejected |
+| Project hooks | Local hooks ran without an explicit trust decision | Workspace hooks follow the same per-workspace trust switch and run with a sanitized environment and 30-second hard cap |
+| Session storage | Encryption failure silently wrote plaintext | Save aborts; no plaintext downgrade occurs |
+| Local API state | Concurrent requests could interleave engine history | Reset/replay/generation are serialized through a request gate |
+| Local API browser access | Arbitrary origins were reflected in CORS | CORS is opt-in through an origin allowlist; default is no CORS |
+| Local API resources | Completed tasks accumulated; slow clients had no read timeout | Connection IDs are removed on completion, active connections are capped, and reads have an idle timeout |
+| App API startup | API was open by default when enabled and settings changes could race | The app generates a per-run bearer token and uses generation-based reconciliation |
+| Browser navigation | `file://` could be opened | Browser navigation accepts only HTTP(S) |
+| Browser screenshots | Paths bypassed workspace resolution and could collide | Paths are workspace-resolved and use UUID filenames |
+| Hugging Face redirects | Lookalike hosts could retain `Authorization` | Only `huggingface.co` and its subdomains retain the header |
+| Project prompt injection | Project text claimed to override defaults | Project instructions are explicitly treated as untrusted guidance and cannot override safety policy |
+
+## 3. Runtime logic
+
+```text
+User opens workspace
+        │
+        ├── Settings trust switch OFF ──┐
+        │                               ├── user MCP only
+        │                               └── user hooks only
+        │
+        └── Settings trust switch ON ───┐
+                                        ├── user MCP + local MCP
+                                        └── user hooks + local hooks
+
+API request → auth → bounded connection → serialized engine gate
+                                      │
+                                      ├── reset shared engine
+                                      ├── replay complete request history
+                                      └── generate / stream → release gate
+```
+
+## 4. Public-release blockers
+
+| Blocker | Status | Required action |
+| --- | --- | --- |
+| Developer ID Application certificate | ❌ External dependency | Create/restore a valid certificate and signing identity |
+| Notarization credentials | ❌ External dependency | Configure Apple ID or App Store Connect notary credentials |
+| Hardened runtime distribution signing | ⚠️ Not yet exercised | Sign the Release app with `--options runtime` and validate entitlements |
+| DMG/ZIP packaging | ⚠️ Not automated | Add a repeatable packaging job after signing is available |
+| GitHub Pages publication | ⚠️ Remote configuration | Set the real GitHub remote and enable Pages from GitHub Actions |
+
+The app remains intentionally unsandboxed because the product runs shell,
+Git, workspace, simulator, and local-model processes. This must be explained
+to users and revisited before a broad public release.
+
+## 5. Test coverage map
+
+| Subsystem | Covered behaviors |
 | --- | --- |
-| Debug build (app) | ✅ BUILD SUCCEEDED (after `xcodegen` regen for new files) |
-| Test suite | ✅ **370/370, 0 failures**, 97 s, zero runner restarts (`TEST SUCCEEDED`) |
-| Targeted re-run (filter + parser) | ✅ 19/19 (StreamDisplayFilterTests, ToolParserTests) |
-| Code signing | ⚠️ ad-hoc (`flags=0x2(adhoc)`), TeamIdentifier unset |
-| Gatekeeper | ❌ rejects ad-hoc — expected; requires Developer ID + notarization |
-| App Sandbox | OFF (`ENABLE_APP_SANDBOX: NO`) — deliberate and required: the agent needs shell/git/workspace access. Must stay documented. |
+| Agent loop | Tool parsing, approvals, hooks, checkpoints, cancellation, memory |
+| Workspace boundary | Traversal, symlinks, root replacement, read/write confinement |
+| Persistence | AES-GCM round trips, redaction, legacy decode, fail-closed save |
+| Local API | OpenAI, Anthropic, streaming, auth, CORS, stateless replay, concurrency |
+| MCP | Config validation, trust default, stdio transport, tool approval |
+| Downloads | Resumption, ETag changes, checksums, disk preflight, redirect policy |
+| Intelligence | Indexing, graph edges, context compilation, MCP inspection |
+| UI-adjacent flows | Composer, sessions, vision, diagnostics, model pool, end-to-end workflows |
 
-Test count growth: 304 (v0.7.0) → 370 (v0.8.0, +66: vision agent sessions,
-GGUF metadata/context, workspace history, import/export-adjacent suites,
-engine pool, diagnostics-adjacent coverage).
-
-**Full-suite flake — root-caused and fixed.** The intermittent
-"unexpected exit, crash, or test timeout" mid-suite (host process died inside
-`EndToEndTests.testPausedDownloadManifestSurvivesRelaunch`) was an
-**EXC_GUARD kill in ShellRunner**: the pipe's read fd was wrapped in a second
-`FileHandle(closeOnDealloc: true)`, so one descriptor had two owners and the
-last dealloc closed an already-closed *guarded* fd. Fixed by reading through
-the pipe's own handle (single owner, no double close) — commits `6d6b4ab`,
-`f16cbfa`. Post-fix suite: no runner restarts.
-
-## 2. What shipped since the v0.7.0 audit
-
-- **Activity rail + sidebar redesign**: every panel toggle and action lives
-  in the rail (new chat, sessions/imported tabs, browser, simulator,
-  diagnostics, export, Model Manager, Settings). Imported chats group under
-  collapsible per-project header cards (headline name, accent folder tile,
-  count pill, rotating chevron) with **Claude/Codex/Cursor filter pills**.
-- **Chat history import/export**: import from `~/.claude`, `~/.codex`, Cursor
-  with live parser status and bounded streaming (16 MB/file, 512 KB/message);
-  export via rail button (current chat → Markdown) and per-row context menu
-  (Markdown/JSON) — wire format sanitized out of exports.
-- **Themes**: full-UI Beet mode anchored on the exact Pantone 19-2030 TCX
-  Beet Red `#7A1F3D` window background (one hue, four depths; cards lift,
-  wells sink; glass falls back to opaque themed surfaces); BeetLogo replaces
-  the sparkle avatar and empty-state hammer; brand contract codified in
-  `docs/BRAND-KIT.md`.
-- **Transcript sanitization**: raw tool-call JSON can no longer leak into the
-  transcript — `ToolParser.strippingCalls` cleans live + restored assistant
-  messages; `looksLikeToolCallFragment` turns token-ceiling-truncated calls
-  into protocol-error re-prompts instead of fake "Task complete" answers;
-  streaming display hides in-progress call syntax behind a "Working…"
-  indicator.
-- **Interactive card redesign**: approval/question/plan cards share one
-  silhouette (raised surface, hairline, 3-pt semantic leading bar);
-  destructive actions moved to the far trailing edge; streaming caret is a
-  brand-gradient pulse bar; composer pills can never wrap mid-label.
-- **In-app diagnostics**: docked panel with breadcrumb timeline
-  (session/engine/tool/approval/import/system, 500-entry ring buffer,
-  metadata-only), category filter pills, system snapshot, plain-text log
-  export for bug reports. Spec: `docs/DIAGNOSTICS-SPEC.md`.
-- **KV-aware GGUF context**: fixed 32K clamp replaced by RAM-fitted context
-  (256K ceiling, 4K floor) sniffed from GGUF header dims;
-  `effectiveContextWindow` plumbed engine → pool → router → AppState →
-  AgentLoop compaction + composer gauge (fixes llama-server HTTP 400 overflow
-  when fitted ctx < catalog window).
-- **MTP speculative decoding**: auto-detects nextn tensors (Qwythos),
-  launches llama-server with `--spec-type draft-mtp --spec-draft-n-max 2`,
-  self-healing fallback on older binaries.
-- **Vision**: MLXVLM wired, SmolVLM catalog entries, vision tool covered by
-  real agent-session tests; describe_image refusal surfaces as a failed
-  observation.
-- **Workspace-history digest** in the system prompt (own + imported
-  sessions); 思考-delimited reasoning stripping for Qwen finetunes.
-
-## 3. Live verification carried over (still valid)
-
-- **Local API server E2E with a real model**: Qwen3 1.7B 4-bit served via
-  `lf serve --model`; `/v1/models`, non-streaming + SSE completions returned
-  real generated output (v0.6.0 audit).
-- **`lf serve` CLI**: banner, model load, SIGINT teardown clean.
-- Live model lists depend on valid provider keys — not fully verifiable for
-  every provider without them.
-- Attachments (paperclip → quoted files / vision description) exercised in
-  unit/E2E suites; not re-verified end-to-end with a live vision model this
-  session.
-
-## 4. Release-readiness checklist
-
-### 4.1 Must fix before any public distribution
-1. **Developer ID signing + notarization — BLOCKED ON CERTIFICATE.**
-   Both `Developer ID Application` certificates in the login keychain are
-   **revoked** (`CSSMERR_TP_CERT_REVOKED`). Action required: create a new
-   Developer ID Application certificate at developer.apple.com. Then:
-   hardened-runtime + timestamp codesign → `ditto` zip →
-   `xcrun notarytool submit … --wait`.
-2. **Versioning**: 0.8.0 / build 5 in `project.yml` + `App/Info.plist` ✅.
-3. **Entitlements file**: still absent. Create for Developer ID + hardened
-   runtime (MLX/Metal needs no JIT entitlement).
-
-### 4.2 Should fix before 1.0
-4. **Distribution format**: no DMG/zip packaging script, no Sparkle
-   auto-update, no crash reporting. (`hdiutil create` one-liner below works
-   today for ad-hoc DMGs.)
-5. **Local API server**: no Anthropic-format *streaming* parity for
-   `tool_use` blocks (text-only), no per-request rate limiting.
-6. **Info.plist minimal**: no `NSHumanReadableCopyright`, no URL schemes.
-7. **MCP**: stdio + HTTP transports configurable, no OAuth flow execution yet.
-8. **Diagnostics persistence**: breadcrumbs are session-only; bounded JSONL
-   persistence across launches is specced (DIAGNOSTICS-SPEC §6) but unbuilt.
-
-### 4.3 Explicitly fine as-is
-- Ad-hoc signing for self-use ✅
-- Sandbox OFF (documented requirement for shell tools) ✅
-- arm64-only (product decision: Apple Silicon only) ✅
-- Secrets: Keychain-only, sessions AES-GCM encrypted, redaction on —
-  no hardcoded keys (scanned before push) ✅
-- Loopback-only server binding (127.0.0.1) ✅
-- Diagnostics are metadata-only (no message/file contents, no secrets) ✅
-- Repo public at https://github.com/Mesutcydev/beet-code ✅
-
-## 5. Test coverage snapshot (what the 370 tests protect)
-
-AgentLoop + hooks (deny/rewrite + gate non-bypass) · tools/policy/git/
-workspace · BYOK providers + registry · tool parser (incl. call-stripping +
-truncated-fragment detection) · diagnostics parser · diff engine · memory ·
-persistence · repo index · smart downloader · parallel chunk planner · GGUF
-planner + metadata/context · memory advisor · engine pool residency ·
-end-to-end (download-finalize-activate, paused-manifest-relaunch,
-checkpoint-undo) · reasoning folding + stream display filter ·
-intent/composer store pipeline · vision sessions · workspace history digest ·
-local API server · MCP (config transport decode, OAuth planner, tools) ·
-slash commands + AGENTS.md · legacy migration · browser tool registration.
-
-Known gaps to add before 1.0: idle-TTL unload timing test (needs clock
-control), MCP timeout path under a hanging server, DMG/signing automation,
-live-browser e2e (needs a UI-test harness).
-
-## 6. Release procedure (repeatable, v0.8)
+## 6. Release procedure
 
 ```sh
-cd "new project/BeetCode"
-rm -rf .derived                          # avoid stale-path warnings
-xcodegen generate                        # after any file add/remove
+xcodegen generate
 xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -configuration Release -destination 'platform=macOS' \
   -derivedDataPath .derived build
-# 1) Version is 0.8.0 / 5 in project.yml (info: properties)
-# 2) Sign & notarize (BLOCKED until new Developer ID cert, §4.1):
-#    codesign --force --options runtime --timestamp \
-#      --sign "Developer ID Application: <name>" \
-#      .derived/Build/Products/Release/BeetCode.app
-#    ditto -c -k --keepParent BeetCode.app BeetCode.zip
-#    xcrun notarytool submit BeetCode.zip --apple-id … --wait
-# 3) Package DMG:
-#    hdiutil create -volname BeetCode -srcfolder BeetCode.app -ov BeetCode.dmg
-# 4) Smoke-test the CLI server before tagging a release:
-#    BeetCodeCLI serve --port 1234 --model qwen3-1.7b-4bit
-#    curl http://127.0.0.1:1234/v1/chat/completions \
-#      -H 'Content-Type: application/json' \
-#      -d '{"messages":[{"role":"user","content":"ping"}]}'
+
+# After a valid Developer ID identity is available:
+codesign --force --options runtime --timestamp \
+  --sign "Developer ID Application: <team>" \
+  .derived/Build/Products/Release/BeetCode.app
+
+ditto -c -k --keepParent \
+  .derived/Build/Products/Release/BeetCode.app BeetCode.zip
+xcrun notarytool submit BeetCode.zip --apple-id <id> --team-id <team> --wait
+hdiutil create -volname BeetCode \
+  -srcfolder .derived/Build/Products/Release/BeetCode.app \
+  -ov BeetCode.dmg
 ```
+
+## 7. Follow-ups before 1.0
+
+- Resolve the existing SwiftUI “publishing changes during view updates” warnings.
+- Add a controlled idle-clock test for API model unloading.
+- Add a hanging-MCP timeout regression test.
+- Automate signed Release builds, notarization, and DMG/ZIP generation.
+- Decide whether to add persistent diagnostics and a supported update channel.

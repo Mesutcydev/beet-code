@@ -122,12 +122,15 @@ enum SessionCrypto {
     /// Test seam: bypass the Keychain entirely (tests must be deterministic —
     //  and ad-hoc re-signs make Keychain ACLs re-prompt, which blocks).
     static nonisolated(unsafe) var overrideKey: SymmetricKey?
+    /// Test seam for the fail-closed persistence path.
+    static nonisolated(unsafe) var forceEncryptionFailure = false
 
     static var isAvailable: Bool {
         (try? key(interactionAllowed: false)) != nil
     }
 
     static func encrypt(_ payload: Data) -> Data? {
+        guard !forceEncryptionFailure else { return nil }
         guard let key = try? key(interactionAllowed: false) else { return nil }
         do {
             let nonce = AES.GCM.Nonce()
@@ -326,7 +329,8 @@ final class SessionStore: @unchecked Sendable {
 
     // MARK: Persistence
 
-    func save(_ record: SessionRecord) {
+    @discardableResult
+    func save(_ record: SessionRecord) -> Bool {
         var record = record
         record.schemaVersion = SessionRecord.currentSchemaVersion
         // Bounded retention: sensitive command output and arguments are
@@ -336,11 +340,20 @@ final class SessionStore: @unchecked Sendable {
         // Encrypt + write OUTSIDE the store lock: encryption can block on
         // Keychain/securityd IPC, and holding the lock across it deadlocks
         // every concurrent load().
-        guard let data = try? JSONEncoder().encode(record) else { return }
-        let payload = SessionCrypto.encrypt(data) ?? data
-        try? payload.write(to: target, options: .atomic)
+        guard let data = try? JSONEncoder().encode(record),
+              let payload = SessionCrypto.encrypt(data)
+        else {
+            // Never silently downgrade sensitive transcripts to plaintext.
+            return false
+        }
+        do {
+            try payload.write(to: target, options: .atomic)
+        } catch {
+            return false
+        }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         invalidateCache()
+        return true
     }
 
     func load(id: UUID) -> SessionRecord? {

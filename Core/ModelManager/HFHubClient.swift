@@ -210,6 +210,11 @@ struct HFHubClient: Sendable, HubServing {
 /// the async variant trips a SILGen crash in Swift 6.3.2 when lowering the
 /// ObjC thunk.
 final class RedirectStrippingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    static func isTrustedHubHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return host == "huggingface.co" || host.hasSuffix(".huggingface.co")
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -221,7 +226,7 @@ final class RedirectStrippingDelegate: NSObject, URLSessionDataDelegate, @unchec
             completionHandler(nil)
             return
         }
-        if url.host?.hasSuffix("huggingface.co") == true {
+        if Self.isTrustedHubHost(url.host) {
             completionHandler(request)
             return
         }

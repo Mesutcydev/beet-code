@@ -55,7 +55,7 @@ final class BrowserController: ObservableObject {
         guard !raw.isEmpty else { throw BrowserError.emptyURL }
         if !raw.contains("://") { raw = "https://" + raw }
         guard let url = URL(string: raw), let scheme = url.scheme,
-              scheme == "http" || scheme == "https" || scheme == "file"
+              scheme == "http" || scheme == "https"
         else { throw BrowserError.invalidURL(raw) }
         navigationCount += 1
         webView.load(URLRequest(url: url))

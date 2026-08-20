@@ -63,9 +63,8 @@ enum BrowserTools {
                 guard controller.hasOpenPage else {
                     return "The browser has no page open. Use browser_navigate first."
                 }
-                let dir = context.workspace.root
-                    .appendingPathComponent(".beetcode/screenshots", isDirectory: true)
-                let path = dir.appendingPathComponent("browser-\(Int(Date().timeIntervalSince1970)).png")
+                let relativePath = ".beetcode/screenshots/browser-\(UUID().uuidString).png"
+                let path = try context.workspace.resolve(relativePath, access: .write).url
                 let saved = try await controller.snapshot(to: path)
                 return "screenshot saved to \(saved.path)"
             }.value

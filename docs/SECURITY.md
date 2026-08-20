@@ -24,6 +24,17 @@ The full boundary catalog with enforcement points lives in
   fails the layer, never the session; everything is re-derivable.
 - **Shell policy** — exact safe-command auto-approval; operators,
   substitution, redirection, and outside paths always ask.
+- **Project automation** — workspace MCP servers and hooks are disabled by
+  default. The user must trust the exact workspace path before local
+  configuration is loaded; enabled subprocesses receive a sanitized
+  environment and hooks have a hard timeout cap.
+- **Local API** — the optional loopback server uses a per-run bearer token,
+  bounded connections, serialized engine access, and an explicit CORS
+  allowlist. It is not a public network service.
+
+The full release verification, runtime diagrams, and remaining distribution
+blockers are in [RELEASE-AUDIT.md](RELEASE-AUDIT.md). The visual architecture
+and logic explainer is in [`docs/site`](site/), ready for GitHub Pages.
 
 ## Reporting
 

@@ -3,6 +3,13 @@ import XCTest
 
 final class SmartDownloaderTests: XCTestCase {
 
+    func testHubRedirectHostValidationRejectsLookalikes() {
+        XCTAssertTrue(RedirectStrippingDelegate.isTrustedHubHost("huggingface.co"))
+        XCTAssertTrue(RedirectStrippingDelegate.isTrustedHubHost("cdn.huggingface.co"))
+        XCTAssertFalse(RedirectStrippingDelegate.isTrustedHubHost("evilhuggingface.co"))
+        XCTAssertFalse(RedirectStrippingDelegate.isTrustedHubHost("huggingface.co.attacker.example"))
+    }
+
     typealias Logic = SmartFileDownloader.Logic
     typealias Sidecar = SmartFileDownloader.SidecarState
 

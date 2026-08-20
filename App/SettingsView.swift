@@ -359,6 +359,12 @@ private struct GeneralTab: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(Theme.textSecondary)
                             .textSelection(.enabled)
+                        if let token = appState.apiServerToken {
+                            Text("token: \(token)")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(Theme.textTertiary)
+                                .textSelection(.enabled)
+                        }
                     } else if let error = appState.apiServerError {
                         Text(error)
                             .font(.caption)
@@ -375,6 +381,7 @@ private struct GeneralTab: View {
                             """
                             curl \(appState.apiServerBaseURL)/v1/chat/completions \\
                               -H 'Content-Type: application/json' \\
+                              -H 'Authorization: Bearer \(appState.apiServerToken ?? "TOKEN")' \\
                               -d '{"model":"beetcode","messages":[{"role":"user","content":"Hello"}]}'
                             """,
                             forType: .string)
@@ -392,10 +399,25 @@ private struct GeneralTab: View {
 // MARK: - Agent tab
 
 private struct AgentTab: View {
+    @EnvironmentObject private var appState: AppState
     @ObservedObject private var settings = SettingsStore.shared
 
     var body: some View {
         TabScroll {
+            SettingsCard(
+                title: "Project automation trust",
+                icon: "lock.shield",
+                footer: "Workspace-local MCP servers and hooks can launch processes and access configured services. They stay disabled until you explicitly trust this exact project folder.") {
+                SettingToggle(
+                    label: "Allow MCP servers and hooks from this workspace",
+                    isOn: workspaceTrustBinding)
+                Text(appState.sessions.workspaceURL?.path ?? "Open a workspace folder to configure project automation trust.")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Theme.textSecondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+
             SettingsCard(title: "Autonomy", icon: "shield.lefthalf.filled", footer: "Reads are always automatic. Every write shows a diff preview and asks first unless file edits are auto-approved. Auto-approving commands is a safe-command policy, not a shell bypass: only exact invocations of known read-only executables (swift, xcodebuild, ls, git status, rg, …) with arguments inside the workspace are admitted; shell operators, substitutions, redirections, backgrounding, and any path outside the workspace always require an approval card.") {
                 SettingToggle(label: "Auto-approve file edits", isOn: $settings.autoApproveEdits)
                 SettingToggle(label: "Auto-approve safe commands", isOn: $settings.autoApproveCommands)
@@ -447,6 +469,18 @@ private struct AgentTab: View {
                 SettingToggle(label: "Verify edits with a build", isOn: $settings.verifyAfterEdits)
             }
         }
+    }
+
+    private var workspaceTrustBinding: Binding<Bool> {
+        Binding(
+            get: {
+                guard let workspace = appState.sessions.workspaceURL else { return false }
+                return settings.isWorkspaceTrusted(workspace)
+            },
+            set: { trusted in
+                guard let workspace = appState.sessions.workspaceURL else { return }
+                settings.setWorkspaceTrusted(workspace, trusted: trusted)
+            })
     }
 
     /// Value + stepper cluster shared by both numeric rows: the current value

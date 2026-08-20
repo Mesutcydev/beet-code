@@ -34,6 +34,9 @@ actor AgentLoop {
         /// labeled context block from the ContextCompiler. The visible
         /// transcript keeps the raw user text either way.
         var intelligenceContext: Bool = true
+        /// Workspace-local hooks are only enabled after the user trusts the
+        /// exact workspace in Settings.
+        var allowWorkspaceHooks: Bool = false
     }
 
     // Dependencies
@@ -90,7 +93,9 @@ actor AgentLoop {
         self.workspace = workspace
         self.memory = memory
         self.taskHint = taskHint
-        self.hooks = hooks ?? HookRunner.load(workspaceRoot: workspace.root)
+        self.hooks = hooks ?? HookRunner.load(
+            workspaceRoot: workspace.root,
+            includeWorkspaceConfig: configuration.allowWorkspaceHooks)
         // Control tools are part of the prompt and the executor's registry,
         // but the loop intercepts them before execution ever happens.
         var allTools = tools + [ControlTools.askUser, ControlTools.attemptCompletion]
@@ -242,7 +247,10 @@ actor AgentLoop {
         // Terminal snapshot: durable task state, never disposable cache.
         saveTaskCapsule()
         persist()
-        hooks.runStop(reason: reason.hookReason)
+        let hooks = self.hooks
+        Task.detached(priority: .utility) {
+            hooks.runStop(reason: reason.hookReason)
+        }
         eventContinuation?.yield(.finished(reason))
         eventContinuation?.finish()
     }
@@ -527,7 +535,13 @@ actor AgentLoop {
 
                 // 3c½. PreToolUse hooks may deny or rewrite arguments.
                 // They cannot skip the permission gate above.
-                switch hooks.runPreToolUse(tool: call.name, arguments: call.arguments) {
+                let preHooks = hooks
+                let preToolName = call.name
+                let preToolArguments = call.arguments
+                let hookDecision = await Task.detached(priority: .utility) { @Sendable in
+                    preHooks.runPreToolUse(tool: preToolName, arguments: preToolArguments)
+                }.value
+                switch hookDecision {
                 case .allow:
                     break
                 case .deny(let reason):
@@ -567,9 +581,16 @@ actor AgentLoop {
 
                 // 3e. Execute.
                 let result = await executor.execute(call)
-                hooks.runPostToolUse(
-                    tool: call.name, arguments: call.arguments,
-                    output: result.output, failed: result.failed)
+                let postHooks = hooks
+                let postToolName = call.name
+                let postToolArguments = call.arguments
+                let postOutput = result.output
+                let postFailed = result.failed
+                await Task.detached(priority: .utility) { @Sendable in
+                    postHooks.runPostToolUse(
+                        tool: postToolName, arguments: postToolArguments,
+                        output: postOutput, failed: postFailed)
+                }.value
                 eventContinuation?.yield(.toolCallFinished(invocation, output: result.output, failed: result.failed))
                 record.messages.append(
                     SessionMessage(role: .toolResult, content: result.output, toolName: call.name, timestamp: Date()))

@@ -73,13 +73,16 @@ final class HookRunnerTests: XCTestCase {
     }
 
     func testLoadMergesWorkspaceConfig() throws {
-        // Workspace-local hook should load even when user-global does not exist.
+        // Workspace-local hooks require explicit trust from the caller.
         let ws = hookDir!
         let dir = ws.appendingPathComponent(".beetcode", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = HookFile(hooks: ["PreToolUse": [HookConfig(command: "/bin/true")]])
         try JSONEncoder().encode(file).write(to: dir.appendingPathComponent("hooks.json"))
-        let runner = HookRunner.load(workspaceRoot: ws)
+        let defaultRunner = HookRunner.load(workspaceRoot: ws)
+        XCTAssertTrue(defaultRunner.preToolUse.isEmpty)
+
+        let runner = HookRunner.load(workspaceRoot: ws, includeWorkspaceConfig: true)
         XCTAssertEqual(runner.preToolUse.count, 1)
     }
 }

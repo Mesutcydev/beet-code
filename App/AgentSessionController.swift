@@ -97,9 +97,11 @@ final class AgentSessionController: ObservableObject {
         guard let workspace = workspaceURL, !isRunning else { return }
         let workspaceScope = Workspace(root: workspace)
 
-        // MCP: connect configured servers, collect their tools. Failures are
-        // surfaced as notices but never block the run.
-        let mcpResult = await mcpRegistry.start(workspaceRoot: workspace)
+        // MCP: user-global servers are available; project-local servers are
+        // only started for an exact workspace the user has trusted in Settings.
+        let mcpResult = await mcpRegistry.start(
+            workspaceRoot: workspace,
+            includeWorkspaceConfig: settings.isWorkspaceTrusted(workspace))
         for error in mcpResult.errors {
             transcript.append(TranscriptItem(id: UUID(), kind: .notice(error)))
         }
@@ -163,7 +165,8 @@ final class AgentSessionController: ObservableObject {
                 showReasoning: showReasoning,
                 planMode: planMode,
                 memoryMode: settings.memoryMode,
-                compressionLevel: settings.compressionLevel),
+                compressionLevel: settings.compressionLevel,
+                allowWorkspaceHooks: settings.isWorkspaceTrusted(workspace)),
             modelID: activeModelIDHandler(),
             sessionID: sessionID,
             seedRecord: continuationSeed,

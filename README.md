@@ -15,7 +15,7 @@ A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs
 
 ## Product previews
 
-Beet Code keeps the agent, imported histories, browser, and iOS Simulator in one focused desktop workspace.
+Beet Code keeps your project, model, chats, browser, and iOS Simulator in one simple Mac app.
 
 | Homepage | Imported chats |
 | --- | --- |
@@ -25,7 +25,7 @@ Beet Code keeps the agent, imported histories, browser, and iOS Simulator in one
 | --- | --- |
 | <img src="docs/previews/simulator.jpg" alt="Beet Code iOS Simulator panel" width="480"> | <img src="docs/previews/browser.jpg" alt="Beet Code browser panel" width="480"> |
 
-The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) includes the full preview gallery, a light/dark theme switcher, and a compact specs table.
+The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
 **Install:** download the [DMG](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.1.dmg), drag **Beet Code** onto Applications (or Desktop). Apple Silicon + macOS 15+.
 

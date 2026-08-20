@@ -188,7 +188,7 @@ final class ComposerStoreTests: XCTestCase {
 
     private var savedPlanMode: Bool?
 
-    override func setUp() {
+    override func setUp() async throws {
         // Pin loop settings so real developer preferences can't leak in.
         let defaults = UserDefaults.standard
         savedPlanMode = defaults.object(forKey: "planMode") as? Bool
@@ -206,7 +206,7 @@ final class ComposerStoreTests: XCTestCase {
         gitRepo.commitAll(message: "base")
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let savedPlanMode {
             UserDefaults.standard.set(savedPlanMode, forKey: "planMode")
         } else {

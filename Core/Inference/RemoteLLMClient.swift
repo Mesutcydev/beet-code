@@ -651,7 +651,7 @@ enum RemoteLLMClient {
         guard let http = response as? HTTPURLResponse else {
             throw RemoteLLMError.transport("non-HTTP response")
         }
-        guard http.statusCode == 200 else {
+        guard (200..<300).contains(http.statusCode) else {
             let text = String(decoding: data, as: UTF8.self)
             let detail = errorDetail(from: text) ?? String(text.prefix(220))
             throw RemoteLLMError.badStatus(http.statusCode, detail)
@@ -667,14 +667,6 @@ enum RemoteLLMClient {
     }
 
     // MARK: Live model discovery (P10)
-
-    struct ModelListResponse: Codable, Sendable {
-        struct Entry: Codable, Sendable {
-            var id: String
-            var name: String?
-        }
-        var data: [Entry]?
-    }
 
     /// Fetches the provider's live model catalog. Errors are preserved so the
     /// settings UI can tell the user whether the key, endpoint, or provider
@@ -759,15 +751,45 @@ enum RemoteLLMClient {
             if let apiKey, !apiKey.isEmpty {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             if provider == .openRouter {
                 request.setValue("Beet Code", forHTTPHeaderField: "HTTP-Referer")
                 request.setValue("Beet Code", forHTTPHeaderField: "X-Title")
             }
             let data = try await get(request, provider: provider, session: session)
-            let decoded = try JSONDecoder().decode(ModelListResponse.self, from: data)
-            return deduplicatedProfiles(decoded.data?.map { entry in
-                RemoteModelProfile(provider: provider, model: entry.id, displayName: entry.name)
-            } ?? [])
+            return deduplicatedProfiles(try compatibleModelProfiles(from: data, provider: provider))
+        }
+    }
+
+    /// OpenAI-compatible gateways are not consistent about the envelope:
+    /// most use `data`, while several hosted/local servers use `models`,
+    /// `results`, or return the array directly. Accept all of those shapes so
+    /// a working key is not mistaken for an empty catalog.
+    static func compatibleModelProfiles(
+        from data: Data,
+        provider: LLMProvider
+    ) throws -> [RemoteModelProfile] {
+        let json = try JSONSerialization.jsonObject(with: data)
+        let entries: [[String: Any]]
+        if let array = json as? [[String: Any]] {
+            entries = array
+        } else if let object = json as? [String: Any] {
+            let keys = ["data", "models", "results"]
+            entries = keys.lazy.compactMap { object[$0] as? [[String: Any]] }.first ?? []
+        } else {
+            entries = []
+        }
+
+        return entries.compactMap { entry in
+            let id = (entry["id"] as? String)
+                ?? (entry["model"] as? String)
+                ?? (entry["name"] as? String)
+            guard let id, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            let displayName = (entry["name"] as? String) ?? (entry["display_name"] as? String)
+            return RemoteModelProfile(provider: provider, model: id, displayName: displayName)
         }
     }
 

@@ -65,7 +65,7 @@ final class RemoteLLMClientTests: XCTestCase {
     }
 
     func testProviderRegistry() {
-        XCTAssertEqual(LLMProvider.allCases.count, 9)
+        XCTAssertEqual(LLMProvider.allCases.count, 10)
         XCTAssertEqual(LLMProvider.openAI.openAICompatibleBaseURL?.host, "api.openai.com")
         XCTAssertEqual(LLMProvider.deepSeek.openAICompatibleBaseURL?.host, "api.deepseek.com")
         XCTAssertEqual(LLMProvider.longCat.openAICompatibleBaseURL?.host, "api.longcat.chat")

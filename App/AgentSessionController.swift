@@ -156,6 +156,7 @@ final class AgentSessionController: ObservableObject {
         let checkpointingEnabled = settings.checkpointingEnabled
         let showReasoning = settings.showReasoning
         let planMode = settings.planMode
+        let goalMode = settings.agentMode == .goal
         // Per-run live overrides: "Always approve" on an approval card flips
         // these, taking effect immediately for THIS running loop.
         let runOverrides = ApprovalOverrides()
@@ -190,6 +191,7 @@ final class AgentSessionController: ObservableObject {
                 verifyAfterEdits: settings.verifyAfterEdits,
                 showReasoning: showReasoning,
                 planMode: planMode,
+                goalMode: goalMode,
                 memoryMode: settings.memoryMode,
                 compressionLevel: settings.compressionLevel),
             modelID: activeModelIDHandler(),
@@ -537,6 +539,14 @@ final class AgentSessionController: ObservableObject {
         case .plan:
             settings.planMode.toggle()
             notice("Plan mode \(settings.planMode ? "ON — the agent plans first, you approve before it acts." : "OFF — direct execution.")")
+
+        case .auto:
+            settings.agentMode = .auto
+            notice("Auto mode ON — direct execution with normal approval gates.")
+
+        case .goal:
+            settings.agentMode = .goal
+            notice("Goal mode ON — the agent plans first, then works through the goal until completion.")
 
         case .undo:
             undoLastCheckpoint()

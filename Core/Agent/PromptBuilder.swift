@@ -13,6 +13,7 @@ enum PromptBuilder {
         projectInstructions: String? = nil,
         workspaceHistory: String? = nil,
         planMode: Bool = false,
+        goalMode: Bool = false,
         contextWindowTokens: Int? = nil,
         responseReserveTokens: Int = 4096
     ) -> String {
@@ -34,6 +35,18 @@ enum PromptBuilder {
             what you will do — reading, edits, and commands you intend to run.
             Do NOT call any tool yet. Wait for the user to approve the plan.
             Once approved, execute the plan step by step with tools.
+            """)
+        }
+
+        if goalMode {
+            sections.append("""
+            # Goal mode
+
+            Stay focused on the user's complete goal. After the plan is
+            approved, keep inspecting, editing, verifying, and correcting until
+            the requested outcome is actually complete. Do not stop after a
+            partial change; use attempt_completion only when the goal is done
+            or a concrete blocker needs the user's input.
             """)
         }
 

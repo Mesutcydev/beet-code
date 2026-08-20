@@ -23,6 +23,36 @@ enum AppAppearance: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+/// How a new task should begin. Auto is the fast direct path; Goal asks for
+/// an explicit plan before tools run and then keeps working until completion.
+enum AgentMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case auto
+    case goal
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: "Auto"
+        case .goal: "Goal"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .auto: "wand.and.stars"
+        case .goal: "target"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .auto: "Run the task directly while keeping normal approval gates."
+        case .goal: "Make a plan first, then continue through the goal until it is complete."
+        }
+    }
+}
+
 /// Accent color palettes. Every entry ships a light+dark hex pair for both
 /// the accent and its brighter variant; `Theme` resolves them at draw time.
 /// `beetRed` is the identity default (Pantone 19-2030 TCX, #7A1F3D).
@@ -108,6 +138,7 @@ final class SettingsStore: ObservableObject {
             // explicitly switched it off keep that choice.
             DefaultsKeys.showReasoning: true,
             DefaultsKeys.planMode: false,
+            DefaultsKeys.agentMode: AgentMode.auto.rawValue,
             DefaultsKeys.appearance: AppAppearance.light.rawValue,
             DefaultsKeys.accentPalette: AccentPalette.beetRed.rawValue,
             DefaultsKeys.composerBorderAnimation: true,
@@ -232,6 +263,21 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// User-facing mode shortcut. Goal mode owns the plan gate so the two
+    /// concepts cannot drift apart when selected from the composer or slash
+    /// commands. The legacy plan toggle remains available for compatibility.
+    var agentMode: AgentMode {
+        get {
+            AgentMode(rawValue: defaults.string(forKey: DefaultsKeys.agentMode)
+                      ?? AgentMode.auto.rawValue) ?? .auto
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: DefaultsKeys.agentMode)
+            defaults.set(newValue == .goal, forKey: DefaultsKeys.planMode)
+            objectWillChange.send()
+        }
+    }
+
     /// Composer signature: the animated gradient underline. Off = static
     /// hairline (also friendlier for Reduce Motion sensibilities).
     var composerBorderAnimation: Bool {
@@ -352,6 +398,7 @@ final class SettingsStore: ObservableObject {
         static let showReasoning = "showReasoning"
         static let reasoningVisibilityMigration = "reasoningVisibilityMigration.v1"
         static let planMode = "planMode"
+        static let agentMode = "agentMode"
         static let appearance = "appearance"
         static let accentPalette = "accentPalette"
         static let composerBorderAnimation = "composerBorderAnimation"

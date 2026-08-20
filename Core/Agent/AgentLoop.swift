@@ -23,8 +23,12 @@ actor AgentLoop {
         /// Show chain-of-thought (think) blocks in the transcript (v0.3).
         var showReasoning: Bool = false
         /// Plan mode: the model must present a plan and the user must approve
-    /// it before ANY tool executes (v0.4).
-    var planMode: Bool = false
+        /// it before ANY tool executes (v0.4).
+        var planMode: Bool = false
+        /// Goal mode is the explicit long-running task vocabulary layered on
+        /// top of plan mode. It gives the model the same contract when the
+        /// mode is selected from the composer or `/goal`.
+        var goalMode: Bool = false
         /// Long-term memory mode (v0.3).
         var memoryMode: MemoryMode = .off
         /// How aggressively old tool outputs are compacted (v0.3).
@@ -124,6 +128,7 @@ actor AgentLoop {
             memorySection: memorySection, projectInstructions: projectInstructions,
             workspaceHistory: historySection,
             planMode: configuration.planMode,
+            goalMode: configuration.goalMode,
             contextWindowTokens: configuration.contextWindowTokens,
             responseReserveTokens: configuration.maxTokensPerTurn)
         (engine as? any NativeToolConfigurable)?.configureNativeTools(

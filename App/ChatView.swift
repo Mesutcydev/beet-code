@@ -70,6 +70,8 @@ struct ChatView: View {
 
             Spacer(minLength: 8)
 
+            topBarActions
+
             HStack(spacing: 5) {
                 Circle()
                     .fill(phaseTint)
@@ -91,6 +93,62 @@ struct ChatView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.hairline.opacity(0.7)).frame(height: 1)
         }
+    }
+
+    /// Workspace tools used to live in the sidebar footer. Keeping them next
+    /// to the conversation title makes them reachable in both wide and
+    /// portrait layouts, where the sidebar may be collapsed.
+    private var topBarActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 3) {
+                topBarButton("safari", "Browser", .toggleBrowserPanel)
+                topBarButton("iphone", "Simulator", .toggleSimulatorPanel)
+                topBarButton("stethoscope", "Diagnostics", .toggleDiagnosticsPanel)
+                topBarButton("circle.dashed", "Git status", .gitStatus)
+                topBarButton("square.split.2x1", "Git diff", .gitDiff)
+                topBarButton("arrow.uturn.backward", "Undo last checkpoint", .undoCheckpoint)
+            }
+            Menu {
+                topBarMenuButton("Browser", "safari", .toggleBrowserPanel)
+                topBarMenuButton("Simulator", "iphone", .toggleSimulatorPanel)
+                topBarMenuButton("Diagnostics", "stethoscope", .toggleDiagnosticsPanel)
+                Divider()
+                topBarMenuButton("Git status", "circle.dashed", .gitStatus)
+                topBarMenuButton("Git diff", "square.split.2x1", .gitDiff)
+                topBarMenuButton("Undo last checkpoint", "arrow.uturn.backward", .undoCheckpoint)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 26, height: 26)
+            }
+            .menuStyle(.borderlessButton)
+            .help("Workspace tools")
+        }
+    }
+
+    private func topBarMenuButton(_ title: String, _ icon: String, _ notification: Notification.Name) -> some View {
+        Button {
+            NotificationCenter.default.post(name: notification, object: nil)
+        } label: {
+            Label(title, systemImage: icon)
+        }
+    }
+
+    private func topBarButton(_ icon: String, _ label: String, _ notification: Notification.Name) -> some View {
+        Button {
+            NotificationCenter.default.post(name: notification, object: nil)
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 25, height: 25)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .lfHoverLift()
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private var phaseLabel: String {
@@ -184,12 +242,16 @@ struct ChatView: View {
                 isPinnedToBottom = pinned
             }
             .onChange(of: controller.transcript.count) { _, _ in
-                guard isPinnedToBottom else { return }
-                withAnimation { proxy.scrollTo("bottom") }
+                scrollToLatest(proxy, animated: true)
             }
             .onChange(of: controller.streamingText) { _, _ in
-                guard isPinnedToBottom else { return }
-                proxy.scrollTo("bottom")
+                scrollToLatest(proxy)
+            }
+            .onChange(of: controller.liveReasoningText) { _, _ in
+                scrollToLatest(proxy)
+            }
+            .onChange(of: controller.isRunning) { _, running in
+                if running { scrollToLatest(proxy, animated: true) }
             }
             .overlay(alignment: .bottomTrailing) {
                 if !isPinnedToBottom && controller.isRunning {
@@ -210,6 +272,24 @@ struct ChatView: View {
                     .buttonStyle(.borderless)
                     .padding(12)
                 }
+            }
+        }
+    }
+
+    /// Token batches can update the LazyVStack before the new row has a
+    /// measured height. Deferring one main-queue turn makes the scroll target
+    /// real before asking the proxy to move, which keeps streamed answers
+    /// pinned without stealing the user's position when they scroll up.
+    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool = false) {
+        guard isPinnedToBottom else { return }
+        DispatchQueue.main.async {
+            guard self.isPinnedToBottom else { return }
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
     }
@@ -951,7 +1031,7 @@ private struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
             TranscriptCardHeader(
-                title: "Approval needed",
+                title: "Approval required",
                 systemImage: "hand.raised.fill",
                 tint: Theme.warning,
                 detail: request.invocation.name)
@@ -959,14 +1039,19 @@ private struct ApprovalCard: View {
             switch request.preview {
             case .command(let command):
                 VStack(alignment: .leading, spacing: Spacing.xs) {
-                    Text("Run command")
-                        .font(.caption)
+                    Text("Command preview")
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(Theme.textSecondary)
                     Text(command)
-                        .font(.caption.monospaced())
+                        .font(.callout.monospaced())
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineSpacing(1)
                         .padding(Spacing.sm)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                            .strokeBorder(Theme.hairline.opacity(0.8), lineWidth: 1))
+                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
             case .diff(let diff, let path):
@@ -986,40 +1071,72 @@ private struct ApprovalCard: View {
             }
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                HStack(spacing: Spacing.sm) {
-                    // Approve is a deliberate act: Command-Return, never bare
-                    // Return (which could fire while typing elsewhere).
-                    Button("Approve ⌘↩") { onDecision(true, false) }
-                        .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent)
-                    Button {
-                        onDecision(true, true)
-                    } label: {
-                        Label(isCommand ? "Always approve safe commands" : "Always approve edits",
-                              systemImage: "checkmark.seal")
-                    }
-                    .buttonStyle(.bordered)
-                    .help(isCommand
-                        ? "Approve this and auto-approve policy-safe commands for this run and future runs"
-                        : "Approve this and auto-approve file edits for this run and future runs")
-                    Spacer(minLength: 0)
-                    // Destructive lives at the far trailing edge, visually
-                    // and motorically separated from the approve cluster.
-                    Button("Decline", role: .destructive) { onDecision(false, false) }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(Theme.danger)
+                ViewThatFits(in: .horizontal) {
+                    approvalButtonRow
+                    approvalButtonColumn
                 }
                 if request.invocation.name == "run_command" {
-                    Text("The command runs in the workspace after approval — never silently.")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.textTertiary)
+                    Text("This command runs in the workspace only after you approve it.")
+                        .font(.callout)
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .padding(Spacing.lg)
         .padding(.leading, Spacing.sm)
         .lfTranscriptCard(Theme.warning)
+    }
+
+    private var approvalButtonRow: some View {
+        HStack(spacing: Spacing.sm) {
+            approveButton
+            alwaysAllowButton
+            Spacer(minLength: 0)
+            declineButton
+        }
+    }
+
+    private var approvalButtonColumn: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack(spacing: Spacing.sm) {
+                approveButton
+                alwaysAllowButton
+            }
+            declineButton
+        }
+    }
+
+    private var approveButton: some View {
+        // Approve is deliberate: Command-Return never fires while typing.
+        Button {
+            onDecision(true, false)
+        } label: {
+            Label("Approve", systemImage: "checkmark")
+        }
+        .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
+        .buttonStyle(.borderedProminent)
+        .tint(Theme.accent)
+    }
+
+    private var alwaysAllowButton: some View {
+        Button {
+            onDecision(true, true)
+        } label: {
+            Label(isCommand ? "Always allow safe commands" : "Always allow edits",
+                  systemImage: "checkmark.seal")
+        }
+        .buttonStyle(.bordered)
+        .help(isCommand
+            ? "Approve this and auto-approve policy-safe commands for this run and future runs"
+            : "Approve this and auto-approve file edits for this run and future runs")
+    }
+
+    private var declineButton: some View {
+        // Destructive stays separated from the approval cluster.
+        Button("Decline", role: .destructive) { onDecision(false, false) }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Theme.danger)
     }
 }
 

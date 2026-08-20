@@ -376,6 +376,7 @@ private struct AccessoryRow: View {
             AccessoryDivider()
 
             IntentChipButton(store: store)
+            AgentModeChip()
             SettingsToggleChip(
                 title: "Plan", glyph: "list.bullet.clipboard",
                 isOn: Binding(get: { settings.planMode }, set: { settings.planMode = $0 }),
@@ -492,6 +493,40 @@ private struct IntentChipButton: View {
         .popover(isPresented: $showPicker, arrowEdge: .top) {
             IntentPicker(store: store)
         }
+    }
+}
+
+/// Mutually-exclusive Auto/Goal selector. It keeps the common fast path one
+/// tap away without turning the accessory rail into two competing toggles.
+private struct AgentModeChip: View {
+    @ObservedObject private var settings = SettingsStore.shared
+
+    var body: some View {
+        Menu {
+            ForEach(AgentMode.allCases) { mode in
+                Button {
+                    settings.agentMode = mode
+                } label: {
+                    Label {
+                        Text(mode.label)
+                    } icon: {
+                        Image(systemName: mode == settings.agentMode ? "checkmark" : mode.icon)
+                    }
+                }
+                .help(mode.help)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: settings.agentMode.icon)
+                    .font(.system(size: 11, weight: .medium))
+                Text(settings.agentMode.label)
+            }
+            .lfComposerPill(active: true)
+        }
+        .menuStyle(.borderlessButton)
+        .help(settings.agentMode.help)
+        .accessibilityLabel("Agent mode")
+        .accessibilityValue(settings.agentMode.label)
     }
 }
 

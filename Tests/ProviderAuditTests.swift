@@ -180,7 +180,7 @@ final class ProviderAuditTests: XCTestCase {
     // MARK: P4/P5 — provider registry additions
 
     func testProviderRegistryExtensions() {
-        XCTAssertEqual(LLMProvider.allCases.count, 9)
+        XCTAssertEqual(LLMProvider.allCases.count, 10)
         XCTAssertNotNil(LLMProvider.anthropic.anthropicBaseURL)
         XCTAssertEqual(LLMProvider.anthropic.anthropicBaseURL?.host, "api.anthropic.com")
         XCTAssertNil(LLMProvider.anthropic.openAICompatibleBaseURL)
@@ -199,6 +199,23 @@ final class ProviderAuditTests: XCTestCase {
         XCTAssertEqual(LLMProvider.longCat.modelsURL?.absoluteString,
                        "https://api.longcat.chat/openai/v1/models")
         XCTAssertEqual(LLMProvider.gemini.defaultModel, "gemini-3.7-flash")
+        XCTAssertEqual(LLMProvider.openCode.openAICompatibleBaseURL?.absoluteString,
+                       "https://opencode.ai/zen/v1")
+        XCTAssertEqual(LLMProvider.openCode.modelsURL?.absoluteString,
+                       "https://opencode.ai/zen/v1/models")
+    }
+
+    func testCompatibleModelCatalogAcceptsCommonGatewayEnvelopes() throws {
+        let bodies = [
+            #"[{"id":"array-model"}]"#,
+            #"{"models":[{"model":"models-key"}]}"#,
+            #"{"results":[{"name":"result-model","display_name":"Result"}]}"#
+        ]
+        let names = try bodies.flatMap {
+            try RemoteLLMClient.compatibleModelProfiles(
+                from: Data($0.utf8), provider: .openCode).map(\.model)
+        }
+        XCTAssertEqual(names, ["array-model", "models-key", "result-model"])
     }
 
     // MARK: Deterministic provider contract fixtures

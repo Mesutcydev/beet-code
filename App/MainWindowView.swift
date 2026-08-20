@@ -9,6 +9,7 @@ struct MainWindowView: View {
     @State private var showBrowser = false
     @State private var showDiagnostics = false
     @State private var showRemoteAccess = false
+    @State private var showCompactSidebar = false
 
     private var dockedPanelOpen: Bool {
         showSimulator || showBrowser || showDiagnostics
@@ -19,95 +20,200 @@ struct MainWindowView: View {
     private var chatMinWidth: CGFloat { dockedPanelOpen ? 300 : 380 }
 
     var body: some View {
+        notificationView
+    }
+
+    private var configuredLayout: some View {
+        responsiveLayout
+            .navigationTitle(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
+            .onChange(of: appState.enginePhase) { _, phase in
+                switch phase {
+                case .idle:
+                    DiagnosticsCenter.shared.record(.engine, "Engine idle")
+                case .loading(let name):
+                    DiagnosticsCenter.shared.record(.engine, "Loading \(name)…")
+                case .ready(let name):
+                    DiagnosticsCenter.shared.record(.engine, "\(name) ready")
+                case .failed(let reason):
+                    DiagnosticsCenter.shared.record(.engine, "Model load failed",
+                                                    detail: reason, level: .error)
+                }
+            }
+            .toolbarBackground(Theme.bg, for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
+            .background(Theme.bg)
+    }
+
+    private var presentationView: some View {
+        configuredLayout
+            .sheet(isPresented: $showModelManager) {
+                ModelManagerView()
+                    .environmentObject(appState)
+                    .frame(minWidth: 640, minHeight: 480)
+            }
+            .sheet(isPresented: $showRemoteAccess) {
+                RemoteAccessView()
+                    .environmentObject(appState)
+            }
+    }
+
+    private var notificationView: some View {
+        presentationView
+            .onReceive(NotificationCenter.default.publisher(for: .openModelManager)) { _ in
+                showModelManager = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openRemoteAccess)) { _ in
+                showRemoteAccess = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openBrowserPanel)) { _ in
+                showBrowser = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleBrowserPanel)) { _ in
+                showBrowser.toggle()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleSimulatorPanel)) { _ in
+                showSimulator.toggle()
+                appState.isSimulatorPanelOpen = showSimulator
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleDiagnosticsPanel)) { _ in
+                showDiagnostics.toggle()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .gitStatus)) { _ in
+                sessions.gitStatus()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .gitDiff)) { _ in
+                sessions.gitDiff()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .undoCheckpoint)) { _ in
+                sessions.undoLastCheckpoint()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .newChat)) { _ in
+                sessions.newSession()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .stopAgent)) { _ in
+                sessions.stop()
+            }
+    }
+
+    private var responsiveLayout: some View {
+        GeometryReader { proxy in
+            layout(for: proxy.size.width)
+        }
+    }
+
+    private func layout(for width: CGFloat) -> AnyView {
+        if width < 900 {
+            return AnyView(portraitLayout)
+        }
+        return AnyView(wideLayout)
+    }
+
+    private var wideLayout: some View {
         NavigationSplitView {
             SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
                         showDiagnostics: $showDiagnostics,
                         showRemoteAccess: $showRemoteAccess)
-                // One coherent navigation surface: the sidebar owns its
-                // header, history, and tools without an extra rail stealing
-                // width from the conversation titles.
                 .navigationSplitViewColumnWidth(min: 240, ideal: 292, max: 380)
         } detail: {
             HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    ChatView(controller: sessions)
-                    Divider()
-                    StatusBarView()
-                }
-                .frame(minWidth: chatMinWidth, maxWidth: .infinity, maxHeight: .infinity)
-                .layoutPriority(1)
-
+                chatColumn
+                    .frame(minWidth: chatMinWidth, maxWidth: .infinity, maxHeight: .infinity)
                 if showSimulator {
                     Divider()
                     SimulatorPanelView(onClose: {
                         showSimulator = false
                         appState.isSimulatorPanelOpen = false
                     })
-                        .environmentObject(appState)
-                        .frame(minWidth: 260, idealWidth: 340, maxWidth: 440, maxHeight: .infinity)
-                        .layoutPriority(0)
+                    .environmentObject(appState)
+                    .frame(minWidth: 260, idealWidth: 340, maxWidth: 440, maxHeight: .infinity)
                 }
-
                 if showBrowser {
                     Divider()
                     BrowserPanelView(onClose: { showBrowser = false })
                         .frame(minWidth: 280, idealWidth: 380, maxWidth: 520, maxHeight: .infinity)
-                        .layoutPriority(0)
                 }
-
                 if showDiagnostics {
                     Divider()
                     DiagnosticsPanelView(onClose: { showDiagnostics = false })
                         .frame(minWidth: 240, idealWidth: 320, maxWidth: 400, maxHeight: .infinity)
-                        .layoutPriority(0)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg)
         }
-        .navigationTitle(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
-        // Engine transitions are breadcrumbs too — recorded from this single
-        // observation point so AppState needs no diagnostics dependency.
-        .onChange(of: appState.enginePhase) { _, phase in
-            switch phase {
-            case .idle:
-                DiagnosticsCenter.shared.record(.engine, "Engine idle")
-            case .loading(let name):
-                DiagnosticsCenter.shared.record(.engine, "Loading \(name)…")
-            case .ready(let name):
-                DiagnosticsCenter.shared.record(.engine, "\(name) ready")
-            case .failed(let reason):
-                DiagnosticsCenter.shared.record(.engine, "Model load failed",
-                                                detail: reason, level: .error)
+    }
+
+    private var chatColumn: some View {
+        VStack(spacing: 0) {
+            ChatView(controller: sessions)
+            Divider()
+            StatusBarView()
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
+    }
+
+    /// Portrait windows use one readable column. Sidebar/history and tools
+    /// become sheets instead of competing for horizontal space with the
+    /// transcript and composer.
+    private var portraitLayout: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    showCompactSidebar = true
+                } label: {
+                    Label("Chats", systemImage: "sidebar.left")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button {
+                    sessions.newSession()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("New chat")
+                Spacer()
+                Text(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Theme.bg)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+            }
+
+            chatColumn
         }
-        // Tint the system chrome too: without this the toolbar and sidebar
-        // stay neutral gray while Beet mode plums every themed surface.
-        .toolbarBackground(Theme.bg, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
         .background(Theme.bg)
-        // No toolbar buttons on purpose: navigation, panels, and app actions
-        // stay grouped in the sidebar's header and footer.
-        .sheet(isPresented: $showModelManager) {
-            ModelManagerView()
-                .environmentObject(appState)
-                .frame(minWidth: 640, minHeight: 480)
+        .sheet(isPresented: $showCompactSidebar) {
+            SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
+                        showDiagnostics: $showDiagnostics,
+                        showRemoteAccess: $showRemoteAccess)
+            .environmentObject(appState)
+            .environmentObject(sessions)
+            .frame(minWidth: 320, idealWidth: 360, minHeight: 500)
         }
-        .sheet(isPresented: $showRemoteAccess) {
-            RemoteAccessView()
-                .environmentObject(appState)
+        .sheet(isPresented: $showBrowser) {
+            BrowserPanelView(onClose: { showBrowser = false })
+                .frame(minWidth: 360, idealWidth: 520, minHeight: 520)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .openModelManager)) { _ in
-            showModelManager = true
+        .sheet(isPresented: $showSimulator) {
+            SimulatorPanelView(onClose: {
+                showSimulator = false
+                appState.isSimulatorPanelOpen = false
+            })
+            .environmentObject(appState)
+            .frame(minWidth: 360, idealWidth: 520, minHeight: 520)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .openRemoteAccess)) { _ in
-            showRemoteAccess = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .newChat)) { _ in
-            sessions.newSession()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .stopAgent)) { _ in
-            sessions.stop()
+        .sheet(isPresented: $showDiagnostics) {
+            DiagnosticsPanelView(onClose: { showDiagnostics = false })
+                .frame(minWidth: 360, idealWidth: 520, minHeight: 420)
         }
     }
 }
@@ -166,7 +272,9 @@ private struct SidebarView: View {
             // the rows themselves provide the elevation and selection cues.
             .scrollContentBackground(.hidden)
             .background(Theme.bg)
-            sidebarFooter
+            // Tool destinations live in the conversation top bar now; keep
+            // the bottom edge free so the chat list gets the full height.
+            Color.clear.frame(height: 8)
         }
         .background(Theme.bg)
         // Selection IS the restore: picking a tagged row switches to that
@@ -543,12 +651,6 @@ private struct SidebarView: View {
 
         if sessions.workspaceURL != nil {
             Section {
-                HStack(spacing: 5) {
-                    workspaceAction("Status", icon: "circle.dashed", action: sessions.gitStatus)
-                    workspaceAction("Diff", icon: "square.split.2x1", action: sessions.gitDiff)
-                    workspaceAction("Undo", icon: "arrow.uturn.backward", action: sessions.undoLastCheckpoint)
-                    Spacer(minLength: 0)
-                }
                 if let output = sessions.gitOutput {
                     ScrollView {
                         Text(output)

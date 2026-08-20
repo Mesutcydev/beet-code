@@ -86,8 +86,9 @@ private struct SettingsCard<Content: View>: View {
 
             if let footer {
                 Text(footer)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(Theme.textSecondary)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -453,6 +454,14 @@ private struct AgentTab: View {
     var body: some View {
         TabScroll {
             SettingsCard(title: "Autonomy", icon: "shield.lefthalf.filled", footer: "Reads are always automatic. Every write shows a diff preview and asks first unless file edits are auto-approved. Auto-approving commands is a safe-command policy, not a shell bypass: only exact invocations of known read-only executables (swift, xcodebuild, ls, git status, rg, …) with arguments inside the workspace are admitted; shell operators, substitutions, redirections, backgrounding, and any path outside the workspace always require an approval card.") {
+                SettingRow(label: "Agent mode", value: settings.agentMode.help) {
+                    Picker("Agent mode", selection: $settings.agentMode) {
+                        ForEach(AgentMode.allCases) { mode in
+                            Label(mode.label, systemImage: mode.icon).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                }
                 SettingToggle(label: "Auto-approve file edits", isOn: $settings.autoApproveEdits)
                 SettingToggle(label: "Auto-approve safe commands", isOn: $settings.autoApproveCommands)
             }
@@ -724,6 +733,7 @@ private struct ProviderCard: View {
         case failed(String)
     }
     @State private var testState: TestState = .idle
+    @State private var saveMessage: String?
 
     private var hasKey: Bool { keyStore.hasKey(for: provider) }
     private var keyAvailableForUse: Bool {
@@ -806,20 +816,37 @@ private struct ProviderCard: View {
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                 Button("Save") {
-                    if !keyDraft.trimmingCharacters(in: .whitespaces).isEmpty {
-                        keyStore.save(key: keyDraft, for: provider)
+                    let draft = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let keyForRefresh: String?
+                    if !draft.isEmpty {
+                        guard keyStore.save(key: draft, for: provider) else {
+                            saveMessage = "Could not save this key to the Keychain. Try again or unlock Keychain access."
+                            return
+                        }
+                        keyForRefresh = draft
+                    } else {
+                        keyForRefresh = resolvedKey.isEmpty ? nil : resolvedKey
                     }
                     if provider == .custom { persistBaseURLDraft() }
                     persistModelDraft()
                     keyDraft = ""
+                    saveMessage = draft.isEmpty ? "Settings saved." : "API key saved securely."
                     testState = .idle
-                    // The provider's own live /models list is the original
-                    // source of truth — fetch it as soon as a key lands.
-                    if resolvedKey.isEmpty == false { refreshModels() }
+                    // Use the just-saved draft directly. A protected or
+                    // migrated Keychain item must not make a valid new key
+                    // disappear between Save and model discovery.
+                    if let keyForRefresh { refreshModels(apiKey: keyForRefresh) }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
                 .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty && modelUnchanged && baseURUnchanged)
+            }
+
+            if let saveMessage {
+                Label(saveMessage, systemImage: saveMessage.hasPrefix("Could") ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(saveMessage.hasPrefix("Could") ? Theme.danger : Theme.success)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // Model choice — stacked: the picker gets its own full-width row,
@@ -1010,10 +1037,10 @@ private struct ProviderCard: View {
         AppPreferencesStore.shared.save(preferences)
     }
 
-    private func refreshModels() {
+    private func refreshModels(apiKey: String? = nil) {
         refreshingModels = true
         modelListError = nil
-        let key = resolvedKey.isEmpty ? nil : resolvedKey
+        let key = apiKey ?? (resolvedKey.isEmpty ? nil : resolvedKey)
         Task {
             do {
                 let profiles = try await RemoteLLMClient.fetchModelProfiles(provider: provider, apiKey: key)
@@ -1028,11 +1055,14 @@ private struct ProviderCard: View {
                 }
             } catch {
                 await MainActor.run {
-                    liveProfiles = []
-                    liveModels = []
+                    // Keep the saved/manual model choices usable when a
+                    // provider does not implement `/models` or blocks it for
+                    // the account tier. Discovery is optional, credentials
+                    // are not.
                     refreshingModels = false
-                    modelListError = (error as? LocalizedError)?.errorDescription
+                    let detail = (error as? LocalizedError)?.errorDescription
                         ?? error.localizedDescription
+                    modelListError = "Model discovery unavailable — you can still enter a model id manually. (detail)"
                 }
             }
         }
@@ -1154,6 +1184,22 @@ private struct ProviderCard: View {
                     provider: provider, apiKey: key, model: model)
                 testState = .ok("Connected — answered as \(answered) (\(model))")
             } catch {
+                // A valid credential can still be paired with a stale or
+                // account-inaccessible model id. Probe the catalog once so
+                // the UI distinguishes “key works” from “choose another
+                // model” instead of rejecting both as an auth failure.
+                if let remoteError = error as? RemoteLLMError,
+                   case .badStatus(let code, _) = remoteError,
+                   (400..<500).contains(code), !key.isEmpty {
+                    if let profiles = try? await RemoteLLMClient.fetchModelProfiles(
+                        provider: provider, apiKey: key), !profiles.isEmpty {
+                        liveProfiles = profiles
+                        liveModels = profiles.map(\.model)
+                        AppPreferencesStore.shared.saveRemoteModelProfiles(profiles)
+                        testState = .ok("Key accepted. \(model) is unavailable for this account; choose one of the \(profiles.count) available models.")
+                        return
+                    }
+                }
                 testState = .failed((error as? LocalizedError)?.errorDescription
                                       ?? error.localizedDescription)
             }

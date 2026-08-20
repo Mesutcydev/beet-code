@@ -125,6 +125,12 @@ struct ModelSelectionPill: View {
 private struct ModelPickerPopover: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
+    private enum Source: String, CaseIterable, Identifiable {
+        case local, api
+        var id: String { rawValue }
+        var label: String { self == .local ? "Local models" : "API models" }
+    }
+    @State private var source: Source = .local
 
     private var installedModels: [CatalogModel] {
         // Chat models only — vision sidecars are never loadable here; the
@@ -138,14 +144,46 @@ private struct ModelPickerPopover: View {
         APIKeyStore.shared.configuredProviders.sorted { $0.displayName < $1.displayName }
     }
 
+    private var remoteModels: [RemoteModelProfile] {
+        let configured = Set(remoteProviders)
+        var profiles = AppPreferencesStore.shared.current.remoteModelProfiles.values
+            .filter { configured.contains($0.provider) }
+        for provider in remoteProviders {
+            guard !profiles.contains(where: { $0.provider == provider }) else { continue }
+            let model = AppPreferencesStore.shared.current.remoteModel[provider.rawValue]
+                ?? provider.defaultModel
+            guard !model.isEmpty else { continue }
+            profiles.append(RemoteModelProfile(
+                provider: provider, model: model,
+                supportsVision: provider.supportsVision, supportsTools: true))
+        }
+        return profiles.sorted {
+            if $0.provider.displayName != $1.provider.displayName {
+                return $0.provider.displayName < $1.provider.displayName
+            }
+            return $0.model.localizedStandardCompare($1.model) == .orderedAscending
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    localSection
-                    remoteSection
+                    Picker("Model source", selection: $source) {
+                        ForEach(Source.allCases) { source in
+                            Text(source.label).tag(source)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .padding(.bottom, 2)
+                    if source == .local {
+                        localSection
+                    } else {
+                        apiSection
+                    }
                 }
                 .padding(12)
             }
@@ -161,7 +199,7 @@ private struct ModelPickerPopover: View {
         HStack(spacing: 8) {
             Image(systemName: "cpu.fill")
                 .foregroundStyle(Theme.accent)
-            Text("Model")
+            Text(source == .local ? "Local model" : "API model")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
             Spacer()
@@ -259,17 +297,17 @@ private struct ModelPickerPopover: View {
         }
     }
 
-    // MARK: Remote providers
+    // MARK: API models
 
     @ViewBuilder
-    private var remoteSection: some View {
-        sectionLabel("Remote (BYOK)")
-        if remoteProviders.isEmpty {
+    private var apiSection: some View {
+        sectionLabel("Configured API models")
+        if remoteModels.isEmpty {
             HStack(spacing: 6) {
-                Text("No providers configured.")
+                Text("No API models configured yet.")
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondary)
-                Button("Add key…") {
+                Button("Add provider…") {
                     dismiss()
                     // The Settings scene can't be opened via Notification —
                     // use the system action that raises it.
@@ -281,22 +319,22 @@ private struct ModelPickerPopover: View {
             }
             .padding(.vertical, 2)
         } else {
-            ForEach(remoteProviders) { provider in
-                providerRow(provider)
+            ForEach(remoteModels) { profile in
+                apiModelRow(profile)
             }
         }
     }
 
-    private func providerRow(_ provider: LLMProvider) -> some View {
+    private func apiModelRow(_ profile: RemoteModelProfile) -> some View {
+        let provider = profile.provider
         let isActive = appState.isRemoteActive
             && appState.engine.activeRemoteEndpoint?.provider == provider
-        let modelID = AppPreferencesStore.shared.current.remoteModel[provider.rawValue]
-            ?? provider.defaultModel
+            && appState.engine.activeRemoteEndpoint?.model == profile.model
         return Button {
             dismiss()
             Task {
                 _ = await appState.activateRemote(endpoint: RemoteEndpoint(
-                    provider: provider, model: modelID))
+                    provider: provider, model: profile.model))
             }
         } label: {
             HStack(spacing: 8) {
@@ -305,11 +343,11 @@ private struct ModelPickerPopover: View {
                     .foregroundStyle(isActive ? Theme.success : Theme.textSecondary)
                     .frame(width: 16)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(provider.displayName)
+                    Text(profile.displayName ?? profile.model)
                         .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
-                    Text(modelID)
+                    Text("\(provider.displayName) · \(profile.model)")
                         .font(.system(size: 10.5).monospaced())
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
@@ -330,6 +368,7 @@ private struct ModelPickerPopover: View {
             .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
         }
         .buttonStyle(.plain)
+        .help("Use \(provider.displayName) / \(profile.model)")
     }
 
     // MARK: Footer actions
@@ -353,7 +392,8 @@ private struct ModelPickerPopover: View {
                 dismiss()
                 NotificationCenter.default.post(name: .openModelManager, object: nil)
             } label: {
-                Label("Model Manager…", systemImage: "square.and.arrow.down.on.square")
+                    Label(source == .local ? "Model Manager…" : "Manage API models…",
+                          systemImage: source == .local ? "square.and.arrow.down.on.square" : "key")
                     .font(.system(size: 12))
             }
             .buttonStyle(.borderless)

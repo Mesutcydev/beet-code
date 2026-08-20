@@ -8,6 +8,8 @@ final class SlashCommandTests: XCTestCase {
 
     func testParseKnownCommands() {
         XCTAssertEqual(SlashCommand.parse("/plan"), .plan)
+        XCTAssertEqual(SlashCommand.parse("/auto"), .auto)
+        XCTAssertEqual(SlashCommand.parse("/goal"), .goal)
         XCTAssertEqual(SlashCommand.parse("/undo"), .undo)
         XCTAssertEqual(SlashCommand.parse("/compact"), .compact)
         XCTAssertEqual(SlashCommand.parse("/help"), .help)

@@ -91,6 +91,10 @@ enum BrowserTools {
             return try await Task { @MainActor in
                 let controller = BrowserController.shared
                 let url = try controller.open(raw, filePolicy: .confined(context.workspace))
+                // Agent navigation may start before the docked panel exists.
+                // Reveal it so the user can see and continue using the same
+                // loaded page instead of believing the browser is broken.
+                NotificationCenter.default.post(name: .openBrowserPanel, object: nil)
                 if wait { await controller.waitForLoad() }
                 return "opened \(url.absoluteString)\n" + controller.pageInfo()
             }.value

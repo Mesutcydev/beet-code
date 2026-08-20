@@ -190,12 +190,13 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ value: String, service: String, account: String) {
+    @discardableResult
+    static func write(_ value: String, service: String, account: String) -> Bool {
         if Self.runningUnderXCTest {
             testLock.lock()
             defer { testLock.unlock() }
             testStore[testKey(service, account)] = value
-            return
+            return true
         }
         let data = Data(value.utf8)
         let base: [String: Any] = [
@@ -210,7 +211,9 @@ enum Keychain {
         let status = SecItemAdd(attributes as CFDictionary, nil)
         if status != errSecSuccess {
             Log.app.error("Keychain write failed: \(String(describing: status), privacy: .public)")
+            return false
         }
+        return true
     }
 
     static func delete(service: String, account: String) {

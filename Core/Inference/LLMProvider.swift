@@ -12,6 +12,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
     case alibabaTokenPlan
     case gemini
     case openRouter
+    case openCode
     case anthropic
     case custom
 
@@ -26,6 +27,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .alibabaTokenPlan: "Alibaba Token Plan"
         case .gemini: "Google Gemini"
         case .openRouter: "OpenRouter"
+        case .openCode: "OpenCode"
         case .anthropic: "Anthropic"
         case .custom: "Custom (OpenAI-compatible)"
         }
@@ -44,6 +46,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .alibaba: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")
         case .alibabaTokenPlan: URL(string: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1")
         case .openRouter: URL(string: "https://openrouter.ai/api/v1")
+        case .openCode: URL(string: "https://opencode.ai/zen/v1")
         case .custom: Self.configuredCustomBaseURL()
         case .gemini, .anthropic: nil
         }
@@ -91,7 +94,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
     var supportsVision: Bool {
         switch self {
         case .openAI, .gemini, .openRouter: true
-        case .deepSeek, .longCat, .alibaba, .alibabaTokenPlan, .anthropic, .custom: false
+        case .deepSeek, .longCat, .alibaba, .alibabaTokenPlan, .openCode, .anthropic, .custom: false
         }
     }
 
@@ -105,6 +108,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .alibabaTokenPlan: "qwen3.8-max"
         case .gemini: "gemini-3.7-flash"
         case .openRouter: "openrouter/auto"
+        case .openCode: "big-pickle"
         case .anthropic: "claude-sonnet-4-5"
         case .custom: ""  // user must type the model id served by their endpoint
         }
@@ -123,6 +127,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         case .alibabaTokenPlan: ["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro", "deepseek-v4-flash-0731", "glm-5.2"]
         case .gemini: ["gemini-3.7-flash", "gemini-2.5-flash", "gemini-2.5-pro"]
         case .openRouter: ["anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5", "openai/gpt-5"]
+        case .openCode: ["big-pickle", "grok-4.5", "minimax-m2.5-free", "glm-5.1"]
         case .anthropic: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5"]
         case .custom: []
         }
@@ -329,15 +334,19 @@ final class APIKeyStore: ObservableObject {
         return providers
     }
 
-    func save(key: String, for provider: LLMProvider) {
+    @discardableResult
+    func save(key: String, for provider: LLMProvider) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        Keychain.write(trimmed, service: provider.keychainService, account: "api-key")
+        guard !trimmed.isEmpty else { return false }
+        guard Keychain.write(trimmed, service: provider.keychainService, account: "api-key") else {
+            return false
+        }
         Self.cacheLock.lock()
         Self.keyCache[provider] = trimmed
         Self.cacheLock.unlock()
         Self.markConfiguredHint(for: provider)
         objectWillChange.send()
+        return true
     }
 
     func deleteKey(for provider: LLMProvider) {

@@ -301,9 +301,18 @@ private struct SidebarView: View {
     @State private var importStatus: String?
     @State private var hasAutoImported = false
     @State private var historySearch = ""
+    @State private var pinnedSessionIDs: Set<UUID> = []
 
     private enum HistoryTab {
         case sessions, imported
+    }
+
+    private enum TaskStatus: Equatable {
+        case running(String)
+        case review
+        case completed
+        case stopped
+        case idle
     }
 
     var body: some View {
@@ -807,6 +816,123 @@ private struct SidebarView: View {
         }
     }
 
+    private func taskStatus(for record: SessionRecord) -> TaskStatus {
+        if record.id == sessions.activeSessionID {
+            if sessions.isRunning {
+                return .running(phaseLabel(sessions.currentPhase))
+            }
+            if let finishReason = sessions.finishReason {
+                switch finishReason {
+                case .completed:
+                    return .completed
+                case .cancelled:
+                    return .stopped
+                case .declined, .maxTurnsReached, .engineError:
+                    return .review
+                }
+            }
+        }
+
+        if let verification = record.messages.reversed().first(where: {
+            $0.toolName == "build_diagnostics"
+        }), verificationFailed(verification.content) {
+            return .review
+        }
+        if let lastTool = record.messages.reversed().first(where: {
+            $0.role == .toolResult
+        }), lastTool.content.hasPrefix("error:") {
+            return .review
+        }
+        return record.messages.contains(where: { $0.role == .assistant }) ? .completed : .idle
+    }
+
+    private func verificationFailed(_ output: String) -> Bool {
+        output.hasPrefix("error:") || output.contains("exit status ")
+    }
+
+    private func phaseLabel(_ phase: AgentPhase) -> String {
+        switch phase {
+        case .planning, .awaitingPlanApproval: "Planning"
+        case .working: "Running"
+        case .awaitingApproval: "Needs approval"
+        case .awaitingQuestion: "Waiting for you"
+        case .verifying: "Verifying"
+        case .idle, .finished: "Running"
+        }
+    }
+
+    private func taskStatusTitle(_ status: TaskStatus) -> String? {
+        switch status {
+        case .running(let label): label
+        case .review: "Review"
+        case .stopped: "Stopped"
+        case .completed, .idle: nil
+        }
+    }
+
+    private func taskStatusIcon(_ status: TaskStatus) -> String {
+        switch status {
+        case .running: "circle.fill"
+        case .review: "exclamationmark.circle.fill"
+        case .stopped: "stop.circle.fill"
+        case .completed: "checkmark.circle.fill"
+        case .idle: "circle"
+        }
+    }
+
+    private func taskStatusColor(_ status: TaskStatus) -> Color {
+        switch status {
+        case .running: Theme.accent
+        case .review: Theme.warning
+        case .stopped: Theme.textTertiary
+        case .completed: Theme.success
+        case .idle: Theme.textTertiary
+        }
+    }
+
+    private func statusBadge(_ status: TaskStatus) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: taskStatusIcon(status))
+                .font(.system(size: 7, weight: .bold))
+            if let title = taskStatusTitle(status) {
+                Text(title)
+                    .lineLimit(1)
+            }
+        }
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(taskStatusColor(status))
+        .accessibilityLabel(taskStatusTitle(status) ?? "Completed")
+    }
+
+    private func workspacePathLabel(_ path: String) -> String {
+        guard !path.isEmpty else { return "No workspace" }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "Home" }
+        return path
+    }
+
+    private func togglePinned(_ record: SessionRecord) {
+        var updated = pinnedSessionIDs
+        if updated.contains(record.id) {
+            updated.remove(record.id)
+        } else {
+            updated.insert(record.id)
+        }
+        var preferences = AppPreferencesStore.shared.current
+        preferences.pinnedSessionIDs = updated.sorted { $0.uuidString < $1.uuidString }
+        AppPreferencesStore.shared.save(preferences)
+        pinnedSessionIDs = updated
+    }
+
+    private func sortedTasks(_ records: [SessionRecord]) -> [SessionRecord] {
+        records.sorted {
+            let lhsPinned = pinnedSessionIDs.contains($0.id)
+            let rhsPinned = pinnedSessionIDs.contains($1.id)
+            if lhsPinned != rhsPinned { return lhsPinned }
+            return $0.updatedAt > $1.updatedAt
+        }
+    }
+
     // MARK: Imported history
 
     @ViewBuilder
@@ -1071,7 +1197,7 @@ private struct SidebarView: View {
         for record in records { byPath[record.workspacePath, default: []].append(record) }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return byPath.map { path, group in
-            let sorted = group.sorted { $0.updatedAt > $1.updatedAt }
+            let sorted = sortedTasks(group)
             let unknown = path.isEmpty || path == home
             return ProjectGroup(
                 key: path,
@@ -1087,9 +1213,7 @@ private struct SidebarView: View {
         SessionSource.allCases
             .filter { $0 != .app }
             .compactMap { source in
-                let records = records
-                    .filter { $0.source == source }
-                    .sorted { $0.updatedAt > $1.updatedAt }
+                let records = sortedTasks(records.filter { $0.source == source })
                 guard !records.isEmpty else { return nil }
                 return ImportGroup(source: source, records: records)
             }
@@ -1113,6 +1237,8 @@ private struct SidebarView: View {
     /// line (used to badge the import source).
     private func sessionRow(_ record: SessionRecord, subtitle: String?) -> some View {
         let selected = selectedSessionID == record.id
+        let pinned = pinnedSessionIDs.contains(record.id)
+        let status = taskStatus(for: record)
         return HStack(spacing: 10) {
             Image(systemName: record.source.systemImage)
                 .font(.system(size: 11, weight: .semibold))
@@ -1126,6 +1252,11 @@ private struct SidebarView: View {
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(2)
                     .truncationMode(.tail)
+                Text(workspacePathLabel(record.workspacePath))
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 HStack(spacing: 5) {
                     if let subtitle {
                         Text(subtitle)
@@ -1146,6 +1277,17 @@ private struct SidebarView: View {
                 .foregroundStyle(Theme.textTertiary)
             }
             Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: 4) {
+                if pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .accessibilityLabel("Pinned")
+                }
+                if taskStatusTitle(status) != nil {
+                    statusBadge(status)
+                }
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -1160,6 +1302,10 @@ private struct SidebarView: View {
         // Every row can be exported on its own — the rail button covers the
         // active chat, the context menu covers everything else.
         .contextMenu {
+            Button(pinned ? "Unpin task" : "Pin task") {
+                togglePinned(record)
+            }
+            Divider()
             Button("Export as Markdown…") { export(record, format: .markdown) }
             Button("Export as JSON…") { export(record, format: .json) }
         }
@@ -1172,6 +1318,8 @@ private struct SidebarView: View {
         .help(SessionStore.shared.validateWorkspaceBinding(record)
               ? "Restore this session"
               : "Project folder missing: \(record.workspacePath)")
+        .accessibilityValue(
+            "\(pinned ? "Pinned. " : "")\(taskStatusTitle(status) ?? "Completed"). Workspace: \(workspacePathLabel(record.workspacePath))")
     }
 
     // MARK: Import
@@ -1230,6 +1378,7 @@ private struct SidebarView: View {
             Array(SessionStore.shared.loadAll().prefix(400))
         }.value
         needsKeychainUnlock = SessionCrypto.needsInteractiveUnlock
+        pinnedSessionIDs = Set(AppPreferencesStore.shared.current.pinnedSessionIDs)
         recentSessions = loaded
         // Keep the highlight honest: the controller owns the active session;
         // a restore (or a run) elsewhere should show up here too.

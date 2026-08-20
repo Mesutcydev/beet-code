@@ -186,7 +186,9 @@ private struct ModelPickerPopover: View {
                 apiProtocol: provider.apiProtocol,
                 baseURL: provider.baseURL.absoluteString))
         }
-        return profiles.sorted {
+        return profiles
+            .map { $0.applying(AppPreferencesStore.shared.remoteModelOverride(endpoint: $0.endpoint())) }
+            .sorted {
             if $0.displayProviderName != $1.displayProviderName {
                 return $0.displayProviderName < $1.displayProviderName
             }
@@ -382,6 +384,10 @@ private struct ModelPickerPopover: View {
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    Text(profileMetadataSummary(profile))
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
                 }
                 Spacer()
                 if isActive {
@@ -398,7 +404,18 @@ private struct ModelPickerPopover: View {
             .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help("Use \(provider.displayName) / \(profile.model)")
+        .help("Use \(profile.displayProviderName) / \(profile.model)")
+    }
+
+    private func profileMetadataSummary(_ profile: RemoteModelProfile) -> String {
+        var parts: [String] = []
+        if let context = profile.contextWindow {
+            parts.append("\(context.formatted()) context")
+        }
+        if profile.supportsTools == true { parts.append("tools") }
+        if profile.supportsReasoning == true { parts.append("reasoning") }
+        if profile.supportsVision == true { parts.append("vision") }
+        return parts.isEmpty ? "Capabilities unknown · configurable in Settings" : parts.joined(separator: " · ")
     }
 
     // MARK: Footer actions

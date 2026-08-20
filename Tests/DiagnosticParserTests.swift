@@ -62,7 +62,7 @@ final class DiagnosticParserTests: XCTestCase {
     }
 
     func testRenderEmpty() {
-        XCTAssertEqual(DiagnosticParser.render([]), "Build completed with no diagnostics.")
+        XCTAssertEqual(DiagnosticParser.render([]), "Checks completed with no compiler diagnostics.")
     }
 
     func testXcodebuildFormat() {

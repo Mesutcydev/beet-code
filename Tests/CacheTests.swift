@@ -195,7 +195,7 @@ final class CacheTests: XCTestCase {
             objective: "refactor auth",
             changedFiles: ["wrote Auth.swift (12 lines)"],
             unresolvedDiagnostics: [],
-            completedChecks: ["Build completed with no diagnostics."],
+            completedChecks: ["Checks completed with no compiler diagnostics."],
             lastUserInstruction: "go",
             createdAt: Date(),
             updatedAt: Date())

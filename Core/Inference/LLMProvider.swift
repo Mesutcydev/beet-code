@@ -438,6 +438,43 @@ struct RemoteModelOverride: Codable, Sendable, Equatable {
 
 /// Keychain-backed storage for provider API keys. Keys are credentials —
 /// they never touch UserDefaults or the session files.
+enum CredentialNormalizer {
+
+    /// Accept the common copy/paste forms users get from curl examples and
+    /// provider dashboards, while leaving the credential value itself
+    /// untouched. This is deliberately local cleanup — it never guesses a
+    /// provider or transforms the key beyond an explicit wrapper/prefix.
+    static func normalize(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.count >= 2,
+           let first = value.first,
+           let last = value.last,
+           (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+            value.removeFirst()
+            value.removeLast()
+            value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let prefixes = ["Bearer ", "api-key:", "api_key:", "api-key=", "api_key=", "key:", "key="]
+        for prefix in prefixes where value.count >= prefix.count {
+            let prefixEnd = value.index(value.startIndex, offsetBy: prefix.count)
+            guard value[..<prefixEnd].caseInsensitiveCompare(prefix) == .orderedSame else {
+                continue
+            }
+            value = String(value[prefixEnd...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            break
+        }
+        if value.count >= 2,
+           let first = value.first,
+           let last = value.last,
+           (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+            value.removeFirst()
+            value.removeLast()
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 @MainActor
 final class APIKeyStore: ObservableObject {
 
@@ -577,7 +614,7 @@ final class APIKeyStore: ObservableObject {
 
     @discardableResult
     func save(key: String, for provider: LLMProvider) -> Bool {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = CredentialNormalizer.normalize(key)
         guard !trimmed.isEmpty else { return false }
         guard Keychain.write(trimmed, service: provider.keychainService, account: "api-key") else {
             return false
@@ -592,7 +629,7 @@ final class APIKeyStore: ObservableObject {
 
     @discardableResult
     func save(key: String, forProviderID providerID: String) -> Bool {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = CredentialNormalizer.normalize(key)
         let id = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !id.isEmpty else { return false }
         guard Keychain.write(

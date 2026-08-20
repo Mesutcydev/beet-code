@@ -67,7 +67,7 @@ enum DiagnosticParser {
     /// Renders diagnostics for the agent, bounded and grouped by severity.
     static func render(_ diagnostics: [Diagnostic], maxLines: Int = 200) -> String {
         guard !diagnostics.isEmpty else {
-            return "Build completed with no diagnostics."
+            return "Checks completed with no compiler diagnostics."
         }
         let errors = diagnostics.filter { $0.severity == .error }
         let warnings = diagnostics.filter { $0.severity == .warning }
@@ -91,18 +91,18 @@ enum DiagnosticParser {
 /// commands.
 struct BuildDiagnosticsTool: AgentTool, CommandExecuting {
     let name = "build_diagnostics"
-    let summary = "Build the project and return parsed compiler diagnostics"
+    let summary = "Run the detected project checks and return parsed diagnostics"
     let risk = ToolRisk.execute
 
     let schemaText = """
         {"type":"object","properties":{
-          "command":{"type":"string","description":"Build command (default \"swift build\"; \"swift test\" and \"xcodebuild ...\" also work)"},
+          "command":{"type":"string","description":"Optional check command. The default detects the project and runs its build or tests."},
           "path":{"type":"string","description":"Optional project directory (default: workspace root)"}
         },"required":[]}
         """
 
     func preview(_ call: ParsedToolCall, in context: ToolContext) -> ApprovalPreview {
-        let command = call.string("command") ?? "auto (xcodebuild or swift build)"
+        let command = call.string("command") ?? "auto (detected build/test checks)"
         return .command(command)
     }
 
@@ -164,24 +164,68 @@ struct BuildDiagnosticsTool: AgentTool, CommandExecuting {
         return sections.joined(separator: "\n")
     }
 
-    /// Pick a build command the agent can actually succeed with: Xcode
-    /// projects use xcodebuild (macOS destination), SPM uses swift build.
+    /// Pick the safest useful check for the project. A test action includes a
+    /// build, so it is preferred when test sources are present; otherwise we
+    /// avoid failing a perfectly valid app that has no test target.
     static func defaultCommand(in directory: URL) -> String {
         let fm = FileManager.default
         let kids = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        let action = hasTestSources(in: directory) ? "test" : "build"
+        if let workspace = kids.first(where: { $0.pathExtension == "xcworkspace" }) {
+            let name = workspace.deletingPathExtension().lastPathComponent
+            return "xcodebuild -workspace \(shellQuote(name + ".xcworkspace")) -scheme \(shellQuote(name)) -destination 'platform=macOS' \(action)"
+        }
         if let proj = kids.first(where: { $0.pathExtension == "xcodeproj" }) {
             let name = proj.deletingPathExtension().lastPathComponent
-            return "xcodebuild -project \(name).xcodeproj -scheme \(name) -destination 'platform=macOS' build"
+            return "xcodebuild -project \(shellQuote(name + ".xcodeproj")) -scheme \(shellQuote(name)) -destination 'platform=macOS' \(action)"
         }
         let yml = directory.appendingPathComponent("project.yml")
         if fm.fileExists(atPath: yml.path) {
             let product = projectName(fromYML: yml) ?? "App"
-            return "xcodegen generate && xcodebuild -project \(product).xcodeproj -scheme \(product) -destination 'platform=macOS' build"
+            return "xcodegen generate && xcodebuild -project \(shellQuote(product + ".xcodeproj")) -scheme \(shellQuote(product)) -destination 'platform=macOS' \(action)"
         }
         if fm.fileExists(atPath: directory.appendingPathComponent("Package.swift").path) {
-            return "swift build"
+            return hasTestSources(in: directory) ? "swift test" : "swift build"
         }
         return "swift build"
+    }
+
+    /// Test targets are deliberately detected from the source tree rather
+    /// than inferred from the project name. This keeps generated apps without
+    /// tests buildable while making SPM/Xcode test suites part of verification
+    /// as soon as the user adds them.
+    private static func hasTestSources(in directory: URL) -> Bool {
+        let fm = FileManager.default
+        let directTestDirectories = ["Tests", "Test", "BeetCodeTests"]
+            .map { directory.appendingPathComponent($0) }
+            .contains { url in
+                var isDirectory: ObjCBool = false
+                return fm.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+            }
+        if directTestDirectories { return true }
+
+        guard let enumerator = fm.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        else { return false }
+
+        for case let url as URL in enumerator {
+            let path = url.path
+            if path.contains("/.build/") || path.contains("/DerivedData/") || path.contains("/node_modules/") {
+                enumerator.skipDescendants()
+                continue
+            }
+            if url.pathExtension == "swift",
+               url.deletingPathExtension().lastPathComponent.hasSuffix("Tests") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     static func projectName(fromYML url: URL) -> String? {

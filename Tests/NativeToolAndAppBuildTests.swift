@@ -99,6 +99,26 @@ final class NativeToolAndAppBuildTests: XCTestCase {
         XCTAssertEqual(BuildDiagnosticsTool.defaultCommand(in: root), "swift build")
     }
 
+    func testBuildDiagnosticsPicksSwiftTestWhenPackageHasTests() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beet-spm-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Tests/DemoTests"), withIntermediateDirectories: true)
+        try "// swift-tools-version: 6.0".write(to: root.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(BuildDiagnosticsTool.defaultCommand(in: root), "swift test")
+    }
+
+    func testBuildDiagnosticsRunsXcodeTestsWhenTestSourcesExist() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beet-build-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Demo.xcodeproj"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("BeetCodeTests"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let command = BuildDiagnosticsTool.defaultCommand(in: root)
+        XCTAssertTrue(command.hasSuffix(" test"), command)
+        XCTAssertTrue(command.contains("-project 'Demo.xcodeproj'"), command)
+    }
+
     func testCreateMacAppSanitizesProductName() {
         XCTAssertEqual(CreateMacAppTool.sanitizeProduct("my notes"), "MyNotes")
         XCTAssertEqual(CreateMacAppTool.sanitizeProduct("Hello-World!!"), "HelloWorld")

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00D027F99937611CFB685D31 /* ProjectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DEBBB1CB517064E81F662B2 /* ProjectPolicy.swift */; };
 		0178DD0C66492DB8531B7AF1 /* VisionTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4C085A3FEFE2149E2C7765 /* VisionTool.swift */; };
 		01BA8CBF915A9DC895D16894 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = F74B649F2AFDA0B380E6AF22 /* Theme.swift */; };
 		02CB2A897F1D963EE7DBF9F4 /* MemoryTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5575D39B3E7548A54465A455 /* MemoryTools.swift */; };
@@ -195,6 +196,7 @@
 		837728FDBDC40F986CBD4112 /* GGUFMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF5A58CDEE48304EC64BBB55 /* GGUFMetadata.swift */; };
 		843ECF1D72352AACB100E2CD /* VisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D98311A3F349AD7031E7103 /* VisionTests.swift */; };
 		85238E6AADB94B751F54CF59 /* AgentLoop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A3817060C60D11097CEA941 /* AgentLoop.swift */; };
+		855FFC0DB5047A04E62C399E /* ProjectPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DEBBB1CB517064E81F662B2 /* ProjectPolicy.swift */; };
 		86FA322D66A290FEDFC903CA /* SecurityCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DBB9146AEB40BE09987251D /* SecurityCore.swift */; };
 		8712E00F0A7287BC823719CE /* SwiftLanguageAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1B391DCFA1FB07BD0B060D /* SwiftLanguageAdapter.swift */; };
 		88CC64877E93A43E168A9239 /* CacheBudgetGovernor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29E4455372C7FF6B27B41E31 /* CacheBudgetGovernor.swift */; };
@@ -484,6 +486,7 @@
 		8B1E3EE5D05479F2A86CA1FF /* LLMEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMEngine.swift; sourceTree = "<group>"; };
 		8BFDBD22F5ADE93AC6B8F82E /* GitIntelligence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitIntelligence.swift; sourceTree = "<group>"; };
 		8CB5D69619466776AF200242 /* SmartDownloaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartDownloaderTests.swift; sourceTree = "<group>"; };
+		8DEBBB1CB517064E81F662B2 /* ProjectPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPolicy.swift; sourceTree = "<group>"; };
 		8E0186FAC54785D5A02581D9 /* ComposerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerStore.swift; sourceTree = "<group>"; };
 		8F7360FCA1A3DCDA76DD8707 /* ImpactAnalyzerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImpactAnalyzerTests.swift; sourceTree = "<group>"; };
 		8FCFC0EF354710AAD4F287B4 /* LFJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LFJSON.swift; sourceTree = "<group>"; };
@@ -928,6 +931,7 @@
 				5575D39B3E7548A54465A455 /* MemoryTools.swift */,
 				F9A91AD09E77D66843F2DFCE /* PermissionGate.swift */,
 				31DFB00DF727B43CD782572C /* ProjectInstructions.swift */,
+				8DEBBB1CB517064E81F662B2 /* ProjectPolicy.swift */,
 				863AFF1B9C808048112812F9 /* PromptBuilder.swift */,
 				AA2FD0385BF038FD7EE8D7AC /* RepoIndex.swift */,
 				C0DB9230DFDEF685E02E91A9 /* SlashCommand.swift */,
@@ -1406,6 +1410,7 @@
 				7BC9DE1DDD41A9BAE50EC3A9 /* PermissionGate.swift in Sources */,
 				EF76474B0979D07A65B37F0E /* ProjectCapsule.swift in Sources */,
 				DBEEB75B872D8A736A2EBD20 /* ProjectInstructions.swift in Sources */,
+				00D027F99937611CFB685D31 /* ProjectPolicy.swift in Sources */,
 				70612771CE048029757B3335 /* PromptBuilder.swift in Sources */,
 				77E7722ECF05CDE13036C731 /* RemoteAccessView.swift in Sources */,
 				4052FE866E84742E6A41FCAB /* RemoteLLMClient.swift in Sources */,
@@ -1548,6 +1553,7 @@
 				2DD132DAAAABE2BA08055D77 /* PermissionGate.swift in Sources */,
 				DEC943735CA73CFBADA2340F /* ProjectCapsule.swift in Sources */,
 				99149E12410A69F8BAB391A3 /* ProjectInstructions.swift in Sources */,
+				855FFC0DB5047A04E62C399E /* ProjectPolicy.swift in Sources */,
 				081397CF3ECBAF3031BD06B9 /* PromptBuilder.swift in Sources */,
 				4B1577CA5E756BFC1624D674 /* RemoteLLMClient.swift in Sources */,
 				BF4566880D587C84CBC2ADF2 /* RemoteLLMEngine.swift in Sources */,

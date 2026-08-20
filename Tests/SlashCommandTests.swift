@@ -133,3 +133,76 @@ final class ProjectInstructionsTests: XCTestCase {
         XCTAssertEqual(loaded?.text, "legacy cursor rules")
     }
 }
+
+final class ProjectPolicyTests: XCTestCase {
+
+    var tempRoot: URL!
+
+    override func setUp() {
+        tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beet-policy-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: tempRoot)
+    }
+
+    func testLoadsJSONCPreferencesWithoutCredentials() throws {
+        let text = """
+        {
+          // Shared project preferences; secrets stay in Keychain.
+          "version": 1,
+          "agent": "build",
+          "plan": true,
+          "verifyAfterEdits": true,
+          "contextPaths": ["Sources", "Tests",],
+          "deniedTools": ["computer_*"],
+          "permissions": [
+            {"action": "shell", "resource": "rm *", "effect": "deny"},
+          ],
+        }
+        """
+        try text.write(to: tempRoot.appendingPathComponent(".beetcode.jsonc"), atomically: true, encoding: .utf8)
+
+        let policy = try XCTUnwrap(ProjectPolicy.load(workspaceRoot: tempRoot))
+        XCTAssertEqual(policy.agent, "build")
+        XCTAssertTrue(policy.plan == true)
+        XCTAssertTrue(policy.verifyAfterEdits == true)
+        XCTAssertTrue(policy.includesTool("read_file"))
+        XCTAssertFalse(policy.includesTool("computer_click"))
+        XCTAssertEqual(policy.openCodePermissions.effect(action: "shell", resource: "rm -rf /"), .deny)
+        XCTAssertTrue(policy.promptSection.contains("Keychain"))
+    }
+
+    func testAllowedToolsAreAnAllowListAndDeniedToolsWin() {
+        let policy = ProjectPolicy(
+            allowedTools: ["read_*", "build_diagnostics"],
+            deniedTools: ["read_file"])
+        XCTAssertFalse(policy.includesTool("read_file"))
+        XCTAssertTrue(policy.includesTool("read_directory"))
+        XCTAssertTrue(policy.includesTool("build_diagnostics"))
+        XCTAssertFalse(policy.includesTool("run_command"))
+    }
+
+    func testNormalJSONTakesPrecedenceOverJSONC() throws {
+        try #"{"agent":"normal"}"#.write(
+            to: tempRoot.appendingPathComponent(".beetcode.json"),
+            atomically: true,
+            encoding: .utf8)
+        try #"{"agent":"jsonc"}"#.write(
+            to: tempRoot.appendingPathComponent(".beetcode.jsonc"),
+            atomically: true,
+            encoding: .utf8)
+        XCTAssertEqual(ProjectPolicy.load(workspaceRoot: tempRoot)?.agent, "normal")
+    }
+
+    func testPromptBuilderIncludesPolicySection() {
+        let prompt = PromptBuilder.systemPrompt(
+            tools: [],
+            workspace: Workspace(root: tempRoot),
+            projectPolicy: "Preferred agent: build")
+        XCTAssertTrue(prompt.contains("# Project policy"))
+        XCTAssertTrue(prompt.contains("Preferred agent: build"))
+    }
+}

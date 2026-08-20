@@ -657,6 +657,26 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(finish, .declined("The plan was not approved."))
         XCTAssertTrue(collector.toolCalls().isEmpty)
     }
+
+    func testProjectPolicyExplicitlyDisablesUiDefaults() async throws {
+        workspace!.write(
+            #"{"plan":false,"goal":false,"verifyAfterEdits":false}"#,
+            to: ".beetcode.json")
+        engine.enqueue(.text("Done."))
+        var config = AgentLoop.Configuration()
+        config.planMode = true
+        config.goalMode = true
+        config.verifyAfterEdits = true
+
+        let collector = await runToCompletion(makeLoop(config: config))
+
+        XCTAssertEqual(collector.finish, .completed("Done."))
+        XCTAssertFalse(collector.all.contains { event in
+            if case .planProposed = event { return true }
+            return false
+        }, "an explicit project policy false must turn off the UI plan default")
+    }
+
     func testPlanModeRevisionFeedsBackAndReproposes() async throws {
         engine.enqueue(texts: [
             "Plan: first idea.",

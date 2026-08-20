@@ -82,6 +82,13 @@ final class RemoteLLMClientTests: XCTestCase {
         XCTAssertFalse(LLMProvider.alibabaTokenPlan.supportsVision)
     }
 
+    func testCredentialNormalizerAcceptsCopiedHeaderForms() {
+        XCTAssertEqual(CredentialNormalizer.normalize("  Bearer sk-live-value  "), "sk-live-value")
+        XCTAssertEqual(CredentialNormalizer.normalize("api_key=ak_live-value"), "ak_live-value")
+        XCTAssertEqual(CredentialNormalizer.normalize("\"sk-quoted-value\""), "sk-quoted-value")
+        XCTAssertEqual(CredentialNormalizer.normalize("plain-key"), "plain-key")
+    }
+
     @MainActor
     func testAPIKeyStoreRoundTrip() {
         let store = APIKeyStore.shared

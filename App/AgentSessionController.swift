@@ -162,7 +162,9 @@ final class AgentSessionController: ObservableObject {
         let checkpointingEnabled = settings.checkpointingEnabled
         let showReasoning = settings.showReasoning
         let catalog = openCodeCatalogHandler()
-        let selectedAgent = catalog.agent(named: selectedOpenCodeAgentName)
+        let projectPolicy = ProjectPolicy.load(workspaceRoot: workspace)
+        let preferredAgentName = projectPolicy?.agent ?? selectedOpenCodeAgentName
+        let selectedAgent = catalog.agent(named: preferredAgentName)
             ?? catalog.agent(named: "build")
         let planMode = settings.planMode || selectedAgent?.name.caseInsensitiveCompare("plan") == .orderedSame
         let goalMode = settings.agentMode == .goal

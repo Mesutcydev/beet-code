@@ -23,6 +23,35 @@ struct AppPreferences: Codable, Sendable, Equatable {
     /// Last provider metadata observed from a live `/models` catalog. This is
     /// cacheable, non-secret data and lets the composer stay honest offline.
     var remoteModelProfiles: [String: RemoteModelProfile] = [:]
+    /// Tasks the user pinned in the sidebar. This is intentionally an id list
+    /// rather than a copy of session data, so deleting a chat cannot leave a
+    /// second stale task record behind.
+    var pinnedSessionIDs: [UUID] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, lastWorkspacePath, workspaceBookmarkData, lastModelID,
+             lastSessionID, autoResumeDownloads, remoteModel, customBaseURL,
+             remoteModelOverrides, remoteModelProfiles, pinnedSessionIDs
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        lastWorkspacePath = try container.decodeIfPresent(String.self, forKey: .lastWorkspacePath)
+        workspaceBookmarkData = try container.decodeIfPresent(Data.self, forKey: .workspaceBookmarkData)
+        lastModelID = try container.decodeIfPresent(String.self, forKey: .lastModelID)
+        lastSessionID = try container.decodeIfPresent(UUID.self, forKey: .lastSessionID)
+        autoResumeDownloads = try container.decodeIfPresent(Bool.self, forKey: .autoResumeDownloads) ?? false
+        remoteModel = try container.decodeIfPresent([String: String].self, forKey: .remoteModel) ?? [:]
+        customBaseURL = try container.decodeIfPresent(String.self, forKey: .customBaseURL)
+        remoteModelOverrides = try container.decodeIfPresent(
+            [String: RemoteModelOverride].self, forKey: .remoteModelOverrides) ?? [:]
+        remoteModelProfiles = try container.decodeIfPresent(
+            [String: RemoteModelProfile].self, forKey: .remoteModelProfiles) ?? [:]
+        pinnedSessionIDs = try container.decodeIfPresent([UUID].self, forKey: .pinnedSessionIDs) ?? []
+    }
 }
 
 /// JSON-file-backed preferences under Application Support/BeetCode.
@@ -87,6 +116,24 @@ final class AppPreferencesStore: @unchecked Sendable {
     func saveRemoteModelOverride(_ override: RemoteModelOverride?, provider: LLMProvider, model: String) {
         var preferences = current
         let key = remoteModelKey(provider: provider, model: model)
+        saveRemoteModelOverride(override, key: key, preferences: &preferences)
+    }
+
+    /// Saves an override for the exact endpoint identity. OpenCode and other
+    /// compatible gateways may use the same model id behind different
+    /// provider ids, so a provider-only key would apply the wrong capabilities
+    /// to one of them.
+    func saveRemoteModelOverride(_ override: RemoteModelOverride?, endpoint: RemoteEndpoint) {
+        var preferences = current
+        let key = remoteModelKey(endpoint: endpoint)
+        saveRemoteModelOverride(override, key: key, preferences: &preferences)
+    }
+
+    private func saveRemoteModelOverride(
+        _ override: RemoteModelOverride?,
+        key: String,
+        preferences: inout AppPreferences
+    ) {
         if let override, !override.isEmpty {
             preferences.remoteModelOverrides[key] = override
         } else {

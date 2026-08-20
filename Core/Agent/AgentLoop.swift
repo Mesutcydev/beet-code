@@ -78,7 +78,7 @@ actor AgentLoop {
     /// False until the first plan is approved: plan mode gates every reply
     /// (including revisions) until then.
     private var planApproved = false
-    /// True when the most recent verification build produced failures — used
+    /// True when the most recent verification checks produced failures — used
     private var lastVerificationFailed = false
 
     private func setPhase(_ newPhase: AgentPhase) {
@@ -107,36 +107,57 @@ actor AgentLoop {
         self.memory = memory
         self.taskHint = taskHint
         self.hooks = hooks ?? HookRunner.load(workspaceRoot: workspace.root)
+        let projectPolicy = ProjectPolicy.load(workspaceRoot: workspace.root)
+        var effectiveConfiguration = configuration
+        if let plan = projectPolicy?.plan { effectiveConfiguration.planMode = plan }
+        if let goal = projectPolicy?.goal { effectiveConfiguration.goalMode = goal }
+        if let verifyAfterEdits = projectPolicy?.verifyAfterEdits {
+            effectiveConfiguration.verifyAfterEdits = verifyAfterEdits
+        }
         // Control tools are part of the prompt and the executor's registry,
         // but the loop intercepts them before execution ever happens.
-        var allTools = tools + [ControlTools.askUser, ControlTools.attemptCompletion]
-        if configuration.allowSubagents {
+        var availableTools = tools
+        if let projectPolicy, projectPolicy.hasToolFilter {
+            availableTools = availableTools.filter { projectPolicy.includesTool($0.name) }
+        }
+        var allTools = availableTools + [ControlTools.askUser, ControlTools.attemptCompletion]
+        if effectiveConfiguration.allowSubagents,
+           projectPolicy?.includesTool(ControlTools.task.name) ?? true {
             allTools.append(ControlTools.task)
         }
-        if memory != nil, configuration.memoryMode != .off {
-            allTools += [MemoryAddTool(), MemoryDeleteTool()]
+        if memory != nil, effectiveConfiguration.memoryMode != .off {
+            if projectPolicy?.includesTool("memory_add") ?? true {
+                allTools.append(MemoryAddTool())
+            }
+            if projectPolicy?.includesTool("memory_delete") ?? true {
+                allTools.append(MemoryDeleteTool())
+            }
         }
         let context = ToolContext(workspace: workspace)
         context.memory = memory
         self.executor = ToolExecutor(tools: allTools, context: context)
-        self.permissionGate = permissions
+        var effectivePermissions = permissions
+        effectivePermissions.openCodePermissions = permissions.openCodePermissions.merged(
+            with: projectPolicy?.openCodePermissions ?? .empty)
+        self.permissionGate = effectivePermissions
         self.checkpointer = GitCheckpointer(workspace: workspace)
-        self.configuration = configuration
+        self.configuration = effectiveConfiguration
         self.commandPolicy = commandPolicy
         let memorySection = memory?.contextSection(
-            mode: configuration.memoryMode,
+            mode: effectiveConfiguration.memoryMode,
             taskHint: taskHint)
         let projectInstructions = ProjectInstructions.section(workspaceRoot: workspace.root)
         let historySection = WorkspaceHistory.section(workspacePath: workspace.root.path)
         self.systemPrompt = PromptBuilder.systemPrompt(
             tools: allTools, workspace: workspace, repoIndex: repoIndex,
             memorySection: memorySection, projectInstructions: projectInstructions,
+            projectPolicy: projectPolicy?.promptSection,
             workspaceHistory: historySection,
-            agentPrompt: configuration.agentPrompt,
-            planMode: configuration.planMode,
-            goalMode: configuration.goalMode,
-            contextWindowTokens: configuration.contextWindowTokens,
-            responseReserveTokens: configuration.maxTokensPerTurn)
+            agentPrompt: effectiveConfiguration.agentPrompt,
+            planMode: effectiveConfiguration.planMode,
+            goalMode: effectiveConfiguration.goalMode,
+            contextWindowTokens: effectiveConfiguration.contextWindowTokens,
+            responseReserveTokens: effectiveConfiguration.maxTokensPerTurn)
         (engine as? any NativeToolConfigurable)?.configureNativeTools(
             allTools.map { NativeToolSpec(tool: $0) })
         if let seed = seedRecord {
@@ -478,7 +499,7 @@ actor AgentLoop {
                         record.messages.append(
                             SessionMessage(role: .assistant, content: visible, toolName: nil, timestamp: Date()))
                         history.append(ChatTurn(role: .assistant, content: visible))
-                        let notice = "error: the task looks complete, but the verification build is still failing. "
+                        let notice = "error: the task looks complete, but the verification checks are still failing. "
                             + "Address the diagnostics before declaring success."
                         record.messages.append(
                             SessionMessage(role: .toolResult, content: notice, toolName: "verification", timestamp: Date()))
@@ -525,7 +546,7 @@ actor AgentLoop {
                     // a completion claim while the last build still fails is
                     // refused — the diagnostics are fed back instead.
                     if configuration.verifyAfterEdits, lastVerificationFailed {
-                        let notice = "error: completion claimed, but the verification build is still failing. "
+                        let notice = "error: completion claimed, but the verification checks are still failing. "
                             + "Address the diagnostics from the previous build before completing."
                         record.messages.append(
                             SessionMessage(role: .toolResult, content: notice, toolName: "verification", timestamp: Date()))
@@ -562,13 +583,16 @@ actor AgentLoop {
                 }
                 if call.name == "task" {
                     let prompt = call.string("prompt") ?? ""
-                    let invocation = ToolInvocation(call: call, summary: "Subagent: \(prompt.prefix(80))")
+                    let role = SubagentRole.resolve(call.string("role") ?? call.string("agent"))
+                    let invocation = ToolInvocation(
+                        call: call,
+                        summary: "\(role.displayName) subagent: \(prompt.prefix(72))")
                     eventContinuation?.yield(.toolCallStarted(invocation))
                     let observation: String
                     if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         observation = "error: task requires a prompt"
                     } else {
-                        observation = await runSubagent(prompt: prompt)
+                        observation = await runSubagent(prompt: prompt, role: role)
                     }
                     if cancelled { finish(.cancelled); return }
                     eventContinuation?.yield(.toolCallFinished(
@@ -672,7 +696,7 @@ actor AgentLoop {
                     isMutation(risk: risk, call: call),
                     !cancelled
                 {
-                    await runVerificationBuild()
+                    await runVerificationChecks()
                 }
 
                 if cancelled { finish(.cancelled); return }
@@ -815,10 +839,10 @@ actor AgentLoop {
         }
     }
 
-    /// Runs the configured verification build after an edit, through the
+    /// Runs the configured verification checks after an edit, through the
     /// same permission gate as any other command. Declined or failed
     /// verifications are observations, not crashes.
-    private func runVerificationBuild() async {
+    private func runVerificationChecks() async {
         setPhase(.verifying)
         let call = ParsedToolCall(name: "build_diagnostics", arguments: .object([:]), index: 0)
         let invocation = ToolInvocation(call: call, summary: "Run build diagnostics after edit")
@@ -836,7 +860,7 @@ actor AgentLoop {
             return
         case .needsApproval:
             guard await requestApproval(for: call, invocation: invocation) != nil else {
-                let declined = "verification build declined by user"
+                let declined = "verification checks declined by user"
                 eventContinuation?.yield(.toolCallFinished(invocation, output: declined, failed: true))
                 record.messages.append(
                     SessionMessage(role: .toolResult, content: declined, toolName: call.name, timestamp: Date()))
@@ -1097,16 +1121,22 @@ actor AgentLoop {
     /// Nested agent. Shares the parent's engine through IsolatedReplayEngine
     /// so the parent conversation is not reset. Writes and commands go
     /// through the same PermissionGate; approvals are forwarded to the
-    /// parent UI. Cannot spawn further subagents.
-    private func runSubagent(prompt: String) async -> String {
+    /// parent UI. Role-specific tools keep read-only work read-only, while
+    /// implementation children inherit the parent's verification setting.
+    private func runSubagent(prompt: String, role: SubagentRole) async -> String {
         var childConfig = configuration
         childConfig.maxTurns = min(8, configuration.maxTurns)
         childConfig.planMode = false
-        childConfig.verifyAfterEdits = false
+        childConfig.verifyAfterEdits = role.runsProjectChecks && configuration.verifyAfterEdits
         childConfig.intelligenceContext = false
         childConfig.allowSubagents = false
         childConfig.persistSessions = false
         childConfig.allowAskUser = false
+        childConfig.agentName = role.rawValue
+        childConfig.agentPrompt = [
+            configuration.agentPrompt,
+            role.prompt,
+        ].compactMap { $0 }.joined(separator: "\n\n")
 
         let childGate = PermissionGate(
             autoApproveEdits: permissionGate.autoApproveEdits,
@@ -1114,14 +1144,27 @@ actor AgentLoop {
             commandPolicy: commandPolicy,
             workspace: workspace,
             overrides: permissionGate.overrides,
-            openCodePermissions: permissionGate.openCodePermissions)
+            openCodePermissions: role.allowsWrites
+                ? permissionGate.openCodePermissions
+                : permissionGate.openCodePermissions.merged(with: OpenCodeCompatibility.OpenCodePermissionSet(rules: [
+                    .init(action: "edit", resource: "*", effect: .deny),
+                ])))
 
-        let child = AgentLoop(
-            engine: IsolatedReplayEngine(base: engine),
-            workspace: workspace,
-            tools: [
+        let childTools: [any AgentTool]
+        switch role {
+        case .research:
+            childTools = [
+                ReadFileTool(),
+                ListDirectoryTool(),
+                SearchTool(),
+                FindFilesTool(),
+                FindFilesTool(name: "glob"),
+            ]
+        case .implement:
+            childTools = [
                 ReadFileTool(),
                 WriteFileTool(),
+                MoveFileTool(),
                 ApplyPatchTool(),
                 ListDirectoryTool(),
                 SearchTool(),
@@ -1129,7 +1172,23 @@ actor AgentLoop {
                 FindFilesTool(name: "glob"),
                 RunCommandTool(),
                 BuildDiagnosticsTool(),
-            ],
+            ]
+        case .verify, .review:
+            childTools = [
+                ReadFileTool(),
+                ListDirectoryTool(),
+                SearchTool(),
+                FindFilesTool(),
+                FindFilesTool(name: "glob"),
+                RunCommandTool(),
+                BuildDiagnosticsTool(),
+            ]
+        }
+
+        let child = AgentLoop(
+            engine: IsolatedReplayEngine(base: engine),
+            workspace: workspace,
+            tools: childTools,
             permissions: childGate,
             configuration: childConfig,
             commandPolicy: commandPolicy,

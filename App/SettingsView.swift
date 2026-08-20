@@ -507,9 +507,9 @@ private struct AgentTab: View {
                 SettingToggle(label: "Show model reasoning (think blocks)", isOn: $settings.showReasoning)
             }
 
-            SettingsCard(title: "Safety", icon: "checkmark.seal", footer: "Snapshots the working tree before each approved edit batch so any agent action can be undone. Verification runs build diagnostics after each successful edit — through the same approval card as any other command, never silently.") {
+            SettingsCard(title: "Safety", icon: "checkmark.seal", footer: "Snapshots the working tree before each approved edit batch so any agent action can be undone. Verification runs the detected build or test checks after each successful edit — through the same approval card as any other command, never silently.") {
                 SettingToggle(label: "Git checkpoints before edits", isOn: $settings.checkpointingEnabled)
-                SettingToggle(label: "Verify edits with a build", isOn: $settings.verifyAfterEdits)
+                SettingToggle(label: "Verify edits with project checks", isOn: $settings.verifyAfterEdits)
             }
 
             ComputerControlCard()
@@ -701,6 +701,158 @@ private struct ProvidersTab: View {
     }
 }
 
+private enum CapabilityMode: String, CaseIterable, Identifiable {
+    case automatic = "Auto"
+    case enabled = "On"
+    case disabled = "Off"
+
+    var id: String { rawValue }
+
+    var value: Bool? {
+        switch self {
+        case .automatic: nil
+        case .enabled: true
+        case .disabled: false
+        }
+    }
+
+    init(value: Bool?) {
+        switch value {
+        case .some(true): self = .enabled
+        case .some(false): self = .disabled
+        case .none: self = .automatic
+        }
+    }
+}
+
+/// Capability controls for a model whose endpoint identity may come from
+/// OpenCode or another compatible gateway. The override is keyed by the
+/// exact provider id + model pair, so two gateways using the same model name
+/// cannot accidentally share limits or tool flags.
+private struct RemoteModelCapabilityEditor: View {
+    let profile: RemoteModelProfile
+
+    @State private var contextWindow = ""
+    @State private var outputTokens = ""
+    @State private var vision: CapabilityMode = .automatic
+    @State private var tools: CapabilityMode = .automatic
+    @State private var reasoning: CapabilityMode = .automatic
+    @State private var temperature: CapabilityMode = .automatic
+
+    init(profile: RemoteModelProfile) {
+        self.profile = profile
+        let override = AppPreferencesStore.shared.remoteModelOverride(endpoint: profile.endpoint())
+        _contextWindow = State(initialValue: override?.contextWindow.map(String.init) ?? "")
+        _outputTokens = State(initialValue: override?.maxOutputTokens.map(String.init) ?? "")
+        _vision = State(initialValue: CapabilityMode(value: override?.supportsVision))
+        _tools = State(initialValue: CapabilityMode(value: override?.supportsTools))
+        _reasoning = State(initialValue: CapabilityMode(value: override?.supportsReasoning))
+        _temperature = State(initialValue: CapabilityMode(value: override?.supportsTemperature))
+    }
+
+    private var effectiveProfile: RemoteModelProfile {
+        profile.applying(AppPreferencesStore.shared.remoteModelOverride(endpoint: profile.endpoint()))
+    }
+
+    var body: some View {
+        DisclosureGroup("Model capability overrides") {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                Text(effectiveSummary)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: Spacing.sm) {
+                    TextField("Context window", text: $contextWindow)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                    TextField("Max output", text: $outputTokens)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                }
+
+                capabilityPicker("Tools", selection: $tools)
+                capabilityPicker("Reasoning", selection: $reasoning)
+                capabilityPicker("Vision", selection: $vision)
+                capabilityPicker("Temperature", selection: $temperature)
+
+                HStack {
+                    Text("Only this provider/model is changed. API keys stay in Keychain.")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: Spacing.sm)
+                    Button("Reset") { reset() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Save") { save() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.top, Spacing.xs)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(Theme.textSecondary)
+        .accessibilityHint("Set context, output, and feature support for \(profile.model).")
+    }
+
+    private var effectiveSummary: String {
+        var parts: [String] = []
+        if let context = effectiveProfile.contextWindow { parts.append("context \(context.formatted())") }
+        if let output = effectiveProfile.maxOutputTokens { parts.append("output \(output.formatted())") }
+        if effectiveProfile.supportsTools == true { parts.append("tools") }
+        if effectiveProfile.supportsReasoning == true { parts.append("reasoning") }
+        if effectiveProfile.supportsVision == true { parts.append("vision") }
+        if effectiveProfile.supportsTemperature == true { parts.append("temperature") }
+        return parts.isEmpty ? "Effective metadata is unknown — use the controls below for this gateway." : parts.joined(separator: " · ")
+    }
+
+    private func capabilityPicker(_ title: String, selection: Binding<CapabilityMode>) -> some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+            Spacer()
+            Picker(title, selection: selection) {
+                ForEach(CapabilityMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+        }
+    }
+
+    private func save() {
+        let override = RemoteModelOverride(
+            contextWindow: positiveInt(contextWindow),
+            maxOutputTokens: positiveInt(outputTokens),
+            supportsVision: vision.value,
+            supportsTools: tools.value,
+            supportsReasoning: reasoning.value,
+            supportsTemperature: temperature.value)
+        AppPreferencesStore.shared.saveRemoteModelOverride(override, endpoint: profile.endpoint())
+    }
+
+    private func reset() {
+        contextWindow = ""
+        outputTokens = ""
+        vision = .automatic
+        tools = .automatic
+        reasoning = .automatic
+        temperature = .automatic
+        AppPreferencesStore.shared.saveRemoteModelOverride(nil, endpoint: profile.endpoint())
+    }
+
+    private func positiveInt(_ text: String) -> Int? {
+        let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        return value.flatMap { $0 > 0 ? $0 : nil }
+    }
+}
+
 private struct KnownProviderRow: View {
     let provider: KnownRemoteProvider
     @ObservedObject private var keyStore = APIKeyStore.shared
@@ -719,7 +871,7 @@ private struct KnownProviderRow: View {
     private var configured: Bool { keyStore.hasKey(forProviderID: provider.id) }
 
     private var resolvedKey: String {
-        let draft = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = CredentialNormalizer.normalize(keyDraft)
         return draft.isEmpty ? (keyStore.key(forProviderID: provider.id) ?? "") : draft
     }
 
@@ -902,6 +1054,7 @@ private struct OpenCodeProviderRow: View {
     let provider: OpenCodeCompatibility.ProviderProfile
     @ObservedObject private var keyStore = APIKeyStore.shared
     @State private var keyDraft = ""
+    @State private var modelDraft = ""
     private enum TestState: Equatable {
         case idle
         case running
@@ -910,12 +1063,35 @@ private struct OpenCodeProviderRow: View {
     }
     @State private var testState: TestState = .idle
 
-    private var firstModel: OpenCodeCompatibility.ModelProfile? { provider.models.first }
+    private var selectedModelID: String {
+        let value = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? (provider.models.first?.modelID ?? "") : value
+    }
+
+    private var selectedModel: OpenCodeCompatibility.ModelProfile? {
+        provider.models.first { $0.modelID == selectedModelID }
+    }
+
+    private var selectedProfile: RemoteModelProfile? {
+        guard !selectedModelID.isEmpty else { return nil }
+        if let selectedModel { return selectedModel.remoteProfile() }
+        return RemoteModelProfile(
+            provider: LLMProvider.fromOpenCodeIdentifier(provider.id) ?? .custom,
+            model: selectedModelID,
+            supportsTools: true,
+            providerKey: provider.id,
+            providerDisplayName: provider.displayName,
+            apiProtocol: provider.apiProtocol,
+            baseURL: provider.baseURL?.absoluteString,
+            headers: provider.headers,
+            apiKey: provider.apiKey)
+    }
+
     private var configured: Bool {
         provider.apiKey?.isEmpty == false || keyStore.hasKey(forProviderID: provider.id)
     }
     private var resolvedKey: String {
-        let draft = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = CredentialNormalizer.normalize(keyDraft)
         if !draft.isEmpty { return draft }
         return keyStore.key(forProviderID: provider.id) ?? provider.apiKey ?? ""
     }
@@ -947,15 +1123,32 @@ private struct OpenCodeProviderRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            if !provider.models.isEmpty {
-                Text(provider.models.map(\.modelID).joined(separator: " · "))
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(2)
-            } else {
-                Text("No model definitions were imported; add models to opencode.json or use the model id in the composer.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textTertiary)
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                if !provider.models.isEmpty {
+                    Picker("Model", selection: $modelDraft) {
+                        ForEach(provider.models) { model in
+                            Text(model.title).tag(model.modelID)
+                        }
+                    }
+                    .labelsHidden()
+                    .onChange(of: modelDraft) { _, _ in persistSelectedModel() }
+                }
+                TextField("Model id", text: $modelDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout.monospaced())
+                    .onSubmit { persistSelectedModel() }
+                if let profile = selectedProfile {
+                    Text(profileSummary(profile))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    RemoteModelCapabilityEditor(profile: profile)
+                        .id(profile.id)
+                } else {
+                    Text("Add a model id to make this OpenCode provider available in the composer.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                }
             }
             HStack(spacing: Spacing.sm) {
                 SecureField(configured ? "API key (replace)" : "API key", text: $keyDraft)
@@ -971,7 +1164,7 @@ private struct OpenCodeProviderRow: View {
                 .tint(Theme.accent)
                 Button("Test") { test() }
                     .buttonStyle(.bordered)
-                    .disabled(firstModel == nil || testState == .running || resolvedKey.isEmpty)
+                    .disabled(selectedProfile == nil || testState == .running || resolvedKey.isEmpty)
             }
             switch testState {
             case .idle: EmptyView()
@@ -990,12 +1183,16 @@ private struct OpenCodeProviderRow: View {
             }
         }
         .padding(.vertical, Spacing.sm)
+        .onAppear {
+            if modelDraft.isEmpty { modelDraft = provider.models.first?.modelID ?? "" }
+            persistSelectedModel()
+        }
     }
 
     private func test() {
-        guard let model = firstModel else { return }
+        guard let profile = selectedProfile else { return }
         testState = .running
-        var endpoint = model.endpoint()
+        var endpoint = profile.endpoint()
         endpoint.apiKey = resolvedKey
         Task {
             do {
@@ -1005,6 +1202,21 @@ private struct OpenCodeProviderRow: View {
                 testState = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
             }
         }
+    }
+
+    private func persistSelectedModel() {
+        guard let profile = selectedProfile else { return }
+        AppPreferencesStore.shared.saveRemoteModelProfiles([profile])
+    }
+
+    private func profileSummary(_ profile: RemoteModelProfile) -> String {
+        var parts: [String] = []
+        if let context = profile.contextWindow { parts.append("context \(context.formatted())") }
+        if let output = profile.maxOutputTokens { parts.append("output \(output.formatted())") }
+        if profile.supportsTools == true { parts.append("tools") }
+        if profile.supportsReasoning == true { parts.append("reasoning") }
+        if profile.supportsVision == true { parts.append("vision") }
+        return parts.isEmpty ? "Model metadata is unknown — set capability overrides for this gateway." : parts.joined(separator: " · ")
     }
 }
 
@@ -1028,29 +1240,6 @@ private struct ProviderCard: View {
     @State private var overrideTools: CapabilityMode = .automatic
     @State private var overrideReasoning: CapabilityMode = .automatic
     @State private var overrideTemperature: CapabilityMode = .automatic
-
-    private enum CapabilityMode: String, CaseIterable, Identifiable {
-        case automatic = "Auto"
-        case enabled = "On"
-        case disabled = "Off"
-
-        var id: String { rawValue }
-        var value: Bool? {
-            switch self {
-            case .automatic: nil
-            case .enabled: true
-            case .disabled: false
-            }
-        }
-
-        init(value: Bool?) {
-            switch value {
-            case .some(true): self = .enabled
-            case .some(false): self = .disabled
-            case .none: self = .automatic
-            }
-        }
-    }
 
     enum TestState: Equatable {
         case idle
@@ -1349,7 +1538,7 @@ private struct ProviderCard: View {
     }
 
     private var resolvedKey: String {
-        let draft = keyDraft.trimmingCharacters(in: .whitespaces)
+        let draft = CredentialNormalizer.normalize(keyDraft)
         if !draft.isEmpty { return draft }
         return keyStore.key(for: provider) ?? ""
     }

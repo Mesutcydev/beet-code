@@ -205,6 +205,58 @@ final class ProviderAuditTests: XCTestCase {
                        "https://opencode.ai/zen/v1/models")
     }
 
+    func testRemoteModelOverrideAppliesEveryCapability() {
+        let profile = RemoteModelProfile(
+            provider: .custom,
+            model: "fixture-model",
+            contextWindow: 8_192,
+            maxOutputTokens: 512,
+            supportsVision: false,
+            supportsTools: true,
+            supportsReasoning: false,
+            supportsTemperature: true,
+            providerKey: "fixture-gateway")
+        let override = RemoteModelOverride(
+            contextWindow: 32_768,
+            maxOutputTokens: 2_048,
+            supportsVision: true,
+            supportsTools: false,
+            supportsReasoning: true,
+            supportsTemperature: false)
+
+        let effective = profile.applying(override)
+        XCTAssertEqual(effective.contextWindow, 32_768)
+        XCTAssertEqual(effective.maxOutputTokens, 2_048)
+        XCTAssertEqual(effective.supportsVision, true)
+        XCTAssertEqual(effective.supportsTools, false)
+        XCTAssertEqual(effective.supportsReasoning, true)
+        XCTAssertEqual(effective.supportsTemperature, false)
+    }
+
+    func testDynamicEndpointOverrideDoesNotBleedIntoGenericProvider() {
+        let store = AppPreferencesStore.shared
+        let original = store.current
+        defer { store.save(original) }
+
+        let endpoint = RemoteEndpoint(
+            provider: .custom,
+            model: "fixture-model",
+            providerID: "fixture-gateway",
+            displayName: "Fixture gateway",
+            baseURL: URL(string: "https://fixture.invalid/v1"),
+            apiProtocol: .openAIChatCompletions)
+        let override = RemoteModelOverride(contextWindow: 24_576, supportsTools: false)
+
+        store.saveRemoteModelOverride(override, endpoint: endpoint)
+        XCTAssertEqual(store.remoteModelOverride(endpoint: endpoint), override)
+        XCTAssertNil(
+            store.remoteModelOverride(provider: .custom, model: endpoint.model),
+            "dynamic gateway overrides must not change every custom provider")
+
+        store.saveRemoteModelOverride(nil, endpoint: endpoint)
+        XCTAssertNil(store.remoteModelOverride(endpoint: endpoint))
+    }
+
     func testCompatibleModelCatalogAcceptsCommonGatewayEnvelopes() throws {
         let bodies = [
             #"[{"id":"array-model"}]"#,

@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.8.4](https://img.shields.io/badge/Download-Beet%20Code%200.8.4%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.4.zip)
+[![Download Beet Code 0.8.5](https://img.shields.io/badge/Download-Beet%20Code%200.8.5%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.5.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.4.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.5.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -282,6 +282,25 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   export includes an API key.
 - **Responsive composer**: the provider, agent, Auto/Goal, Plan, and
   Reasoning controls remain usable in narrow and portrait-sized windows.
+
+## v0.8.5 — task reliability and provider polish
+
+- Per-model capability overrides now apply to the exact provider/model
+  endpoint, including imported OpenCode and dynamic gateway profiles.
+- The task sidebar persists pins, workspace paths, running phases, and
+  review-needed status for failed checks or tool errors.
+- Verification detects Xcode workspaces/projects, XcodeGen projects, and Swift
+  packages, preferring tests when the project contains test sources.
+- Subagents have explicit research, implement, verify, and review roles with
+  role-appropriate tools and inherited approval policy.
+- `.beetcode.json` and `.beetcode.jsonc` provide shareable, non-secret project
+  policy for agent defaults, plan/goal behavior, verification, tool filters,
+  permissions, context hints, and answer style; credentials remain in the
+  Keychain.
+- Provider credentials accept common copied header forms such as `Bearer …`
+  and `api_key=…` without storing the wrapper.
+
+Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
 
 ## Requirements
 

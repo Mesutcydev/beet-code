@@ -11,6 +11,7 @@ enum PromptBuilder {
         repoIndex: RepoIndex? = nil,
         memorySection: String? = nil,
         projectInstructions: String? = nil,
+        projectPolicy: String? = nil,
         workspaceHistory: String? = nil,
         agentPrompt: String? = nil,
         planMode: Bool = false,
@@ -107,6 +108,10 @@ enum PromptBuilder {
         // never evicts it.
         if let projectInstructions, !projectInstructions.isEmpty {
             sections.append("# Project instructions (AGENTS.md / CLAUDE.md)\n\n\(bounded(projectInstructions, characters: 8_000))")
+        }
+
+        if let projectPolicy, !projectPolicy.isEmpty {
+            sections.append("# Project policy\n\n\(bounded(projectPolicy, characters: 4_000))")
         }
 
         // Workspace history: what earlier sessions in THIS folder were about
@@ -258,11 +263,16 @@ enum PromptBuilder {
             blocks.append("""
             ## Subagents (task)
 
-            `task` runs a nested agent (read/write/patch/search/glob/shell, 8 turns) \
-            that shares this session's approval gate. Use it to isolate a focused \
-            subtask. Do not nest task calls; the child cannot spawn further \
-            subagents. Child writes and commands still ask unless auto-approve \
-            is on.
+            task runs one bounded nested agent (up to 8 turns) through this \
+            session's approval gate. Pick a role explicitly:
+            - research: read/search/list only; use it to map the codebase.
+            - implement: write/apply/build tools; use it for a focused change.
+            - verify: read plus the detected build/test checker; never edits.
+            - review: read/diff/checks; report regressions and missing coverage.
+            The agent field accepts OpenCode aliases such as reviewer or tester.
+            Do not nest task calls. Child writes and commands still ask unless
+            auto-approve is on, and implementation checks use the same
+            verification setting as the parent.
             """)
         }
 
@@ -276,9 +286,10 @@ enum PromptBuilder {
             (XcodeGen `project.yml` + SwiftUI skeleton). Then edit files.
             - After adding or removing Swift files: `run_command` \
             `xcodegen generate` if `project.yml` exists.
-            - Verify with `build_diagnostics` (no command argument). It picks \
-            `xcodebuild -destination 'platform=macOS'` for .xcodeproj / \
-            project.yml trees and `swift build` for SPM. Do not default to \
+            - Verify with `build_diagnostics` (no command argument). It detects \
+            .xcworkspace, .xcodeproj, project.yml, or Package.swift and runs the \
+            appropriate macOS build; when test sources are present it runs the \
+            test action (`xcodebuild test` or `swift test`). Do not default to \
             `swift build` on an Xcode app — it will fail.
             - iOS UI: prefer `sim_build_run` after the Mac compile is green.
             - Stay in the workspace. Prefer `apply_patch` for edits. Read \

@@ -710,9 +710,9 @@ private struct ProviderCard: View {
 
         init(value: Bool?) {
             switch value {
-            case true: self = .enabled
-            case false: self = .disabled
-            case nil: self = .automatic
+            case .some(true): self = .enabled
+            case .some(false): self = .disabled
+            case .none: self = .automatic
             }
         }
     }

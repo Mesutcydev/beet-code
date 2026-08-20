@@ -13,7 +13,7 @@ final class EndToEndTests: XCTestCase {
     private var savedAutoApproveEdits: Bool?
     private var savedAutoApproveCommands: Bool?
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         // Pin agent loop settings so a developer's real preferences (plan mode
         // on, approvals manual) cannot leak into the test process.
         let defaults = UserDefaults.standard
@@ -38,7 +38,7 @@ final class EndToEndTests: XCTestCase {
         AppPreferencesStore.shared.save(preferences)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         let defaults = UserDefaults.standard
         if let savedPlanMode { defaults.set(savedPlanMode, forKey: "planMode") } else { defaults.removeObject(forKey: "planMode") }
         if let savedAutoApproveEdits { defaults.set(savedAutoApproveEdits, forKey: "autoApproveEdits") } else { defaults.removeObject(forKey: "autoApproveEdits") }

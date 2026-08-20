@@ -146,6 +146,16 @@
     .preview-card h3 { margin-bottom: 3px; font-size: 16px; }
     .preview-card p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
 
+    .views { padding: 0 0 72px; }
+    .view-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .view-card { display: block; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--canvas); color: var(--ink); transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+    .view-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: var(--shadow); text-decoration: none; }
+    .view-card img { width: 100%; aspect-ratio: 1.6; object-fit: cover; border-bottom: 1px solid var(--border-muted); }
+    .view-body { padding: 16px 17px 18px; }
+    .view-label { display: block; margin-bottom: 4px; color: var(--accent-ink); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .view-body h3 { margin-bottom: 4px; font-size: 17px; }
+    .view-body p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .callout { padding: 26px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--canvas); }
     .callout.accent { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); }
@@ -165,6 +175,7 @@
       .hero { padding-top: 46px; }
       .hero-grid, .split { grid-template-columns: 1fr; gap: 34px; }
       .feature-grid { grid-template-columns: 1fr; }
+      .view-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 560px) {
       .wrap { width: min(var(--max), calc(100% - 28px)); }
@@ -224,6 +235,31 @@
           <img src="previews/homepage.jpg" alt="Beet Code homepage with chats, model composer, and Beet Red theme">
           <figcaption class="preview-caption"><span>App preview</span><span class="mono">Beet Red</span></figcaption>
         </figure>
+      </div>
+    </section>
+
+    <section class="views" aria-labelledby="views-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <div>
+            <h2 id="views-title">App views</h2>
+            <p class="section-intro">Remote sessions, iOS Simulator, and Browser are built into the same workspace.</p>
+          </div>
+        </div>
+        <div class="view-grid">
+          <a class="view-card" href="#previews">
+            <img src="previews/remote-pairing.jpg" alt="Remote sessions pairing screen with QR code" loading="lazy">
+            <div class="view-body"><span class="view-label">Remote sessions</span><h3>Pair and keep going</h3><p>Continue a saved session from your phone or tablet.</p></div>
+          </a>
+          <a class="view-card" href="#previews">
+            <img src="previews/simulator.jpg" alt="iOS Simulator live screen inside Beet Code" loading="lazy">
+            <div class="view-body"><span class="view-label">iOS Simulator</span><h3>Test beside your code</h3><p>Boot, install, and inspect an app without switching tools.</p></div>
+          </a>
+          <a class="view-card" href="#previews">
+            <img src="previews/browser.jpg" alt="Browser view inside Beet Code" loading="lazy">
+            <div class="view-body"><span class="view-label">Browser</span><h3>Inspect the web</h3><p>Open pages and check the result from the same desk.</p></div>
+          </a>
+        </div>
       </div>
     </section>
 

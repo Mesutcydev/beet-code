@@ -251,21 +251,29 @@ private struct LFGlassModifier<S: InsettableShape>: ViewModifier {
             content
                 .background(Theme.surface, in: shape)
                 .overlay(shape.strokeBorder(Theme.hairline, lineWidth: 1))
-        } else if #available(macOS 26.0, *) {
-            content.background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .glassEffect(
-                            contentLegibility ? .regular : .clear,
-                            in: shape)
-                        .allowsHitTesting(false)
-                }
-            }
         } else {
+#if swift(>=6.2)
+            if #available(macOS 26.0, *) {
+                content.background {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .glassEffect(
+                                contentLegibility ? .regular : .clear,
+                                in: shape)
+                            .allowsHitTesting(false)
+                    }
+                }
+            } else {
+                content.background(
+                    contentLegibility ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial),
+                    in: shape)
+            }
+#else
             content.background(
                 contentLegibility ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial),
                 in: shape)
+#endif
         }
     }
 }

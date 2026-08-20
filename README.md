@@ -3,6 +3,7 @@
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
 [![Download Beet Code 0.8.1](https://img.shields.io/badge/Download-Beet%20Code%200.8.1%20DMG-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.1.dmg)
+[![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
   <img src="docs/screenshots/app.jpg" alt="Beet Code — chats, composer, and faded window atmosphere" width="960">
@@ -24,6 +25,10 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 | iOS Simulator | In-app browser |
 | --- | --- |
 | <img src="docs/previews/simulator.jpg" alt="Beet Code iOS Simulator panel" width="480"> | <img src="docs/previews/browser.jpg" alt="Beet Code browser panel" width="480"> |
+
+| Remote sessions |
+| --- |
+| <img src="docs/previews/remote-pairing.jpg" alt="Beet Code remote sessions pairing view" width="480"> |
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 

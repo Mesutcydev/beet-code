@@ -79,6 +79,15 @@
     .nav-links { display: flex; align-items: center; gap: 18px; color: var(--muted); }
     .nav-links a { color: inherit; font-size: 14px; }
     .nav-actions { display: flex; align-items: center; gap: 10px; }
+    .source-tag, .badge {
+      display: inline-flex; align-items: center; gap: 7px;
+      border: 1px solid var(--border); border-radius: 999px;
+      background: var(--canvas); color: var(--muted);
+      font-size: 12px; font-weight: 700; line-height: 1;
+      padding: 8px 11px; white-space: nowrap;
+    }
+    .source-tag:hover { border-color: var(--accent); color: var(--accent-ink); text-decoration: none; }
+    .source-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent); }
     .theme-button, .button {
       border: 1px solid var(--border);
       border-radius: 7px;
@@ -97,6 +106,9 @@
     .hero { padding: 72px 0 64px; }
     .hero-grid { display: grid; grid-template-columns: minmax(0, .92fr) minmax(420px, 1.08fr); align-items: center; gap: 58px; }
     .eyebrow { color: var(--accent-ink); font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .hero-badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 18px; }
+    .badge { padding: 7px 10px; background: var(--canvas-muted); }
+    .badge.source { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); color: var(--success); background: color-mix(in srgb, var(--success) 8%, var(--canvas)); }
     h1, h2, h3, p { margin-top: 0; }
     h1 { max-width: 620px; margin-bottom: 20px; font-size: clamp(42px, 5vw, 66px); line-height: 1.05; letter-spacing: -.045em; }
     .hero-copy { max-width: 570px; color: var(--muted); font-size: 18px; }
@@ -119,13 +131,17 @@
 
     .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
     .feature-card, .preview-card { padding: 22px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--canvas); }
+    .feature-card { border-top: 3px solid var(--accent); }
     .feature-card h3 { margin-bottom: 7px; font-size: 17px; }
     .feature-card p { margin-bottom: 0; color: var(--muted); }
     .feature-kicker { display: inline-block; margin-bottom: 14px; color: var(--accent-ink); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 
     .preview-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
-    .preview-card { padding: 8px; overflow: hidden; }
+    .preview-card { padding: 8px; overflow: hidden; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+    .preview-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: var(--shadow); }
+    .preview-image { position: relative; overflow: hidden; border-radius: 7px; }
     .preview-card img { width: 100%; aspect-ratio: 1.48; object-fit: cover; border-radius: 7px; border: 1px solid var(--border-muted); }
+    .preview-tag { position: absolute; z-index: 1; top: 10px; left: 10px; padding: 5px 8px; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: rgba(20, 22, 26, .72); color: #fff; font-size: 10px; font-weight: 800; letter-spacing: .07em; line-height: 1; }
     .preview-card figcaption { padding: 14px 8px 8px; }
     .preview-card h3 { margin-bottom: 3px; font-size: 16px; }
     .preview-card p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
@@ -179,6 +195,7 @@
         <a href="https://github.com/Mesutcydev/beet-code">GitHub</a>
       </nav>
       <div class="nav-actions">
+        <a class="source-tag" href="https://github.com/Mesutcydev/beet-code" aria-label="Open source repository"><span class="source-dot"></span>Open source</a>
         <button class="theme-button" id="theme-toggle" type="button" aria-label="Toggle color theme">◐ Theme</button>
         <a class="button primary" href="https://github.com/Mesutcydev/beet-code/releases/latest">Download</a>
       </div>
@@ -190,6 +207,11 @@
       <div class="wrap hero-grid">
         <div>
           <div class="eyebrow">Coding app for Mac</div>
+          <div class="hero-badges" aria-label="Project details">
+            <a class="badge source" href="https://github.com/Mesutcydev/beet-code"><span class="source-dot"></span>Open source</a>
+            <span class="badge">Apple Silicon</span>
+            <span class="badge">macOS 15+</span>
+          </div>
           <h1>Your code. Your model. One app.</h1>
           <p class="hero-copy">Beet Code gives you a simple place to work with local or remote models, review changes, and test your apps.</p>
           <div class="hero-actions">
@@ -243,19 +265,19 @@
         </div>
         <div class="preview-grid">
           <figure class="preview-card">
-            <img src="previews/imported-chats.jpg" alt="Imported chats view with collapsed Codex, Claude, and Cursor groups" loading="lazy">
+            <div class="preview-image"><span class="preview-tag">CHATS</span><img src="previews/imported-chats.jpg" alt="Imported chats view with collapsed Codex, Claude, and Cursor groups" loading="lazy"></div>
             <figcaption><h3>Imported chats</h3><p>Bring in Claude, Codex, and Cursor histories. Groups stay collapsed and easy to scan.</p></figcaption>
           </figure>
           <figure class="preview-card">
-            <img src="previews/simulator.jpg" alt="Beet Code with an iOS Simulator panel showing a live iPhone screen" loading="lazy">
+            <div class="preview-image"><span class="preview-tag">IOS SIMULATOR</span><img src="previews/simulator.jpg" alt="Beet Code with an iOS Simulator panel showing a live iPhone screen" loading="lazy"></div>
             <figcaption><h3>iOS Simulator</h3><p>Boot a device, install an app, and see the live screen beside your work.</p></figcaption>
           </figure>
           <figure class="preview-card">
-            <img src="previews/browser.jpg" alt="Beet Code with the in-app browser showing Example Domain" loading="lazy">
+            <div class="preview-image"><span class="preview-tag">BROWSER</span><img src="previews/browser.jpg" alt="Beet Code with the in-app browser showing Example Domain" loading="lazy"></div>
             <figcaption><h3>Browser</h3><p>Open and inspect web pages in the app.</p></figcaption>
           </figure>
           <figure class="preview-card">
-            <img src="previews/remote-pairing.jpg" alt="Remote Beet Code sessions pairing QR code and ready state" loading="lazy">
+            <div class="preview-image"><span class="preview-tag">REMOTE</span><img src="previews/remote-pairing.jpg" alt="Remote Beet Code sessions pairing QR code and ready state" loading="lazy"></div>
             <figcaption><h3>Remote sessions</h3><p>Continue a saved coding session from your phone or tablet.</p></figcaption>
           </figure>
         </div>

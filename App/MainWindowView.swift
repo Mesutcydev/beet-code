@@ -241,7 +241,8 @@ struct MainWindowView: View {
         .sheet(isPresented: $showCompactSidebar) {
             SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
                         showDiagnostics: $showDiagnostics,
-                        showRemoteAccess: $showRemoteAccess)
+                        showRemoteAccess: $showRemoteAccess,
+                        showsCloseButton: true)
             .environmentObject(appState)
             .environmentObject(sessions)
             .frame(minWidth: 320, idealWidth: 360, minHeight: 500)
@@ -268,12 +269,16 @@ struct MainWindowView: View {
 private struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var sessions: AgentSessionController
+    @Environment(\.dismiss) private var dismiss
     /// Docked panel state lives in MainWindowView; the sidebar footer drives
     /// it through these bindings (one source of truth, no notifications).
     @Binding var showBrowser: Bool
     @Binding var showSimulator: Bool
     @Binding var showDiagnostics: Bool
     @Binding var showRemoteAccess: Bool
+    /// The compact portrait sidebar is presented as a sheet, so it must offer
+    /// an explicit escape hatch in addition to Escape and the window chrome.
+    var showsCloseButton: Bool = false
     // Sessions are decrypted OFF the main thread: loadAll() does Keychain +
     // AES-GCM per file, which blocked body evaluation (and hung the app when
     // the ad-hoc build raised a Keychain prompt). The list renders from
@@ -324,6 +329,10 @@ private struct SidebarView: View {
             Color.clear.frame(height: 8)
         }
         .background(Theme.bg)
+        .onExitCommand {
+            guard showsCloseButton else { return }
+            dismiss()
+        }
         // Selection IS the restore: picking a tagged row switches to that
         // session (and reports why when it can't — no more silent no-ops).
         .onChange(of: selectedSessionID) { _, newValue in
@@ -369,6 +378,10 @@ private struct SidebarView: View {
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    Text(sessions.workspaceURL == nil ? "Open a folder to begin" : "Current workspace")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 Button(action: chooseWorkspace) {
@@ -380,22 +393,50 @@ private struct SidebarView: View {
                 .buttonStyle(.plain)
                 .help("Switch workspace")
                 .accessibilityLabel("Switch workspace")
+
+                if showsCloseButton {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Theme.textSecondary)
+                    .help("Close Chats")
+                    .accessibilityLabel("Close Chats")
+                    .accessibilityHint("Returns to the conversation")
+                }
             }
 
             HStack(spacing: 7) {
-                Button {
-                    sessions.newSession()
-                    selectedSessionID = nil
-                    sidebarTab = .sessions
-                } label: {
-                    Label("New chat", systemImage: "square.and.pencil")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 30)
+                if sessions.workspaceURL == nil {
+                    Button(action: chooseWorkspace) {
+                        Label("Open workspace…", systemImage: "folder.badge.plus")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .controlSize(.small)
+                    .help("Choose a project folder")
+                } else {
+                    Button {
+                        sessions.newSession()
+                        selectedSessionID = nil
+                        sidebarTab = .sessions
+                    } label: {
+                        Label("New chat", systemImage: "square.and.pencil")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .controlSize(.small)
+                    .help("Start a new chat in this workspace")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
-                .controlSize(.small)
-                .help("Start a new chat in this workspace")
 
                 if sidebarTab == .imported {
                     Button(action: runImport) {
@@ -431,10 +472,13 @@ private struct SidebarView: View {
             historyModeBar
             searchField
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 16)
-        .padding(.bottom, 12)
-        .background(Theme.surface.opacity(0.38))
+        .padding(.horizontal, showsCloseButton ? 18 : 14)
+        .padding(.top, showsCloseButton ? 14 : 16)
+        .padding(.bottom, 14)
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
     }
 
     private var workspaceMark: some View {

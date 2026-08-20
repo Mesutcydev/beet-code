@@ -205,7 +205,7 @@ enum RemoteLLMClient {
 
     // MARK: Public API
 
-    static let userAgent = "BeetCode/0.8.2 (macOS coding agent)"
+    static let userAgent = "BeetCode/0.8.3 (macOS coding agent)"
 
     // MARK: Message preparation (P2/P7 — provider-safe role mapping)
 

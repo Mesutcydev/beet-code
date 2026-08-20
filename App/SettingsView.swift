@@ -842,6 +842,13 @@ private struct ProviderCard: View {
                 .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty && modelUnchanged && baseURUnchanged)
             }
 
+            if let credentialHint = provider.credentialHint {
+                Label(credentialHint, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if let saveMessage {
                 Label(saveMessage, systemImage: saveMessage.hasPrefix("Could") ? "exclamationmark.triangle" : "checkmark.circle")
                     .font(.caption)
@@ -1062,7 +1069,7 @@ private struct ProviderCard: View {
                     refreshingModels = false
                     let detail = (error as? LocalizedError)?.errorDescription
                         ?? error.localizedDescription
-                    modelListError = "Model discovery unavailable — you can still enter a model id manually. (detail)"
+                    modelListError = "Model discovery unavailable — you can still enter a model id manually. (\(detail))"
                 }
             }
         }
@@ -1200,10 +1207,25 @@ private struct ProviderCard: View {
                         return
                     }
                 }
-                testState = .failed((error as? LocalizedError)?.errorDescription
-                                      ?? error.localizedDescription)
+                testState = .failed(testErrorMessage(error))
             }
         }
+    }
+
+    private func testErrorMessage(_ error: Error) -> String {
+        let fallback = (error as? LocalizedError)?.errorDescription
+            ?? error.localizedDescription
+        guard provider == .gemini,
+              let remoteError = error as? RemoteLLMError,
+              case .badStatus(let code, let detail) = remoteError,
+              [400, 401, 403].contains(code),
+              detail.localizedCaseInsensitiveContains("api key")
+                || detail.localizedCaseInsensitiveContains("caller")
+                || detail.localizedCaseInsensitiveContains("permission")
+        else {
+            return fallback
+        }
+        return "Google rejected this credential (HTTP \(code)). Create or copy a Gemini API key from Google AI Studio, or choose the provider that issued this key."
     }
 }
 

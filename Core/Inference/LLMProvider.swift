@@ -138,6 +138,18 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
 
     /// Custom/local servers often run without auth (Ollama, LM Studio).
     var keyOptional: Bool { self == .custom }
+
+    /// Credential guidance shown next to the provider's key field. Keep this
+    /// provider-specific so a key from another gateway is not mistaken for a
+    /// broken Gemini request.
+    var credentialHint: String? {
+        switch self {
+        case .gemini:
+            "Use a Google AI Studio Gemini API key here. A key issued by another gateway or service will be rejected by Google's endpoint."
+        default:
+            nil
+        }
+    }
 }
 
 /// A configured remote endpoint: provider + model choice.

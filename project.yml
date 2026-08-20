@@ -52,8 +52,8 @@ targets:
       properties:
         CFBundleDisplayName: "Beet Code"
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "0.8.2"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "0.8.3"
+        CFBundleVersion: "8"
         LSApplicationCategoryType: public.app-category.developer-tools
         LSMinimumSystemVersion: "15.0"
     settings:

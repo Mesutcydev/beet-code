@@ -47,6 +47,11 @@ final class RemoteSessionHost {
 
     private let engine: any LLMEngine
     private let sessions: AgentSessionController
+    /// AppState installs these handlers so remote messages become durable
+    /// queued tasks. Tests and lightweight hosts may leave them nil and keep
+    /// the direct continuation behavior.
+    var enqueueTaskHandler: ((UUID, String) -> QueuedAgentTask?)?
+    var taskLookupHandler: ((UUID) -> QueuedAgentTask?)?
     private var server: LocalAPIServer?
     private var tokens: [String: Date] = [:]
     /// Invalidates an in-flight bind when Settings changes or the host is
@@ -217,6 +222,7 @@ final class RemoteSessionHost {
                 "activeSessionID": sessions.activeSessionID.map { .string($0.uuidString) } ?? .null,
                 "isRunning": .bool(sessions.isRunning),
                 "phase": .string(sessions.currentPhase.rawValue),
+                "queuedTasks": .number(Double(taskQueueCount)),
             ]))
         case ("GET", "/api/sessions"):
             guard authorized(request) else { return unauthorized() }
@@ -291,6 +297,18 @@ final class RemoteSessionHost {
             }
             guard let record = ownedRecord(id) else {
                 return .response(json(["error": .string("Session not found.")], status: 404))
+            }
+            if let enqueueTaskHandler {
+                guard let task = enqueueTaskHandler(record.id, message) else {
+                    return .response(json(["error": .string("The task could not be queued. Check the workspace and queue capacity.")], status: 409))
+                }
+                return .response(json([
+                    "accepted": .bool(true),
+                    "queued": .bool(true),
+                    "taskID": .string(task.id.uuidString),
+                    "state": .string(task.state.rawValue),
+                    "sessionID": .string(record.id.uuidString),
+                ], status: 202))
             }
             guard !sessions.isRunning else {
                 return .response(json(["error": .string("Beet Code is already working on another prompt.")], status: 409))
@@ -385,6 +403,7 @@ final class RemoteSessionHost {
                     "isCurrent": .bool(activeID == record.id),
                     "isRunning": .bool(activeID == record.id && sessions.isRunning),
                     "phase": .string(activeID == record.id ? sessions.currentPhase.rawValue : AgentPhase.idle.rawValue),
+                    "queueState": taskLookupHandler?(record.id).map { .string($0.state.rawValue) } ?? .null,
                 ])
             }
     }
@@ -419,7 +438,21 @@ final class RemoteSessionHost {
             "streamingText": .string(liveText),
         ]
         detail["pending"] = pendingInteraction(for: record.id)
+        if let task = taskLookupHandler?(record.id) {
+            detail["queue"] = .object([
+                "id": .string(task.id.uuidString),
+                "state": .string(task.state.rawValue),
+                "label": .string(task.phase ?? task.state.label),
+                "attempts": .number(Double(task.attempts)),
+            ])
+        }
         return detail
+    }
+
+    private var taskQueueCount: Int {
+        Set(SessionStore.shared.cachedAll(maxAge: 2).compactMap { record in
+            taskLookupHandler?(record.id)?.id
+        }).count
     }
 
     private func ownedRecord(_ id: UUID) -> SessionRecord? {

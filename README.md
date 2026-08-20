@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.8.5](https://img.shields.io/badge/Download-Beet%20Code%200.8.5%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.5.zip)
+[![Download Beet Code 0.8.6](https://img.shields.io/badge/Download-Beet%20Code%200.8.6%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.6.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.5.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.6.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -301,6 +301,21 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   and `api_key=…` without storing the wrapper.
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
+
+## v0.8.6 — portable tasks and durable work
+
+- Encrypted, versioned `.beetask` bundles export a bounded, redacted task
+  transcript and require a passphrase on both export and import. Import always
+  asks for a destination workspace; source paths and stale checkpoints are not
+  trusted.
+- Remote prompts can enter a durable queue while another task is running or a
+  model is unavailable. Queue state survives relaunch, interrupted work is
+  re-queued safely, and the native sidebar exposes the next task and removal
+  controls.
+- Concise, normal, and detailed response styles are enforced in the agent
+  prompt, with workspace policy taking precedence over the global setting.
+- Send, stop, and plan shortcuts are editable using readable forms such as
+  `cmd+return` and `cmd+shift+p`.
 
 ## Requirements
 

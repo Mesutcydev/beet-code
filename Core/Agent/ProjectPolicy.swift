@@ -5,10 +5,28 @@ import Foundation
 /// API key. The policy is compatible with the parts of OpenCode's permission
 /// vocabulary that Beet Code can enforce natively.
 struct ProjectPolicy: Codable, Sendable, Equatable {
-    enum OutputStyle: String, Codable, Sendable {
+    enum OutputStyle: String, Codable, CaseIterable, Identifiable, Sendable {
         case concise
         case normal
         case detailed
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .concise: "Concise"
+            case .normal: "Normal"
+            case .detailed: "Detailed"
+            }
+        }
+
+        var help: String {
+            switch self {
+            case .concise: "Short answers focused on the result and next action."
+            case .normal: "Balanced explanations with the useful verification details."
+            case .detailed: "More context, rationale, and implementation details in the final answer."
+            }
+        }
     }
 
     struct Permission: Codable, Sendable, Equatable {

@@ -119,6 +119,7 @@ struct ChatView: View {
                 Divider()
                 topBarMenuButton("Export as Markdown…", "doc.text", .exportChatMarkdown)
                 topBarMenuButton("Export as JSON…", "curlybraces.square", .exportChatJSON)
+                topBarMenuButton("Export task bundle…", "shippingbox", .exportTaskBundle)
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 13, weight: .semibold))

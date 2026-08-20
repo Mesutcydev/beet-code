@@ -16,7 +16,7 @@ Updated 2026-08-20. This audit compares Beet Code with the current strengths of 
 
 The historical [OpenCode repository](https://github.com/opencode-ai/opencode) is archived; its README points to [Crush](https://github.com/charmbracelet/crush) as the continuation. Its useful patterns remain relevant, but new implementation comparisons should use Crush rather than treating the archived repository as an active upstream.
 
-## Beet Code status for the 0.8.5 pass
+## Beet Code status for the 0.8.6 pass
 
 ### Working or materially improved
 
@@ -58,7 +58,10 @@ The historical [OpenCode repository](https://github.com/opencode-ai/opencode) is
 - Provider contract fixtures now cover LongCat/OpenAI-compatible model discovery, paginated Gemini discovery and capabilities, HTTP error propagation, and OpenAI/Gemini/Anthropic streaming shapes without live credentials.
 - Baseline full macOS suite before this slice: 613 tests executed, 1 skipped, 0 failures.
 - Remote Beetcode sessions now have Tailscale-first QR pairing, a one-time pairing code, revocable 30-day browser tokens, saved-session continuation on the original session ID, bounded live output, explicit agent phases, and browser approval/question/plan controls. The remote listener never exposes the terminal CLI or the local model API.
-- Current post-change verification: the full macOS suite executes 651 tests with 1 skip and 0 failures; the focused agent/provider suite executes 36 tests with 0 failures.
+- Encrypted, versioned `.beetask` bundles redact and bound the transcript, protect it with PBKDF2-HMAC-SHA256 plus AES-GCM, and require an explicit destination workspace on import. Source paths and stale checkpoints never cross the handoff boundary.
+- Remote prompts can enter a file-backed queue while another task is active or the model is unavailable. Queue entries recover after relaunch, expose awaiting-approval/question/plan states, and are visible in the native sidebar; one local model run remains active at a time.
+- Concise, normal, and detailed response styles are injected into the agent contract, with `.beetcode.json` / `.jsonc` able to override the global choice. Send, stop, and plan shortcuts are editable and remain native macOS key equivalents.
+- Current post-change verification: the full macOS suite executes 657 tests with 1 skip and 0 failures.
 
 ### Remaining product gaps
 
@@ -69,9 +72,9 @@ The historical [OpenCode repository](https://github.com/opencode-ai/opencode) is
 | Done | Specialist/write-capable subagents | Read-only research is useful but cannot parallelize implementation and verification. | Shipped in 0.8.5 with research/implement/verify/review roles and narrowed tool sets. |
 | Done | Verification loop | Aider and Cline make testing a visible part of completion. | Shipped in 0.8.5 with detected project checks and a visible verifying phase. |
 | Done | Declarative project policy | Settings-only configuration is difficult to share and reproduce. | Shipped in 0.8.5 as `.beetcode.json`/`.jsonc`; credentials stay in Keychain. |
-| P2 | Share/import handoff | Local Markdown/JSON export does not cover collaboration or moving a task to another machine. | Define a versioned encrypted task bundle first; consider optional hosted links later. |
-| P2 | Background/remote sessions | Remote continuation and reconnectable transcript state now work while the host is running; queued jobs, multiple simultaneous tasks, and resuming after the Mac app quits still need a durable lifecycle. | Add explicit queued/running/paused/awaiting-approval/completed states and a process-independent task runner. |
-| P3 | Output styles and shortcut customization | These are quality-of-life features once the task loop is reliable. | Add concise/normal/verbose answer styles and editable send/stop/plan shortcuts. |
+| Done | Share/import handoff | Encrypted `.beetask` export/import moves a bounded task safely between Macs and requires explicit workspace rebinding. | Consider optional hosted links only after a service and retention policy are chosen. |
+| Done | Background/remote sessions | Remote prompts have a durable queued/running/paused/awaiting-approval/completed lifecycle and recover after relaunch; execution is serialized to one active local model run. | Future scale-out can add isolated parallel workers without changing the queue contract. |
+| Done | Output styles and shortcut customization | Concise/normal/detailed answer styles and editable send/stop/plan shortcuts are persisted, native, and covered by the agent prompt path. | Continue visual polish as new controls are exercised in the release build. |
 
 ## Design conclusions for the hybrid surfaces
 
@@ -85,10 +88,11 @@ That division is now reflected in the implementation. Further polish should make
 
 ## Recommended next order
 
-1. Define a versioned task bundle and a safe import flow that can rebind a task
-   to a user-selected workspace.
-2. Add an explicit durable queue for remote/background tasks while keeping one
-   active model run per local session.
-3. Add concise/normal/detailed output style enforcement and editable shortcuts.
+1. Keep the handoff and queue contracts stable while gathering real-world
+   interoperability feedback from OpenCode/Hermes users.
+2. Consider optional hosted task links only with explicit expiry, encryption,
+   deletion, and workspace-rebinding semantics.
+3. Explore isolated parallel workers as a separate capacity feature; the local
+   app remains safe and predictable with one active model run today.
 
 This keeps the next work focused on reliability and task completion while preserving the new premium, compact visual direction.

@@ -33,6 +33,8 @@ actor AgentLoop {
         var memoryMode: MemoryMode = .off
         /// How aggressively old tool outputs are compacted (v0.3).
         var compressionLevel: CompressionLevel = .standard
+        /// User- or workspace-selected shape of the final response.
+        var outputStyle: ProjectPolicy.OutputStyle = .normal
         /// OpenCode-compatible agent profile prompt and identity. The
         /// controller resolves the selected profile before constructing the
         /// loop, so nested loops can stay fully native and deterministic.
@@ -156,6 +158,7 @@ actor AgentLoop {
             agentPrompt: effectiveConfiguration.agentPrompt,
             planMode: effectiveConfiguration.planMode,
             goalMode: effectiveConfiguration.goalMode,
+            outputStyle: effectiveConfiguration.outputStyle,
             contextWindowTokens: effectiveConfiguration.contextWindowTokens,
             responseReserveTokens: effectiveConfiguration.maxTokensPerTurn)
         (engine as? any NativeToolConfigurable)?.configureNativeTools(

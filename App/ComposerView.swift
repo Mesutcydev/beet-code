@@ -56,6 +56,9 @@ struct ComposerView: View {
         .padding(.top, 10)
         .padding(.bottom, 12)
         .background(Theme.bg)
+        .onReceive(NotificationCenter.default.publisher(for: .sendMessage)) { _ in
+            store.send()
+        }
     }
 
     // MARK: Card
@@ -121,12 +124,16 @@ struct ComposerView: View {
             .frame(height: 52, alignment: .topLeading)
             // Enter sends; Shift+Enter falls through to the field and
             // inserts a newline.
-            .onKeyPress(keys: [.return]) { press in
-                if press.modifiers.contains(.command) {
+            .onKeyPress(phases: .down) { press in
+                if ShortcutBinding(rawValue: SettingsStore.shared.sendShortcut).matches(press) {
                     store.send()
                     return .handled
                 }
-                if settings.enterSends && !press.modifiers.contains(.shift) {
+                if press.key == .return && press.modifiers.contains(.command) {
+                    store.send()
+                    return .handled
+                }
+                if press.key == .return && settings.enterSends && !press.modifiers.contains(.shift) {
                     store.send()
                     return .handled
                 }
@@ -690,6 +697,7 @@ private struct ContextMeter: View {
 /// owner in the window, so Esc never conflicts.
 private struct SendStopButton: View {
     @EnvironmentObject private var controller: AgentSessionController
+    @ObservedObject private var settings = SettingsStore.shared
     let store: ComposerStore
 
     var body: some View {
@@ -729,8 +737,9 @@ private struct SendStopButton: View {
             }
             .buttonStyle(.plain)
             .disabled(!store.canSend)
-            .keyboardShortcut(.return, modifiers: .command)
-            .help(store.canSend ? "Send (↩ or ⌘↩)" : store.sendBlocker ?? "Cannot send")
+            .help(store.canSend
+                  ? "Send (\(ShortcutBinding(rawValue: settings.sendShortcut).displayValue))"
+                  : store.sendBlocker ?? "Cannot send")
             .accessibilityLabel("Send")
         }
     }

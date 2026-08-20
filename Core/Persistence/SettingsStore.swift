@@ -148,6 +148,10 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.remoteSessionPort: 9475,
             DefaultsKeys.remoteSessionAllowLAN: false,
             DefaultsKeys.enterSends: true,
+            DefaultsKeys.outputStyle: ProjectPolicy.OutputStyle.normal.rawValue,
+            DefaultsKeys.sendShortcut: "cmd+return",
+            DefaultsKeys.stopShortcut: "cmd+.",
+            DefaultsKeys.planShortcut: "cmd+shift+p",
         ])
 
         // Earlier builds hid reasoning by default. Migrate that implicit
@@ -384,6 +388,47 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Controls the shape of the agent's final response. A workspace policy
+    /// can override this for repository-local conventions.
+    var outputStyle: ProjectPolicy.OutputStyle {
+        get {
+            ProjectPolicy.OutputStyle(
+                rawValue: defaults.string(forKey: DefaultsKeys.outputStyle)
+                    ?? ProjectPolicy.OutputStyle.normal.rawValue) ?? .normal
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: DefaultsKeys.outputStyle)
+            objectWillChange.send()
+        }
+    }
+
+    /// Keyboard shortcuts are stored as readable strings such as
+    /// `cmd+return` or `cmd+shift+p`; the SwiftUI layer parses them into
+    /// native key equivalents at the point of use.
+    var sendShortcut: String {
+        get { defaults.string(forKey: DefaultsKeys.sendShortcut) ?? "cmd+return" }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.sendShortcut)
+            objectWillChange.send()
+        }
+    }
+
+    var stopShortcut: String {
+        get { defaults.string(forKey: DefaultsKeys.stopShortcut) ?? "cmd+." }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.stopShortcut)
+            objectWillChange.send()
+        }
+    }
+
+    var planShortcut: String {
+        get { defaults.string(forKey: DefaultsKeys.planShortcut) ?? "cmd+shift+p" }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.planShortcut)
+            objectWillChange.send()
+        }
+    }
+
     private enum DefaultsKeys {
         static let autoApproveEdits = "autoApproveEdits"
         static let autoApproveCommands = "autoApproveCommands"
@@ -408,5 +453,9 @@ final class SettingsStore: ObservableObject {
         static let remoteSessionPort = "remoteSessionPort"
         static let remoteSessionAllowLAN = "remoteSessionAllowLAN"
         static let enterSends = "enterSends"
+        static let outputStyle = "outputStyle"
+        static let sendShortcut = "sendShortcut"
+        static let stopShortcut = "stopShortcut"
+        static let planShortcut = "planShortcut"
     }
 }

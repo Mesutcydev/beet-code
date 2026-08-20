@@ -71,6 +71,7 @@ enum AppIconLookup {
         case .claude: ["com.anthropic.claudefordesktop", "com.anthropic.claude"]
         case .codex: ["com.openai.codex", "com.openai.chat"]
         case .cursor: ["com.todesktop.230313mzl4w4u92", "com.cursor.Cursor"]
+        case .bundle: []
         }
     }
 

@@ -1,5 +1,35 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Writes a passphrase-protected task handoff. This helper is shared by the
+/// active-chat menu and sidebar row context menus so every export follows the
+/// same redaction, encryption, and file-picker contract.
+@MainActor
+private func exportTaskBundleFile(for record: SessionRecord) {
+    guard let passphrase = TaskBundlePassphrasePrompt.ask(forExport: true) else { return }
+
+    let panel = NSSavePanel()
+    panel.title = "Export Task Bundle"
+    panel.prompt = "Export"
+    panel.nameFieldStringValue = SessionExporter
+        .suggestedName(for: record, format: .json)
+        .replacingOccurrences(of: ".json", with: ".beetask")
+    panel.allowedContentTypes = [UTType(filenameExtension: "beetask") ?? .data]
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+
+    do {
+        let data = try TaskBundleCodec.encode(TaskBundle.make(from: record), passphrase: passphrase)
+        try data.write(to: url, options: .atomic)
+    } catch {
+        let alert = NSAlert()
+        alert.messageText = "Task bundle export failed"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+}
 
 struct MainWindowView: View {
     @EnvironmentObject private var appState: AppState
@@ -93,6 +123,9 @@ struct MainWindowView: View {
             .onReceive(NotificationCenter.default.publisher(for: .exportChatJSON)) { _ in
                 exportCurrentChat(format: .json)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .exportTaskBundle)) { _ in
+                exportCurrentTaskBundle()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .newChat)) { _ in
                 sessions.newSession()
             }
@@ -140,6 +173,19 @@ struct MainWindowView: View {
             alert.alertStyle = .warning
             alert.runModal()
         }
+    }
+
+    private func exportCurrentTaskBundle() {
+        let id = sessions.activeSessionID ?? SessionStore.shared.currentSessionID
+        guard let id, let record = SessionStore.shared.load(id: id) else {
+            let alert = NSAlert()
+            alert.messageText = "Nothing to export yet"
+            alert.informativeText = "Run a task first — the conversation is exported once it has been saved."
+            alert.alertStyle = .informational
+            alert.runModal()
+            return
+        }
+        exportTaskBundleFile(for: record)
     }
 
     private var responsiveLayout: some View {
@@ -296,6 +342,7 @@ private struct SidebarView: View {
     /// imported from Claude / Codex / Cursor.
     @State private var sidebarTab: HistoryTab = .sessions
     @State private var isImporting = false
+    @State private var isImportingBundle = false
     @State private var importSummary: String?
     /// Live parser feedback while an import runs (source + file + count).
     @State private var importStatus: String?
@@ -463,8 +510,10 @@ private struct SidebarView: View {
                 Menu {
                     Button("Open workspace…", action: chooseWorkspace)
                     Divider()
-                    Button("Import chats…", action: runImport)
+                Button("Import chats…", action: runImport)
                         .disabled(isImporting)
+                    Button("Import task bundle…", action: runTaskBundleImport)
+                        .disabled(isImportingBundle || isImporting)
                     Button("Refresh chat list") { Task { await reloadSessions() } }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -480,6 +529,9 @@ private struct SidebarView: View {
 
             historyModeBar
             searchField
+            if !pendingQueueTasks.isEmpty {
+                queueSummary
+            }
         }
         .padding(.horizontal, showsCloseButton ? 18 : 14)
         .padding(.top, showsCloseButton ? 14 : 16)
@@ -581,6 +633,105 @@ private struct SidebarView: View {
         .accessibilityLabel(sidebarTab == .sessions ? "Search chats" : "Search imported chats")
     }
 
+    /// A small, durable task lane keeps remote/background work visible without
+    /// turning the chat list into a second transcript. It is intentionally in
+    /// the header so it remains reachable in compact and portrait layouts.
+    private var queueSummary: some View {
+        let pending = pendingQueueTasks
+        let first = pending[0]
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.info)
+                Text(pending.count == 1 ? "1 task in queue" : "\(pending.count) tasks in queue")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer(minLength: 4)
+                Button("Run next") {
+                    appState.drainTaskQueue()
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.accent)
+                .help("Start the next queued task when a model is ready")
+            }
+
+            HStack(alignment: .top, spacing: 7) {
+                Circle()
+                    .fill(queueStateColor(first.state))
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 4)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(first.message)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                    Text(first.phase ?? first.state.label)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(queueStateColor(first.state))
+                }
+                Spacer(minLength: 0)
+            }
+
+            if pending.count > 1 {
+                Menu {
+                    ForEach(Array(pending.prefix(5))) { task in
+                        Button {
+                            appState.removeQueuedTask(task.id)
+                        } label: {
+                            Text("Remove \(queueTaskMenuTitle(task))")
+                        }
+                    }
+                } label: {
+                    Text("Manage queued tasks…")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .menuStyle(.borderlessButton)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(Theme.wash(Theme.info), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Theme.washBorder(Theme.info), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(pending.count) queued tasks")
+    }
+
+    private var pendingQueueTasks: [QueuedAgentTask] {
+        appState.queuedTasks.filter { !$0.state.isTerminal }
+    }
+
+    private func queueTaskMenuTitle(_ task: QueuedAgentTask) -> String {
+        let text = task.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let short = text.count > 32 ? String(text.prefix(32)) + "…" : text
+        return "“\(short)”"
+    }
+
+    private func queueStateColor(_ state: QueuedTaskState) -> Color {
+        switch state {
+        case .awaitingApproval, .awaitingQuestion, .awaitingPlan:
+            Theme.warning
+        case .running:
+            Theme.accent
+        case .paused:
+            Theme.textTertiary
+        case .queued:
+            Theme.info
+        case .completed:
+            Theme.success
+        case .failed:
+            Theme.danger
+        case .stopped:
+            Theme.textTertiary
+        }
+    }
+
     /// A quiet library header makes the two history modes feel like distinct
     /// destinations. The old list began immediately with a project row, which
     /// made imported chats and local chats look like the same flat collection.
@@ -598,7 +749,7 @@ private struct SidebarView: View {
             historyListHeader(
                 eyebrow: "CHAT ARCHIVE",
                 title: "Imported chats",
-                detail: "Claude · Codex · Cursor",
+                detail: "Claude · Codex · Cursor · Beet Code bundles",
                 count: recentSessions.filter { $0.source != .app }.count,
                 icon: "tray.and.arrow.down.fill",
                 tint: Theme.info)
@@ -1126,7 +1277,7 @@ private struct SidebarView: View {
 
     /// Claude, Codex and Cursor always appear as import sources — even at
     /// count 0 — so Cursor is never hidden behind “only sources we found”.
-    private var importSources: [SessionSource] { [.claude, .codex, .cursor] }
+    private var importSources: [SessionSource] { [.claude, .codex, .cursor, .bundle] }
 
     /// One source-filter pill: icon + label + count, accent-highlighted
     /// while active. `source == nil` is the "All" pill.
@@ -1308,6 +1459,7 @@ private struct SidebarView: View {
             Divider()
             Button("Export as Markdown…") { export(record, format: .markdown) }
             Button("Export as JSON…") { export(record, format: .json) }
+            Button("Export task bundle…") { exportTaskBundleFile(for: record) }
         }
         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
         .listRowBackground(Color.clear)
@@ -1323,6 +1475,94 @@ private struct SidebarView: View {
     }
 
     // MARK: Import
+
+    /// Imports a portable task only after three explicit user choices: the
+    /// bundle file, its passphrase, and the destination workspace. Decryption
+    /// happens off the main actor because PBKDF2 is intentionally expensive.
+    private func runTaskBundleImport() {
+        guard !isImportingBundle else { return }
+        guard !sessions.isRunning else {
+            showTaskBundleError("Stop the active task before importing another task.")
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.title = "Import Task Bundle"
+        panel.message = "Choose a Beet Code task bundle to decrypt and rebind."
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "beetask") ?? .data]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let passphrase = TaskBundlePassphrasePrompt.ask(forExport: false) else { return }
+        guard let data = try? Data(contentsOf: url) else {
+            showTaskBundleError("The selected bundle could not be read.")
+            return
+        }
+
+        isImportingBundle = true
+        importStatus = "Decrypting task bundle…"
+        Task.detached(priority: .userInitiated) {
+            do {
+                let bundle = try TaskBundleCodec.decode(data, passphrase: passphrase)
+                await MainActor.run {
+                    isImportingBundle = false
+                    importStatus = nil
+                    chooseWorkspaceForTaskBundle(bundle)
+                }
+            } catch {
+                await MainActor.run {
+                    isImportingBundle = false
+                    importStatus = nil
+                    showTaskBundleError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    /// A decrypted bundle never supplies its own destination. The selected
+    /// folder is the only source of the new session's workspace binding.
+    private func chooseWorkspaceForTaskBundle(_ bundle: TaskBundle) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Workspace for Imported Task"
+        panel.message = bundle.workspaceHint.isEmpty
+            ? "Choose the project folder where this task should continue."
+            : "Rebind “\(bundle.workspaceHint)” to a project folder on this Mac."
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let workspace = panel.url else { return }
+
+        do {
+            let record = try TaskBundleCodec.reboundSession(bundle, workspace: workspace)
+            SessionStore.shared.save(record)
+            guard sessions.restore(record) else {
+                SessionStore.shared.delete(record)
+                throw TaskBundleError.workspaceRequired
+            }
+            selectedSessionID = record.id
+            sidebarTab = .imported
+            sourceFilter = .bundle
+            importSummary = "Imported “\(record.title)” into \(workspace.lastPathComponent)."
+            var preferences = AppPreferencesStore.shared.current
+            preferences.lastSessionID = record.id
+            preferences.lastWorkspacePath = workspace.standardizedFileURL.path
+            preferences.workspaceBookmarkData = AppPreferencesStore.shared.bookmarkData(for: workspace)
+            AppPreferencesStore.shared.save(preferences)
+            Task { await reloadSessions() }
+        } catch {
+            showTaskBundleError(error.localizedDescription)
+        }
+    }
+
+    private func showTaskBundleError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Task bundle import failed"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
 
     private func runImport() {
         guard !isImporting else { return }

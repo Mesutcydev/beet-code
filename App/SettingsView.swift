@@ -144,6 +144,23 @@ private struct SettingToggle: View {
     }
 }
 
+/// Compact shortcut editor. Users can type `cmd+shift+p` or the equivalent
+/// readable spelling; the field normalizes it when editing finishes.
+private struct ShortcutEditor: View {
+    let placeholder: String
+    @Binding var value: String
+
+    var body: some View {
+        TextField(placeholder, text: $value)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 170)
+            .onSubmit {
+                value = ShortcutBinding(rawValue: value).canonicalValue
+            }
+            .help("Use cmd, shift, option, or control followed by a key, for example \(placeholder)")
+    }
+}
+
 /// Accent palette picker rendered as color swatches. Each swatch shows the
 /// palette's light-mode accent; selection draws an accent ring. Every swatch
 /// carries a tooltip and VoiceOver label naming the palette.
@@ -252,7 +269,7 @@ private struct GeneralTab: View {
 
     var body: some View {
         TabScroll {
-            SettingsCard(title: "Composer", icon: "text.cursor", footer: "The composer's signature underline animates through the selected flow's palette; it brightens on focus and during streaming. Turn the animation off for a static gradient.") {
+            SettingsCard(title: "Composer", icon: "text.cursor", footer: "The composer's signature underline animates through the selected flow's palette; it brightens on focus and during streaming. Response style is also used by the agent when it writes the final handoff.") {
                 SettingRow(label: "Style") {
                     Picker("Composer style", selection: $settings.composerFlow) {
                         ForEach(ComposerFlow.allCases) { flow in
@@ -261,16 +278,33 @@ private struct GeneralTab: View {
                     }
                     .labelsHidden()
                 }
+                SettingRow(label: "Response style", value: settings.outputStyle.help) {
+                    Picker("Response style", selection: $settings.outputStyle) {
+                        ForEach(ProjectPolicy.OutputStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .labelsHidden()
+                }
                 SettingToggle(label: "Animated border", isOn: $settings.composerBorderAnimation)
             }
 
-            SettingsCard(title: "Keyboard", icon: "keyboard", footer: "⌘N starts a new chat, ⌘. stops the agent, ⇧⌘M opens Model Manager. Esc also stops a running agent.") {
+            SettingsCard(title: "Keyboard", icon: "keyboard", footer: "Shortcuts accept readable forms such as cmd+return. Esc always stops a running agent, and ⇧⌘M opens Model Manager.") {
                 SettingToggle(label: "Enter sends", isOn: $settings.enterSends)
                 Text(settings.enterSends
-                     ? "Enter sends the message; Shift+Enter inserts a newline. ⌘↩ always sends."
-                     : "Enter inserts a newline. Only ⌘↩ sends.")
+                     ? "Enter sends the message; Shift+Enter inserts a newline. The configured Send shortcut also works anywhere."
+                     : "Enter inserts a newline. Use the configured Send shortcut to send.")
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondary)
+                SettingRow(label: "Send shortcut", value: ShortcutBinding(rawValue: settings.sendShortcut).displayValue) {
+                    ShortcutEditor(placeholder: "cmd+return", value: $settings.sendShortcut)
+                }
+                SettingRow(label: "Stop shortcut", value: ShortcutBinding(rawValue: settings.stopShortcut).displayValue) {
+                    ShortcutEditor(placeholder: "cmd+.", value: $settings.stopShortcut)
+                }
+                SettingRow(label: "Plan shortcut", value: ShortcutBinding(rawValue: settings.planShortcut).displayValue) {
+                    ShortcutEditor(placeholder: "cmd+shift+p", value: $settings.planShortcut)
+                }
             }
 
             SettingsCard(title: "Appearance", icon: "paintbrush", footer: "Light is the default. Choose System to follow macOS, or Dark to force dark mode.") {

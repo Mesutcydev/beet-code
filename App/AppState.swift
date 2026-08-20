@@ -20,6 +20,7 @@ final class AppState: ObservableObject {
     let thermal = ThermalMonitor()
     let engine: EngineRouter
     let preferences = AppPreferencesStore.shared
+    let taskQueue = TaskQueueStore.shared
 
     /// Downloads run through here — the UI never touches the network layer.
     private(set) var downloadManager: ModelDownloadManager!
@@ -71,6 +72,12 @@ final class AppState: ObservableObject {
     @Published var remotePairingExpiresAt: Date?
     @Published var remotePairedClientCount = 0
     @Published var remoteNetworkKind: RemoteNetworkKind?
+    /// Durable remote/background work. Terminal entries remain visible until
+    /// the user clears them so a completed remote request is auditable.
+    @Published private(set) var queuedTasks: [QueuedAgentTask] = []
+
+    private var activeQueuedTaskID: UUID?
+    private var queueDrainTask: Task<Void, Never>?
 
     init(
         engine: EngineRouter = EngineRouter(pool: EnginePool()),
@@ -97,6 +104,17 @@ final class AppState: ObservableObject {
             settings: SettingsStore.shared,
             thermal: thermal)
         remoteSessionHost = RemoteSessionHost(engine: engine, sessions: sessions)
+        let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        if !isTestHost {
+            taskQueue.recoverInterrupted()
+        }
+        queuedTasks = isTestHost ? [] : taskQueue.loadAll()
+        remoteSessionHost.enqueueTaskHandler = { [weak self] sessionID, message in
+            self?.enqueueRemoteTask(sessionID: sessionID, message: message)
+        }
+        remoteSessionHost.taskLookupHandler = { [weak self] sessionID in
+            self?.taskQueue.loadAll().first { $0.sessionID == sessionID && !$0.state.isTerminal }
+        }
         sessions.activeModelIDHandler = { [weak self] in
             if let remote = self?.engine.activeRemoteEndpoint { return remote.model }
             return self?.activeModelID ?? ""
@@ -120,6 +138,17 @@ final class AppState: ObservableObject {
         sessions.$workspaceURL
             .sink { [weak self] workspace in
                 self?.refreshOpenCodeCatalog(workspace: workspace)
+            }
+            .store(in: &cancellables)
+        sessions.$currentPhase
+            .sink { [weak self] phase in
+                self?.updateQueuedTaskPhase(phase)
+            }
+            .store(in: &cancellables)
+        sessions.$finishReason
+            .sink { [weak self] reason in
+                guard let reason else { return }
+                self?.finishQueuedTask(reason)
             }
             .store(in: &cancellables)
         // `/model <id>` slash command: resolve against the catalog and
@@ -175,6 +204,168 @@ final class AppState: ObservableObject {
         refreshOpenCodeCatalog(workspace: sessions.workspaceURL)
         // Honor a persisted "server enabled" across launches.
         syncServers()
+    }
+
+    // MARK: Durable task queue
+
+    /// Enqueues a remote prompt even when another task is active. The caller
+    /// gets a durable id immediately; the queue drains when a compatible model
+    /// is ready and the current run reaches a terminal state.
+    func enqueueRemoteTask(sessionID: UUID, message: String) -> QueuedAgentTask? {
+        guard let record = SessionStore.shared.load(id: sessionID),
+              record.source == .app,
+              SessionStore.shared.validateWorkspaceBinding(record)
+        else { return nil }
+
+        let modelID = engine.activeRemoteEndpoint?.model ?? activeModelID ?? ""
+        do {
+            let task = try taskQueue.enqueue(
+                sessionID: sessionID,
+                workspacePath: record.workspacePath,
+                message: message,
+                modelID: modelID,
+                source: "remote")
+            refreshTaskQueue()
+            drainTaskQueue()
+            return task
+        } catch {
+            Log.app.warning("Could not enqueue remote task: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    func refreshTaskQueue() {
+        queuedTasks = taskQueue.loadAll()
+    }
+
+    func removeQueuedTask(_ id: UUID) {
+        guard activeQueuedTaskID != id else {
+            sessions.stop()
+            return
+        }
+        taskQueue.delete(id: id)
+        refreshTaskQueue()
+    }
+
+    /// Starts only one task at a time. Queued prompts remain durable while a
+    /// model is unloaded, while the app is waiting for approval, or while a
+    /// different workspace is active.
+    func drainTaskQueue() {
+        guard activeQueuedTaskID == nil,
+              !sessions.isRunning,
+              isEngineReady,
+              let next = taskQueue.loadAll().first(where: { $0.state == .queued })
+        else {
+            refreshTaskQueue()
+            return
+        }
+
+        guard let record = SessionStore.shared.load(id: next.sessionID),
+              record.workspacePath == next.workspacePath,
+              SessionStore.shared.validateWorkspaceBinding(record)
+        else {
+            taskQueue.update(next.id) { task in
+                task.state = .failed
+                task.phase = nil
+                task.lastError = "The task's workspace or session is no longer available."
+            }
+            refreshTaskQueue()
+            return
+        }
+
+        activeQueuedTaskID = next.id
+        taskQueue.update(next.id) { task in
+            task.state = .running
+            task.phase = "Starting"
+            task.attempts += 1
+            task.lastError = nil
+        }
+        refreshTaskQueue()
+
+        guard sessions.continuePersistedSession(id: next.sessionID, message: next.message) else {
+            taskQueue.update(next.id) { task in
+                task.state = .failed
+                task.phase = nil
+                task.lastError = "The session could not be resumed."
+            }
+            activeQueuedTaskID = nil
+            refreshTaskQueue()
+            return
+        }
+    }
+
+    private var isEngineReady: Bool {
+        if case .ready = enginePhase { return true }
+        return false
+    }
+
+    private func updateQueuedTaskPhase(_ phase: AgentPhase) {
+        guard let id = activeQueuedTaskID else { return }
+        let state: QueuedTaskState
+        let label: String
+        switch phase {
+        case .awaitingApproval:
+            state = .awaitingApproval; label = "Needs approval"
+        case .awaitingQuestion:
+            state = .awaitingQuestion; label = "Waiting for you"
+        case .awaitingPlanApproval:
+            state = .awaitingPlan; label = "Plan ready"
+        case .planning:
+            state = .running; label = "Planning"
+        case .working:
+            state = .running; label = "Running"
+        case .verifying:
+            state = .running; label = "Verifying"
+        case .idle, .finished:
+            return
+        }
+        taskQueue.update(id) { task in
+            task.state = state
+            task.phase = label
+        }
+        refreshTaskQueue()
+    }
+
+    private func finishQueuedTask(_ reason: AgentFinish) {
+        guard let id = activeQueuedTaskID else { return }
+        let state: QueuedTaskState
+        let summary: String?
+        let error: String?
+        switch reason {
+        case .completed(let result):
+            state = .completed
+            summary = result
+            error = nil
+        case .cancelled:
+            state = .stopped
+            summary = nil
+            error = "Stopped by the user."
+        case .maxTurnsReached(let turns):
+            state = .failed
+            summary = nil
+            error = "The task reached its turn limit (\(turns))."
+        case .declined(let detail):
+            state = .failed
+            summary = nil
+            error = detail
+        case .engineError(let message):
+            state = .failed
+            summary = nil
+            error = message
+        }
+        taskQueue.update(id) { task in
+            task.state = state
+            task.phase = state.label
+            task.resultSummary = summary
+            task.lastError = error
+        }
+        activeQueuedTaskID = nil
+        refreshTaskQueue()
+        queueDrainTask?.cancel()
+        queueDrainTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.drainTaskQueue()
+        }
     }
 
     private func refreshOpenCodeCatalog(workspace: URL?) {
@@ -372,6 +563,7 @@ final class AppState: ObservableObject {
             enginePhase = .ready(model.displayName)
             // Persist the selection only after a successful load.
             persistActiveModel(model.id)
+            drainTaskQueue()
         } catch {
             enginePhase = .failed(error.localizedDescription)
             activeModelID = nil
@@ -419,6 +611,7 @@ final class AppState: ObservableObject {
             preferences.remoteModelOverride(endpoint: endpoint))
         effectiveContextWindow = activeRemoteProfile?.contextWindow
         enginePhase = .ready("\(endpoint.effectiveDisplayName) · \(endpoint.model)")
+        drainTaskQueue()
         return true
     }
 

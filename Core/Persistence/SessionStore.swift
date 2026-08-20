@@ -37,6 +37,9 @@ enum SessionSource: String, Codable, Sendable, CaseIterable {
     case claude
     case codex
     case cursor
+    /// A portable Beet Code task bundle that was explicitly rebound to a
+    /// user-selected workspace during import.
+    case bundle
 
     var label: String {
         switch self {
@@ -44,6 +47,7 @@ enum SessionSource: String, Codable, Sendable, CaseIterable {
         case .claude: "Claude"
         case .codex: "Codex"
         case .cursor: "Cursor"
+        case .bundle: "Beet Code bundle"
         }
     }
 
@@ -53,6 +57,7 @@ enum SessionSource: String, Codable, Sendable, CaseIterable {
         case .claude: "sparkle"
         case .codex: "terminal"
         case .cursor: "cursorarrow.rays"
+        case .bundle: "shippingbox.fill"
         }
     }
 }

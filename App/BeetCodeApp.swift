@@ -79,7 +79,21 @@ struct BeetCodeApp: App {
                 Button("Stop Agent") {
                     NotificationCenter.default.post(name: .stopAgent, object: nil)
                 }
-                .keyboardShortcut(".", modifiers: [.command])
+                .keyboardShortcut(
+                    ShortcutBinding(rawValue: settings.stopShortcut).keyEquivalent,
+                    modifiers: ShortcutBinding(rawValue: settings.stopShortcut).eventModifiers)
+                Button("Send") {
+                    NotificationCenter.default.post(name: .sendMessage, object: nil)
+                }
+                .keyboardShortcut(
+                    ShortcutBinding(rawValue: settings.sendShortcut).keyEquivalent,
+                    modifiers: ShortcutBinding(rawValue: settings.sendShortcut).eventModifiers)
+                Button("Toggle Plan Mode") {
+                    settings.planMode.toggle()
+                }
+                .keyboardShortcut(
+                    ShortcutBinding(rawValue: settings.planShortcut).keyEquivalent,
+                    modifiers: ShortcutBinding(rawValue: settings.planShortcut).eventModifiers)
                 Button("Model Manager…") {
                     NotificationCenter.default.post(name: .openModelManager, object: nil)
                 }
@@ -106,6 +120,8 @@ extension Notification.Name {
     static let undoCheckpoint = Notification.Name("com.beetcode.undoCheckpoint")
     static let exportChatMarkdown = Notification.Name("com.beetcode.exportChatMarkdown")
     static let exportChatJSON = Notification.Name("com.beetcode.exportChatJSON")
+    static let exportTaskBundle = Notification.Name("com.beetcode.exportTaskBundle")
     static let newChat = Notification.Name("com.beetcode.newChat")
     static let stopAgent = Notification.Name("com.beetcode.stopAgent")
+    static let sendMessage = Notification.Name("com.beetcode.sendMessage")
 }

@@ -16,6 +16,7 @@ enum PromptBuilder {
         agentPrompt: String? = nil,
         planMode: Bool = false,
         goalMode: Bool = false,
+        outputStyle: ProjectPolicy.OutputStyle = .normal,
         contextWindowTokens: Int? = nil,
         responseReserveTokens: Int = 4096
     ) -> String {
@@ -51,6 +52,8 @@ enum PromptBuilder {
             or a concrete blocker needs the user's input.
             """)
         }
+
+        sections.append(outputStylePrompt(outputStyle))
 
         if let agentPrompt, !agentPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             sections.append("# Active agent profile\n\n\(bounded(agentPrompt, characters: 12_000))")
@@ -141,6 +144,35 @@ enum PromptBuilder {
             8_000,
             (contextWindowTokens - max(1_024, responseReserveTokens) - 512) * 3)
         return fitPrompt(sections, maxCharacters: promptBudget)
+    }
+
+    private static func outputStylePrompt(_ style: ProjectPolicy.OutputStyle) -> String {
+        switch style {
+        case .concise:
+            return """
+            # Response style
+
+            Keep the final answer concise. State what changed, the verification
+            result, and any blocker or next action. Do not repeat the user's
+            request or narrate routine tool calls.
+            """
+        case .normal:
+            return """
+            # Response style
+
+            Use a balanced final answer: summarize the meaningful changes,
+            mention verification, and explain any remaining caveat in plain
+            language. Keep routine tool narration out of the final response.
+            """
+        case .detailed:
+            return """
+            # Response style
+
+            Give a detailed final answer with the important design decisions,
+            files or surfaces affected, verification performed, and any
+            remaining caveat. Stay organized and avoid repeating raw logs.
+            """
+        }
     }
 
     /// Keeps supplementary context useful without allowing one generated

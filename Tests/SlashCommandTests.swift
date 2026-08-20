@@ -205,4 +205,15 @@ final class ProjectPolicyTests: XCTestCase {
         XCTAssertTrue(prompt.contains("# Project policy"))
         XCTAssertTrue(prompt.contains("Preferred agent: build"))
     }
+
+    func testPromptBuilderEnforcesSelectedOutputStyle() {
+        let concise = PromptBuilder.systemPrompt(
+            tools: [], workspace: Workspace(root: tempRoot), outputStyle: .concise)
+        let detailed = PromptBuilder.systemPrompt(
+            tools: [], workspace: Workspace(root: tempRoot), outputStyle: .detailed)
+
+        XCTAssertTrue(concise.contains("Keep the final answer concise"))
+        XCTAssertTrue(detailed.contains("Give a detailed final answer"))
+        XCTAssertNotEqual(concise, detailed)
+    }
 }

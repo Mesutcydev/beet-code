@@ -168,6 +168,7 @@ final class AgentSessionController: ObservableObject {
             ?? catalog.agent(named: "build")
         let planMode = settings.planMode || selectedAgent?.name.caseInsensitiveCompare("plan") == .orderedSame
         let goalMode = settings.agentMode == .goal
+        let outputStyle = projectPolicy?.outputStyle ?? settings.outputStyle
         let compatibilityPermissions = catalog.permissions.merged(with: selectedAgent?.permissions ?? .empty)
         // Per-run live overrides: "Always approve" on an approval card flips
         // these, taking effect immediately for THIS running loop.
@@ -207,6 +208,7 @@ final class AgentSessionController: ObservableObject {
                 goalMode: goalMode,
                 memoryMode: settings.memoryMode,
                 compressionLevel: settings.compressionLevel,
+                outputStyle: outputStyle,
                 agentName: selectedAgent?.name,
                 agentPrompt: selectedAgent?.prompt),
             modelID: activeModelIDHandler(),

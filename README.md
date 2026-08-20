@@ -8,6 +8,25 @@ A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs
   <img src="docs/screenshots/app.jpg" alt="Beet Code — chats, composer, and faded window atmosphere" width="960">
 </p>
 
+<p align="center">
+  <a href="https://mesutcydev.github.io/beet-code/">Explore the promo page</a> ·
+  <a href="https://github.com/Mesutcydev/beet-code/releases/latest">Download the latest release</a>
+</p>
+
+## Product previews
+
+Beet Code keeps the agent, imported histories, browser, and iOS Simulator in one focused desktop workspace.
+
+| Homepage | Imported chats |
+| --- | --- |
+| <img src="docs/previews/homepage.jpg" alt="Beet Code homepage in Beet Red" width="480"> | <img src="docs/previews/imported-chats.jpg" alt="Collapsed imported chat groups" width="480"> |
+
+| iOS Simulator | In-app browser |
+| --- | --- |
+| <img src="docs/previews/simulator.jpg" alt="Beet Code iOS Simulator panel" width="480"> | <img src="docs/previews/browser.jpg" alt="Beet Code browser panel" width="480"> |
+
+The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) includes the full preview gallery, a light/dark theme switcher, and a compact specs table.
+
 **Install:** download the [DMG](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.1.dmg), drag **Beet Code** onto Applications (or Desktop). Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.

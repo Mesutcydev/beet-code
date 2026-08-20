@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Beet Code is a native Apple Silicon coding agent for macOS. Local models, safe tools, imported chats, browser and iOS Simulator in one focused workspace.">
+  <meta name="theme-color" content="#7a1f3d">
+  <link rel="icon" href="previews/beetlogo.png" type="image/png">
+  <title>Beet Code — A focused coding workspace for macOS</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fa;
+      --canvas: #ffffff;
+      --canvas-muted: #f6f8fa;
+      --ink: #1f2328;
+      --muted: #59636e;
+      --subtle: #818b98;
+      --border: #d0d7de;
+      --border-muted: #eaeef2;
+      --accent: #7a1f3d;
+      --accent-strong: #5e1630;
+      --accent-soft: #f9e8ee;
+      --accent-ink: #7a1f3d;
+      --success: #1a7f37;
+      --shadow: 0 12px 30px rgba(31, 35, 40, .10);
+      --radius: 10px;
+      --max: 1120px;
+    }
+
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --canvas: #161b22;
+      --canvas-muted: #0d1117;
+      --ink: #f0f6fc;
+      --muted: #a9b4c0;
+      --subtle: #7d8a98;
+      --border: #30363d;
+      --border-muted: #21262d;
+      --accent: #d65d86;
+      --accent-strong: #f08caf;
+      --accent-soft: #351522;
+      --accent-ink: #ffb3ca;
+      --success: #3fb950;
+      --shadow: 0 18px 42px rgba(0, 0, 0, .32);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--accent-ink); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    img { display: block; max-width: 100%; }
+    .wrap { width: min(var(--max), calc(100% - 40px)); margin: 0 auto; }
+
+    .site-header {
+      background: var(--canvas);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 650; }
+    .brand:hover { text-decoration: none; }
+    .brand-mark {
+      width: 28px; height: 28px; border-radius: 8px; object-fit: cover;
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+    .nav-links { display: flex; align-items: center; gap: 18px; color: var(--muted); }
+    .nav-links a { color: inherit; font-size: 14px; }
+    .nav-actions { display: flex; align-items: center; gap: 10px; }
+    .theme-button, .button {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--canvas);
+      color: var(--ink);
+      font: inherit;
+      font-weight: 600;
+      padding: 7px 12px;
+      cursor: pointer;
+    }
+    .theme-button:hover, .button:hover { border-color: var(--accent); text-decoration: none; }
+    .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .button.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+    .button.subtle { background: var(--canvas-muted); }
+
+    .hero { padding: 72px 0 64px; }
+    .hero-grid { display: grid; grid-template-columns: minmax(0, .92fr) minmax(420px, 1.08fr); align-items: center; gap: 58px; }
+    .eyebrow { color: var(--accent-ink); font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 620px; margin-bottom: 20px; font-size: clamp(42px, 5vw, 66px); line-height: 1.05; letter-spacing: -.045em; }
+    .hero-copy { max-width: 570px; color: var(--muted); font-size: 18px; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 28px 0 20px; }
+    .hero-note { color: var(--subtle); font-size: 13px; }
+    .preview-shell { padding: 7px; background: var(--canvas); border: 1px solid var(--border); border-radius: 13px; box-shadow: var(--shadow); }
+    .preview-shell img { width: 100%; border-radius: 8px; }
+    .preview-caption { display: flex; justify-content: space-between; gap: 12px; padding: 10px 5px 2px; color: var(--subtle); font-size: 12px; }
+
+    .section { padding: 72px 0; border-top: 1px solid var(--border); }
+    .section-heading { display: flex; justify-content: space-between; align-items: end; gap: 28px; margin-bottom: 28px; }
+    h2 { margin-bottom: 6px; font-size: 30px; line-height: 1.2; letter-spacing: -.025em; }
+    .section-intro { max-width: 660px; margin-bottom: 0; color: var(--muted); }
+    .specs { width: 100%; border-collapse: collapse; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--canvas); }
+    .specs th, .specs td { padding: 14px 16px; border-bottom: 1px solid var(--border-muted); text-align: left; vertical-align: top; }
+    .specs tr:last-child th, .specs tr:last-child td { border-bottom: 0; }
+    .specs th { width: 28%; color: var(--muted); font-weight: 600; background: var(--canvas-muted); }
+    .specs td { color: var(--ink); }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+
+    .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .feature-card, .preview-card { padding: 22px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--canvas); }
+    .feature-card h3 { margin-bottom: 7px; font-size: 17px; }
+    .feature-card p { margin-bottom: 0; color: var(--muted); }
+    .feature-kicker { display: inline-block; margin-bottom: 14px; color: var(--accent-ink); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+
+    .preview-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .preview-card { padding: 8px; overflow: hidden; }
+    .preview-card img { width: 100%; aspect-ratio: 1.48; object-fit: cover; border-radius: 7px; border: 1px solid var(--border-muted); }
+    .preview-card figcaption { padding: 14px 8px 8px; }
+    .preview-card h3 { margin-bottom: 3px; font-size: 16px; }
+    .preview-card p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .callout { padding: 26px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--canvas); }
+    .callout.accent { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); }
+    .callout h3 { margin-bottom: 8px; font-size: 20px; }
+    .callout p { color: var(--muted); }
+    .callout p:last-child { margin-bottom: 0; }
+    .check-list { padding: 0; margin: 18px 0 0; list-style: none; }
+    .check-list li { position: relative; padding-left: 25px; margin: 10px 0; }
+    .check-list li::before { content: "✓"; position: absolute; left: 0; color: var(--success); font-weight: 800; }
+
+    .site-footer { padding: 34px 0 46px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+    .footer-row { display: flex; justify-content: space-between; gap: 20px; }
+    .footer-links { display: flex; gap: 16px; }
+
+    @media (max-width: 850px) {
+      .nav-links { display: none; }
+      .hero { padding-top: 46px; }
+      .hero-grid, .split { grid-template-columns: 1fr; gap: 34px; }
+      .feature-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .wrap { width: min(var(--max), calc(100% - 28px)); }
+      .nav { min-height: 58px; }
+      .hero { padding-bottom: 46px; }
+      h1 { font-size: 42px; }
+      .hero-copy { font-size: 16px; }
+      .preview-grid { grid-template-columns: 1fr; }
+      .section { padding: 50px 0; }
+      .section-heading, .footer-row { align-items: start; flex-direction: column; }
+      .specs th, .specs td { display: block; width: 100%; padding: 10px 13px; }
+      .specs th { padding-bottom: 2px; border-bottom: 0; }
+      .specs td { padding-top: 2px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap nav">
+      <a class="brand" href="#top" aria-label="Beet Code home">
+        <img class="brand-mark" src="previews/beetlogo.png" alt="">
+        <span>Beet Code</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a href="#features">Features</a>
+        <a href="#previews">Previews</a>
+        <a href="#specs">Specs</a>
+        <a href="https://github.com/Mesutcydev/beet-code">GitHub</a>
+      </nav>
+      <div class="nav-actions">
+        <button class="theme-button" id="theme-toggle" type="button" aria-label="Toggle color theme">◐ Theme</button>
+        <a class="button primary" href="https://github.com/Mesutcydev/beet-code/releases/latest">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="eyebrow">Native macOS coding agent</div>
+          <h1>Build with focus. Keep control.</h1>
+          <p class="hero-copy">Beet Code puts local models, safe tools, imported chat history, browser control, and an iOS Simulator beside your code — in one calm workspace.</p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/Mesutcydev/beet-code/releases/latest">Download the latest release</a>
+            <a class="button subtle" href="https://github.com/Mesutcydev/beet-code">View source on GitHub</a>
+          </div>
+          <div class="hero-note">Apple Silicon · macOS 15+ · SwiftUI · MLX and remote providers</div>
+        </div>
+        <figure class="preview-shell">
+          <img src="previews/homepage.jpg" alt="Beet Code homepage with chats, model composer, and Beet Red theme">
+          <figcaption class="preview-caption"><span>Latest build preview</span><span class="mono">Beet Red / ready</span></figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="features">
+      <div class="wrap">
+        <div class="section-heading">
+          <div>
+            <h2>A small surface for serious work</h2>
+            <p class="section-intro">Everything important stays visible, reviewable, and close to the task. Beet Code is designed to feel like a focused desktop tool, not a dashboard.</p>
+          </div>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span class="feature-kicker">01 / Local-first</span>
+            <h3>Models on your Mac</h3>
+            <p>Run MLX models in-process on Apple Silicon, or switch to a BYOK provider when the task calls for it.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-kicker">02 / Reviewable</span>
+            <h3>Tools with a safety gate</h3>
+            <p>Reads are quick. Edits, shell commands, and other mutations come through clear approval cards and checkpoints.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-kicker">03 / Connected</span>
+            <h3>See the product surface</h3>
+            <p>Drive the in-app browser and iOS Simulator without leaving the conversation or losing the thread.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="previews">
+      <div class="wrap">
+        <div class="section-heading">
+          <div>
+            <h2>Preview the workspace</h2>
+            <p class="section-intro">A few of the surfaces that make Beet Code feel like one coherent coding desk.</p>
+          </div>
+        </div>
+        <div class="preview-grid">
+          <figure class="preview-card">
+            <img src="previews/imported-chats.jpg" alt="Imported chats view with collapsed Codex, Claude, and Cursor groups" loading="lazy">
+            <figcaption><h3>Imported chats, kept tidy</h3><p>Bring in Claude, Codex, and Cursor histories, grouped by source and collapsed by default.</p></figcaption>
+          </figure>
+          <figure class="preview-card">
+            <img src="previews/simulator.jpg" alt="Beet Code with an iOS Simulator panel showing a live iPhone screen" loading="lazy">
+            <figcaption><h3>Simulator beside the task</h3><p>Boot a device, install an app, and keep a live screen next to the agent workspace.</p></figcaption>
+          </figure>
+          <figure class="preview-card">
+            <img src="previews/browser.jpg" alt="Beet Code with the in-app browser showing Example Domain" loading="lazy">
+            <figcaption><h3>Browser, without context switching</h3><p>Navigate and inspect web surfaces from a docked browser panel built for agent workflows.</p></figcaption>
+          </figure>
+          <figure class="preview-card">
+            <img src="previews/remote-pairing.jpg" alt="Remote Beet Code sessions pairing QR code and ready state" loading="lazy">
+            <figcaption><h3>Pair a remote session</h3><p>Continue a saved coding session from a phone or tablet with a short-lived pairing code.</p></figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="specs">
+      <div class="wrap split">
+        <div>
+          <h2>Specs at a glance</h2>
+          <p class="section-intro">The short version for deciding whether Beet Code fits your setup.</p>
+        </div>
+        <table class="specs">
+          <tbody>
+            <tr><th scope="row">Platform</th><td>Apple Silicon Mac running macOS 15 or newer</td></tr>
+            <tr><th scope="row">App</th><td>Native Swift 6 + SwiftUI desktop application</td></tr>
+            <tr><th scope="row">Inference</th><td>MLX in-process, GGUF / llama.cpp, or BYOK remote providers</td></tr>
+            <tr><th scope="row">Tools</th><td>Files, shell, git checkpoints, browser, iOS Simulator, diagnostics, MCP</td></tr>
+            <tr><th scope="row">Themes</th><td>Light, dark, and Beet Red appearance with system-aware contrast</td></tr>
+            <tr><th scope="row">License</th><td>Open source — see the repository license and contribution guide</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap split">
+        <div class="callout accent">
+          <h3>Start with one clean task</h3>
+          <p>Open a project, choose a model, and describe what needs to change. The agent keeps the work visible from first read to final verification.</p>
+          <a class="button primary" href="https://github.com/Mesutcydev/beet-code/releases/latest">Get Beet Code</a>
+        </div>
+        <div class="callout">
+          <h3>Built to be inspected</h3>
+          <p>Read the architecture, security boundaries, benchmarks, and acceptance notes in the repo before you commit to a workflow.</p>
+          <ul class="check-list">
+            <li>Permission-gated mutations</li>
+            <li>Durable, encrypted sessions</li>
+            <li>Bounded workspace context</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <span>Beet Code · a focused coding workspace for macOS</span>
+      <div class="footer-links"><a href="https://github.com/Mesutcydev/beet-code">GitHub</a><a href="https://github.com/Mesutcydev/beet-code/blob/main/docs/CONTRIBUTING.md">Contributing</a><a href="https://github.com/Mesutcydev/beet-code/blob/main/LICENSE">License</a></div>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const button = document.getElementById('theme-toggle');
+      const stored = localStorage.getItem('beetcode-theme');
+      if (stored) root.dataset.theme = stored;
+      button.addEventListener('click', () => {
+        const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+        root.dataset.theme = next;
+        localStorage.setItem('beetcode-theme', next);
+      });
+    })();
+  </script>
+</body>
+</html>

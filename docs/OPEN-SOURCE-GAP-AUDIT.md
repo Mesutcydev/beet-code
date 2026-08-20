@@ -16,7 +16,7 @@ Updated 2026-08-20. This audit compares Beet Code with the current strengths of 
 
 The historical [OpenCode repository](https://github.com/opencode-ai/opencode) is archived; its README points to [Crush](https://github.com/charmbracelet/crush) as the continuation. Its useful patterns remain relevant, but new implementation comparisons should use Crush rather than treating the archived repository as an active upstream.
 
-## Beet Code status for the 0.8.6 pass
+## Beet Code status for the 0.8.7 pass
 
 ### Working or materially improved
 

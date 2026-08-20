@@ -78,10 +78,14 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
                 self.statsState = EngineStats()
                 self.history.removeAll()
 
-                // Page the weights in now so the first token isn't slow.
-                await self.session?.synchronize()
+                // Do not synchronously page the whole model during activation.
+                // On larger Apple Silicon models this can keep the composer in
+                // "Loading" for minutes (or appear hung while Metal faults in
+                // every weight). MLX will page the weights on the first
+                // generation; activation should become ready once the session
+                // exists so the user can see and cancel a real first turn.
                 Log.engine.info(
-                    "Model loaded in \(Date().timeIntervalSince(started), format: .fixed(precision: 1))s — footprint \(MemoryAdvisor.processFootprint / 1_000_000) MB")
+                    "Model session ready in \(Date().timeIntervalSince(started), format: .fixed(precision: 1))s — weights page on first generation; footprint \(MemoryAdvisor.processFootprint / 1_000_000) MB")
             } catch {
                 self.session = nil
                 self.loadedID = nil

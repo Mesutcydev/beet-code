@@ -202,8 +202,8 @@ final class SimulatorContext: ObservableObject {
 
     private var streamGeneration = UUID()
 
-    /// Polls `simctl io screenshot` at ~2 fps in a DETACHED task; only the
-    /// image publish hops to the main actor. A generation UUID makes stale
+    /// Polls `simctl io screenshot` at ~2 fps while `SimctlRunner` keeps the
+    /// subprocess work detached. A generation UUID makes stale
     /// task cleanup impossible: a cancelled task can only clear state if it
     /// still owns the current generation.
     func startStreaming() {
@@ -218,7 +218,7 @@ final class SimulatorContext: ObservableObject {
             .appendingPathComponent("beetcode-sim-\(generation.uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let shotURL = dir.appendingPathComponent("screen.png")
-        streamTask = Task.detached(priority: .utility) { [weak self] in
+        streamTask = Task { @MainActor [weak self] in
             defer {
                 try? FileManager.default.removeItem(at: dir)
             }
@@ -228,15 +228,13 @@ final class SimulatorContext: ObservableObject {
                 // Decode from Data: a lazy NSImage tied to a file that gets
                 // overwritten every 500 ms can read a half-written frame.
                 if let data = try? Data(contentsOf: shotURL), let image = NSImage(data: data) {
-                    await MainActor.run { self?.screenshot = image }
+                    self?.screenshot = image
                 }
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            await MainActor.run {
-                guard let self, self.streamGeneration == generation else { return }
-                self.isStreaming = false
-                self.streamTask = nil
-            }
+            guard let self, self.streamGeneration == generation else { return }
+            self.isStreaming = false
+            self.streamTask = nil
         }
     }
 

@@ -21,6 +21,9 @@ final class AppState: ObservableObject {
     let engine: EngineRouter
     let preferences = AppPreferencesStore.shared
     let taskQueue = TaskQueueStore.shared
+    /// OpenAI account authentication and model discovery are delegated to the
+    /// user's installed Codex CLI. No ChatGPT refresh token is held here.
+    let codexAccount = CodexAccountStore.shared
 
     /// Downloads run through here — the UI never touches the network layer.
     private(set) var downloadManager: ModelDownloadManager!
@@ -32,6 +35,9 @@ final class AppState: ObservableObject {
     let remoteSessionHost: RemoteSessionHost
 
     @Published var activeModelID: String?
+    /// Selected ChatGPT-account model. This is intentionally separate from
+    /// both a local model id and a BYOK API endpoint.
+    @Published private(set) var activeCodexModelID: String?
     /// The context window the resident engine actually runs with. GGUF loads
     /// fit the server ctx to the RAM budget, which can be smaller than the
     /// catalog window — compaction and the composer gauge must use this, or
@@ -102,7 +108,8 @@ final class AppState: ObservableObject {
         sessions = AgentSessionController(
             engine: engine,
             settings: SettingsStore.shared,
-            thermal: thermal)
+            thermal: thermal,
+            codexAccount: codexAccount)
         remoteSessionHost = RemoteSessionHost(engine: engine, sessions: sessions)
         let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         if !isTestHost {
@@ -116,8 +123,15 @@ final class AppState: ObservableObject {
             self?.taskQueue.loadAll().first { $0.sessionID == sessionID && !$0.state.isTerminal }
         }
         sessions.activeModelIDHandler = { [weak self] in
+            if let self, self.isCodexActive, let codex = self.activeCodexModelID {
+                return "openai-codex:\(codex)"
+            }
             if let remote = self?.engine.activeRemoteEndpoint { return remote.model }
             return self?.activeModelID ?? ""
+        }
+        sessions.activeCodexModelIDHandler = { [weak self] in
+            guard let self, self.isCodexActive else { return nil }
+            return self.activeCodexModelID
         }
         sessions.onSessionReset = { [weak self] in
             self?.sessionUsage = SessionUsage()
@@ -177,6 +191,20 @@ final class AppState: ObservableObject {
         modelStore.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        codexAccount.objectWillChange
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.objectWillChange.send()
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          !self.codexAccount.isSignedIn,
+                          self.activeCodexModelID != nil
+                    else { return }
+                    self.activeCodexModelID = nil
+                    self.enginePhase = .idle
+                }
+            }
+            .store(in: &cancellables)
 
         // The local API server follows its Settings toggle: enabling starts it
         // on the configured loopback port, disabling stops it. Port changes
@@ -217,7 +245,7 @@ final class AppState: ObservableObject {
               SessionStore.shared.validateWorkspaceBinding(record)
         else { return nil }
 
-        let modelID = engine.activeRemoteEndpoint?.model ?? activeModelID ?? ""
+        let modelID = engine.activeRemoteEndpoint?.model ?? activeCodexModelID ?? activeModelID ?? ""
         do {
             let task = try taskQueue.enqueue(
                 sessionID: sessionID,
@@ -296,7 +324,7 @@ final class AppState: ObservableObject {
 
     private var isEngineReady: Bool {
         if case .ready = enginePhase { return true }
-        return false
+        return isCodexActive
     }
 
     private func updateQueuedTaskPhase(_ phase: AgentPhase) {
@@ -531,6 +559,7 @@ final class AppState: ObservableObject {
         // An active agent must fully stop before its engine is swapped:
         // cancellation is awaited, so generation can never outlive the model.
         await sessions.stopAndWait()
+        activeCodexModelID = nil
         // Remote endpoints do not own local weights, but EngineRouter keeps
         // the remote selection until explicitly returned to local. Clear it
         // before loading a local model so a remote session cannot continue to
@@ -582,6 +611,7 @@ final class AppState: ObservableObject {
     func activateRemote(endpoint: RemoteEndpoint) async -> Bool {
         clearStaleLoadError()
         await sessions.stopAndWait()
+        activeCodexModelID = nil
         if activeModelID != nil || engine.source != .localMLX {
             await engine.unload()
             activeModelID = nil
@@ -622,6 +652,7 @@ final class AppState: ObservableObject {
             await self?.sessions.stopAndWait()
             self?.engine.useLocal()
             self?.activeModelID = nil
+            self?.activeCodexModelID = nil
             self?.activeRemoteProfile = nil
             self?.effectiveContextWindow = nil
             self?.enginePhase = .idle
@@ -632,11 +663,44 @@ final class AppState: ObservableObject {
         if case .remote = engine.source { return true }
         return false
     }
+
+    var isCodexActive: Bool {
+        activeCodexModelID != nil && codexAccount.isSignedIn
+    }
+
+    /// Selects an OpenAI model through Codex's managed ChatGPT account flow.
+    /// The local MLX/remote engines are stopped so the account-backed agent
+    /// harness is the only owner of the next run's tools and permissions.
+    @discardableResult
+    func activateCodex(model: CodexModelProfile) async -> Bool {
+        clearStaleLoadError()
+        if !codexAccount.isSignedIn {
+            await codexAccount.refresh()
+        }
+        guard codexAccount.isSignedIn else {
+            enginePhase = .failed(codexAccount.errorMessage ?? "Sign in with ChatGPT in Settings → Providers first.")
+            return false
+        }
+        await sessions.stopAndWait()
+        if activeModelID != nil || engine.source != .localMLX {
+            await engine.unload()
+        }
+        engine.useLocal()
+        activeModelID = nil
+        activeRemoteProfile = nil
+        effectiveContextWindow = nil
+        activeCodexModelID = model.id
+        clearPersistedModel()
+        enginePhase = .ready("OpenAI account · \(model.displayName)")
+        drainTaskQueue()
+        return true
+    }
     func deactivate() async {
         clearStaleLoadError()
         await sessions.stopAndWait()
         await engine.unload()
         activeModelID = nil
+        activeCodexModelID = nil
         activeRemoteProfile = nil
         effectiveContextWindow = nil
         enginePhase = .idle

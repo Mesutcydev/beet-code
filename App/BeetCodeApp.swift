@@ -111,6 +111,7 @@ struct BeetCodeApp: App {
 
 extension Notification.Name {
     static let openModelManager = Notification.Name("com.beetcode.openModelManager")
+    static let openProviderSettings = Notification.Name("com.beetcode.openProviderSettings")
     static let openRemoteAccess = Notification.Name("com.beetcode.openRemoteAccess")
     static let toggleBrowserPanel = Notification.Name("com.beetcode.toggleBrowserPanel")
     static let toggleSimulatorPanel = Notification.Name("com.beetcode.toggleSimulatorPanel")

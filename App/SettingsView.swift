@@ -57,6 +57,9 @@ struct SettingsView: View {
         }
         .background(Theme.bg)
         .frame(width: 940, height: 720)
+        .onReceive(NotificationCenter.default.publisher(for: .openProviderSettings)) { _ in
+            tab = .providers
+        }
     }
 }
 
@@ -651,6 +654,7 @@ private struct ProvidersTab: View {
             InfoBanner(
                 icon: "key",
                 text: "Run the agent on a remote model instead of a local download. Keys live in the Keychain only. After saving a key, use **Test** to verify the connection, then activate the provider in the Model Manager.")
+            CodexAccountCard()
             ForEach(LLMProvider.allCases) { provider in
                 ProviderCard(provider: provider)
             }
@@ -732,6 +736,137 @@ private struct ProvidersTab: View {
                 }
             }
         }
+    }
+}
+
+/// Account-backed OpenAI access is deliberately a separate card from BYOK:
+/// ChatGPT sign-in is handled by Codex app-server, while API keys remain
+/// independent Keychain credentials with usage-based billing.
+private struct CodexAccountCard: View {
+    @ObservedObject private var codex = CodexAccountStore.shared
+    @State private var copiedCode = false
+
+    var body: some View {
+        SettingsCard(
+            title: "OpenAI account",
+            icon: "person.crop.circle",
+            footer: "Sign in with ChatGPT to use the models available to your account. Beet Code never asks for or stores the ChatGPT refresh token; the installed Codex app-server owns browser login, refresh, logout, tools, MCP, and approvals.") {
+            HStack(alignment: .top, spacing: Spacing.md) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(codex.isSignedIn ? "Connected to ChatGPT" : "Use OpenAI with your account")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(accountSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: Spacing.md)
+                statusBadge
+            }
+
+            if !codex.isSignedIn {
+                HStack(spacing: Spacing.sm) {
+                    Button("Sign in with ChatGPT…") {
+                        Task { await codex.signInWithBrowser() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .controlSize(.small)
+
+                    Button("Use device code") {
+                        Task { await codex.signInWithDeviceCode() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            } else {
+                HStack(spacing: Spacing.sm) {
+                    Button("Refresh models") {
+                        Task { await codex.refreshModels() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    Button("Sign out") {
+                        Task { await codex.signOut() }
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.danger)
+                    .controlSize(.small)
+                }
+            }
+
+            if let deviceCode = codex.deviceCodeLogin {
+                deviceCodeRow(deviceCode)
+            } else if codex.browserLogin != nil {
+                HStack(spacing: Spacing.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("Finish sign-in in your browser, then return to Beet Code.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                    Button("Cancel") { Task { await codex.cancelLogin() } }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
+
+            if let error = codex.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(Theme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { await codex.refresh() }
+    }
+
+    private var accountSubtitle: String {
+        if !codex.isAvailable { return "Codex CLI was not found. Install it to enable account login." }
+        if let account = codex.account {
+            return "\(account.displayPlan) · \(codex.models.count) models available in the composer"
+        }
+        return "Browser login or device code login opens the official Codex authentication flow."
+    }
+
+    private var statusBadge: some View {
+        Label(
+            codex.isSignedIn ? "Connected" : (codex.isAvailable ? "Not connected" : "Unavailable"),
+            systemImage: codex.isSignedIn ? "checkmark.circle.fill" : "circle")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(codex.isSignedIn ? Theme.success : Theme.textSecondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Theme.wash(codex.isSignedIn ? Theme.success : Theme.textSecondary), in: Capsule())
+    }
+
+    private func deviceCodeRow(_ login: CodexDeviceCodeLogin) -> some View {
+        HStack(spacing: Spacing.sm) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Enter this code in the browser")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                Text(login.userCode)
+                    .font(.title3.weight(.semibold).monospaced())
+                    .foregroundStyle(Theme.textPrimary)
+            }
+            Spacer()
+            Button(copiedCode ? "Copied" : "Copy code") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(login.userCode, forType: .string)
+                copiedCode = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            Button("Open") { NSWorkspace.shared.open(login.verificationURL) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            Button("Cancel") { Task { await codex.cancelLogin() } }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .padding(Spacing.sm)
+        .lfWashCard(Theme.accent)
     }
 }
 

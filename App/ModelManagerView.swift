@@ -359,7 +359,7 @@ private struct ModelCard: View {
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(2)
                 }
-                if case .wontFit(let reason) = budget.verdict {
+                if !isActive, case .wontFit(let reason) = budget.verdict {
                     Text(reason)
                         .font(.caption)
                         .foregroundStyle(Theme.danger)
@@ -390,7 +390,8 @@ private struct ModelCard: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Theme.wash(Theme.accent), in: Capsule())
-            VerdictBadge(verdict: budget.verdict, projectedFootprint: budget.projectedFootprint)
+            VerdictBadge(verdict: isActive ? .fits : budget.verdict,
+                         projectedFootprint: budget.projectedFootprint)
             if isActive {
                 Label("Active", systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.medium))

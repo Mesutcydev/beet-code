@@ -6,6 +6,11 @@ import SwiftUI
 @MainActor
 final class AgentSessionController: ObservableObject {
 
+    private enum CodexApprovalKind {
+        case commandOrFile
+        case permissions(LFJSONValue)
+    }
+
     struct TranscriptItem: Identifiable, Equatable {
         enum Kind: Equatable {
             case user(String)
@@ -68,8 +73,28 @@ final class AgentSessionController: ObservableObject {
     /// (think-block removal happens on the accumulated text, not deltas).
     private var rawStreamingText = ""
 
+    // Account-backed OpenAI runs are hosted by Codex app-server rather than
+    // AgentLoop. Keeping this state beside the existing loop lets the same
+    // transcript, approval card, reasoning surface, and Stop button work for
+    // both backends without ever running two tool harnesses for one turn.
+    private var codexThreadID: String?
+    private var codexTurnID: String?
+    private var codexApprovalRequestID: Int?
+    private var codexApprovalInvocation: ToolInvocation?
+    private var codexApprovalKind: CodexApprovalKind?
+    private var codexQuestionRequestID: Int?
+    private var codexQuestionID: String?
+    private var codexItemInvocations: [String: ToolInvocation] = [:]
+    private var codexStreamingText = ""
+    private var codexReasoningText = ""
+    private var codexRecord: SessionRecord?
+
     /// Supplies the active model ID (AppState owns that truth).
     var activeModelIDHandler: () -> String = { "" }
+    /// Supplies the active account-backed Codex model, if the AppState has
+    /// selected one in the composer. Account mode is deliberately separate
+    /// from BYOK remote endpoints and local MLX models.
+    var activeCodexModelIDHandler: () -> String? = { nil }
     /// Called when the user starts a fresh chat — AppState resets session usage.
     var onSessionReset: (() -> Void)?
     /// Supplies the context window compaction should target: the engine's
@@ -83,11 +108,18 @@ final class AgentSessionController: ObservableObject {
     var openCodeCatalogHandler: () -> OpenCodeCompatibility.Catalog = { .empty }
 
     let engine: any LLMEngine
+    private let codexAccount: CodexAccountStore
     private let settings: SettingsStore
     private let thermal: ThermalMonitor
 
-    init(engine: any LLMEngine, settings: SettingsStore, thermal: ThermalMonitor) {
+    init(
+        engine: any LLMEngine,
+        settings: SettingsStore,
+        thermal: ThermalMonitor,
+        codexAccount: CodexAccountStore = .shared
+    ) {
         self.engine = engine
+        self.codexAccount = codexAccount
         self.settings = settings
         self.thermal = thermal
     }
@@ -103,6 +135,15 @@ final class AgentSessionController: ObservableObject {
         isRunning = true
         // A stale event task must never outlive the run it belongs to.
         eventTask?.cancel()
+        codexTurnID = nil
+        codexApprovalRequestID = nil
+        codexApprovalInvocation = nil
+        codexApprovalKind = nil
+        codexQuestionRequestID = nil
+        codexQuestionID = nil
+        codexItemInvocations.removeAll()
+        codexStreamingText = ""
+        codexReasoningText = ""
         pendingApproval = nil
         pendingQuestion = nil
         pendingPlan = nil
@@ -125,9 +166,46 @@ final class AgentSessionController: ObservableObject {
         }
         let workspaceScope = Workspace(root: workspace)
 
+        // Prepared turn: the transcript shows the user's clean message; the
+        // MODEL receives bounded attachment context. The two never mix.
+        let modelText = await Self.expand(attachments: attachments, message: message)
+        let displayText = attachments.isEmpty ? message : message + "  ·  " + Self.attachmentSummary(attachments)
+        transcript.append(TranscriptItem(id: UUID(), kind: .user(displayText)))
+
+        // Continuation seed: an explicit seed wins; otherwise the persisted
+        // record for the ACTIVE session is resumed so restored and continued
+        // sessions keep their history and checkpoints.
+        let continuationSeed = seed ?? Self.persistedSeed(sessionID: activeSessionID, workspacePath: workspace.path)
+
+        // Account-backed OpenAI runs use Codex's own agent harness. It owns
+        // command execution, file changes, MCP, and sandbox decisions; Beet
+        // Code only renders the resulting events and forwards user approvals.
+        if let codexModelID = activeCodexModelIDHandler() {
+            await startCodexRun(
+                modelID: codexModelID,
+                workspace: workspace,
+                modelText: modelText,
+                displayText: displayText,
+                seed: continuationSeed)
+            return
+        }
+
         // MCP: connect configured servers, collect their tools. Failures are
         // surfaced as notices but never block the run.
-        let mcpResult = await mcpRegistry.start(workspaceRoot: workspace)
+        // A large in-process MLX model pays the full prompt-prefill cost for
+        // every tool schema. The global OpenCode config on this Mac exposes
+        // Argent's 75-tool surface; injecting all of it makes a 27B 2-bit
+        // model spend minutes before its first token and can push a 16 GB
+        // Mac into memory pressure. Keep the built-in BeetCode tools (file,
+        // shell, build, browser, and simulator) but leave the optional global
+        // MCP envelope out for this constrained local path. Remote engines,
+        // GGUF engines, smaller MLX models, and explicit workspace MCP config
+        // retain their existing behavior.
+        let mcpResult = await mcpRegistry.start(
+            workspaceRoot: workspace,
+            includeOpenCode: !Self.isLargeLocalMLXModel(
+                engine: engine,
+                modelID: activeModelIDHandler()))
         guard isRunning, !Task.isCancelled else {
             isRunning = false
             return
@@ -140,17 +218,6 @@ final class AgentSessionController: ObservableObject {
                 "MCP servers connected: \(mcpResult.connectedServers.joined(separator: ", ")) (\(mcpResult.tools.count) tools)")))
         }
         let tools = Self.defaultTools + mcpResult.tools
-
-        // Prepared turn: the transcript shows the user's clean message; the
-        // MODEL receives bounded attachment context. The two never mix.
-        let modelText = await Self.expand(attachments: attachments, message: message)
-        let displayText = attachments.isEmpty ? message : message + "  ·  " + Self.attachmentSummary(attachments)
-        transcript.append(TranscriptItem(id: UUID(), kind: .user(displayText)))
-
-        // Continuation seed: an explicit seed wins; otherwise the persisted
-        // record for the ACTIVE session is resumed so restored and continued
-        // sessions keep their history and checkpoints.
-        let continuationSeed = seed ?? Self.persistedSeed(sessionID: activeSessionID, workspacePath: workspace.path)
 
         let autoApproveEdits = settings.autoApproveEdits
         let autoApproveCommands = settings.autoApproveCommands
@@ -234,13 +301,537 @@ final class AgentSessionController: ObservableObject {
         }
     }
 
+    // MARK: Codex app-server runs
+
+    private func startCodexRun(
+        modelID: String,
+        workspace: URL,
+        modelText: String,
+        displayText: String,
+        seed: SessionRecord?
+    ) async {
+        guard codexAccount.isSignedIn else {
+            finishCodex(
+                .engineError("Sign in with ChatGPT in Settings → Providers before choosing an OpenAI account model."),
+                runID: runID)
+            return
+        }
+
+        let sessionID = seed?.id ?? UUID()
+        var record = seed ?? SessionRecord(
+            id: sessionID,
+            title: String(displayText.prefix(80)),
+            createdAt: Date(),
+            updatedAt: Date(),
+            workspacePath: workspace.path,
+            modelID: "openai-codex:\(modelID)",
+            messages: [],
+            checkpoints: [],
+            source: .app,
+            schemaVersion: SessionRecord.currentSchemaVersion)
+        record.workspacePath = workspace.path
+        record.modelID = "openai-codex:\(modelID)"
+        record.source = .app
+        record.messages.append(SessionMessage(
+            role: .user,
+            content: displayText,
+            toolName: nil,
+            timestamp: Date()))
+        record.updatedAt = Date()
+        codexRecord = record
+        activeSessionID = record.id
+        SessionStore.shared.currentSessionID = record.id
+        SessionStore.shared.save(record)
+
+        let threadInput = Self.codexPrompt(seed: seed, current: modelText)
+        let stream = await codexAccount.client.events()
+
+        do {
+            let threadID: String
+            if let savedThreadID = record.codexThreadID {
+                threadID = try await codexAccount.client.resumeThread(
+                    threadID: savedThreadID,
+                    modelID: modelID,
+                    workspace: workspace)
+            } else {
+                threadID = try await codexAccount.client.startThread(
+                    modelID: modelID,
+                    workspace: workspace)
+            }
+            guard isRunning, !Task.isCancelled else { return }
+            record.codexThreadID = threadID
+            codexRecord = record
+            SessionStore.shared.save(record)
+
+            let turnID = try await codexAccount.client.startTurn(
+                threadID: threadID,
+                modelID: modelID,
+                workspace: workspace,
+                text: threadInput)
+            guard isRunning, !Task.isCancelled else {
+                try? await codexAccount.client.interrupt(
+                    threadID: threadID,
+                    turnID: turnID)
+                return
+            }
+            codexThreadID = threadID
+            codexTurnID = turnID
+            codexStreamingText = ""
+            codexReasoningText = ""
+            codexLastError = nil
+            currentPhase = .working
+            let runToken = runID
+            eventTask = Task { [weak self] in
+                for await message in stream {
+                    guard let self else { return }
+                    self.handleCodex(message, runID: runToken)
+                }
+                self?.codexStreamEnded(runID: runToken)
+            }
+        } catch {
+            guard isRunning, !Task.isCancelled else { return }
+            finishCodex(
+                .engineError(error.localizedDescription),
+                runID: runID)
+        }
+    }
+
+    private var codexLastError: String?
+
+    private func codexStreamEnded(runID token: UUID) {
+        guard token == runID, isRunning else { return }
+        finishCodex(
+            .engineError(codexLastError ?? "Codex app-server ended before the turn completed."),
+            runID: token)
+    }
+
+    private func handleCodex(_ message: CodexServerMessage, runID token: UUID) {
+        guard token == runID, isRunning else { return }
+        if message.isServerRequest {
+            handleCodexRequest(message)
+            return
+        }
+        guard let method = message.method,
+              let params = message.params?.objectValue
+        else { return }
+
+        switch method {
+        case "item/agentMessage/delta":
+            guard let delta = params["delta"]?.stringValue, !delta.isEmpty else { return }
+            codexStreamingText += delta
+            pendingTokenBuffer += delta
+            scheduleTokenFlush()
+
+        case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
+            guard let delta = params["delta"]?.stringValue, !delta.isEmpty else { return }
+            codexReasoningText += delta
+            if settings.showReasoning {
+                liveReasoningText = codexReasoningText
+                isReasoningVisible = true
+            }
+
+        case "item/plan/delta":
+            guard let delta = params["delta"]?.stringValue, !delta.isEmpty else { return }
+            transcript.append(TranscriptItem(id: UUID(), kind: .reasoning(delta)))
+
+        case "item/started":
+            if let item = params["item"]?.objectValue {
+                handleCodexItem(item, completed: false)
+            }
+            currentPhase = .working
+
+        case "item/completed":
+            if let item = params["item"]?.objectValue {
+                handleCodexItem(item, completed: true)
+            }
+
+        case "item/commandExecution/outputDelta":
+            // The final command item contains aggregatedOutput. Keeping the
+            // transcript to one authoritative result avoids duplicated output
+            // while still preserving the live assistant stream.
+            break
+
+        case "turn/plan/updated":
+            if let plan = params["plan"]?.arrayValue {
+                let lines = plan.compactMap { entry -> String? in
+                    guard let object = entry.objectValue,
+                          let step = object["step"]?.stringValue
+                    else { return nil }
+                    let status = object["status"]?.stringValue ?? "pending"
+                    return status.capitalized + ": " + step
+                }
+                if !lines.isEmpty {
+                    transcript.append(TranscriptItem(
+                        id: UUID(),
+                        kind: .notice("Codex plan\n" + lines.joined(separator: "\n"))))
+                }
+            }
+
+        case "turn/completed":
+            let turn = params["turn"]?.objectValue
+            let status = turn?["status"]?.stringValue?.lowercased() ?? "completed"
+            let reason: AgentFinish
+            switch status {
+            case "completed":
+                reason = .completed(Self.codexCompletionSummary(codexStreamingText))
+            case "interrupted", "cancelled", "canceled":
+                reason = .cancelled
+            default:
+                let detail = turn?["error"]?.objectValue?["message"]?.stringValue
+                    ?? codexLastError
+                    ?? "Codex turn failed."
+                reason = .engineError(detail)
+            }
+            finishCodex(reason, runID: token)
+
+        case "error":
+            codexLastError = params["error"]?.objectValue?["message"]?.stringValue
+                ?? params["message"]?.stringValue
+                ?? "Codex app-server reported an error."
+
+        case "warning":
+            if let warning = params["message"]?.stringValue {
+                transcript.append(TranscriptItem(id: UUID(), kind: .notice("Codex: " + warning)))
+            }
+
+        case "model/rerouted":
+            if let toModel = params["toModel"]?.stringValue {
+                transcript.append(TranscriptItem(
+                    id: UUID(),
+                    kind: .notice("Codex routed this turn to " + toModel + ".")))
+            }
+
+        default:
+            break
+        }
+    }
+
+    private func handleCodexRequest(_ message: CodexServerMessage) {
+        guard let method = message.method,
+              let requestID = message.id,
+              let params = message.params?.objectValue
+        else { return }
+
+        switch method {
+        case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+            let itemID = Self.codexID(params["itemId"])
+            let invocation = itemID.flatMap { codexItemInvocations[$0] }
+                ?? codexInvocation(for: method, params: params)
+            codexApprovalRequestID = requestID
+            codexApprovalInvocation = invocation
+            codexApprovalKind = .commandOrFile
+            pendingApproval = ApprovalRequest(
+                id: UUID(),
+                invocation: invocation,
+                preview: method.contains("command") ? .command(invocation.summary) : .none)
+            currentPhase = .awaitingApproval
+            DiagnosticsCenter.shared.record(
+                .approval,
+                "Codex approval requested: " + invocation.name,
+                detail: invocation.summary,
+                level: .warning)
+
+        case "item/permissions/requestApproval":
+            let invocation = codexInvocation(for: method, params: params)
+            codexApprovalRequestID = requestID
+            codexApprovalInvocation = invocation
+            codexApprovalKind = .permissions(params["permissions"] ?? .object([:]))
+            pendingApproval = ApprovalRequest(
+                id: UUID(),
+                invocation: invocation,
+                preview: .none)
+            currentPhase = .awaitingApproval
+            DiagnosticsCenter.shared.record(
+                .approval,
+                "Codex permission request",
+                detail: invocation.summary,
+                level: .warning)
+
+        case "item/tool/requestUserInput":
+            let question = params["questions"]?.arrayValue?.first?.objectValue
+            codexQuestionRequestID = requestID
+            codexQuestionID = question?["id"]?.stringValue ?? "answer"
+            pendingQuestionID = UUID()
+            pendingQuestion = question?["question"]?.stringValue
+                ?? params["message"]?.stringValue
+                ?? "Codex needs more information."
+            currentPhase = .awaitingQuestion
+
+        case "item/tool/call":
+            // Beet Code currently does not register arbitrary dynamic tools
+            // with app-server. Declining explicitly is safer than leaving the
+            // turn suspended behind an unanswered JSON-RPC request.
+            Task { try? await codexAccount.client.declineDynamicTool(requestID: requestID) }
+
+        case "mcpServer/elicitation/request":
+            Task { try? await codexAccount.client.declineElicitation(requestID: requestID) }
+
+        default:
+            // Unknown future server requests must never make Stop appear
+            // broken. Resolve known approval-shaped requests conservatively.
+            if method.localizedCaseInsensitiveContains("approval") {
+                Task { try? await codexAccount.client.respondToApproval(
+                    requestID: requestID,
+                    decision: "decline") }
+            }
+        }
+    }
+
+    private func handleCodexItem(_ item: [String: LFJSONValue], completed: Bool) {
+        guard let type = item["type"]?.stringValue else { return }
+        if type == "agentMessage" {
+            if let finalText = item["text"]?.stringValue, !finalText.isEmpty,
+               finalText.count >= codexStreamingText.count {
+                codexStreamingText = finalText
+                streamingText = finalText
+            }
+            return
+        }
+        if type == "reasoning" {
+            if let summary = item["summary"]?.stringValue, !summary.isEmpty {
+                codexReasoningText = summary
+                if settings.showReasoning {
+                    liveReasoningText = summary
+                    isReasoningVisible = true
+                }
+            }
+            if completed, settings.showReasoning, !codexReasoningText.isEmpty {
+                appendCodexMessage(role: .reasoning, content: codexReasoningText)
+            }
+            return
+        }
+        guard let itemID = Self.codexID(item["id"]),
+              let invocation = codexItemInvocations[itemID]
+                ?? codexInvocation(for: type, item: item)
+        else { return }
+
+        if codexItemInvocations[itemID] == nil {
+            codexItemInvocations[itemID] = invocation
+            transcript.append(TranscriptItem(id: UUID(), kind: .toolCall(invocation)))
+            appendCodexMessage(
+                role: .toolCall,
+                content: invocation.argumentsJSON,
+                toolName: invocation.name)
+        }
+        guard completed else { return }
+
+        let output = Self.codexItemOutput(item, type: type)
+        let status = item["status"]?.stringValue?.lowercased() ?? "completed"
+        let failed = ["failed", "declined", "cancelled", "canceled", "error"].contains(status)
+        transcript.append(TranscriptItem(
+            id: UUID(),
+            kind: .toolResult(
+                id: invocation.id,
+                output: output,
+                failed: failed,
+                toolName: invocation.name)))
+        appendCodexMessage(
+            role: .toolResult,
+            content: output,
+            toolName: invocation.name)
+        DiagnosticsCenter.shared.record(
+            .tool,
+            "Codex " + invocation.name + " " + (failed ? "failed" : "finished"),
+            detail: ByteFormatter.bytes(Int64(output.utf8.count)),
+            level: failed ? .error : .info)
+    }
+
+    private func finishCodex(_ reason: AgentFinish, runID token: UUID) {
+        guard token == runID else { return }
+        flushTokens()
+        if !codexStreamingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let prose = ToolParser.strippingCalls(from: codexStreamingText)
+            if !prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                transcript.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
+                appendCodexMessage(role: .assistant, content: prose)
+            }
+        }
+        if settings.showReasoning,
+           !codexReasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !transcript.contains(where: {
+               if case .reasoning(let text) = $0.kind { return text == codexReasoningText }
+               return false
+           }) {
+            transcript.append(TranscriptItem(id: UUID(), kind: .reasoning(codexReasoningText)))
+            appendCodexMessage(role: .reasoning, content: codexReasoningText)
+        }
+        codexRecord?.updatedAt = Date()
+        if let record = codexRecord { SessionStore.shared.save(record) }
+        streamingText = ""
+        rawStreamingText = ""
+        isReasoningVisible = false
+        liveReasoningText = ""
+        isRunning = false
+        finishReason = reason
+        currentPhase = .finished
+        clearPending()
+        eventTask = nil
+        codexTurnID = nil
+        codexLastError = nil
+        switch reason {
+        case .completed:
+            DiagnosticsCenter.shared.record(.session, "Codex task completed")
+        case .cancelled:
+            DiagnosticsCenter.shared.record(.session, "Codex task stopped by user", level: .warning)
+        case .maxTurnsReached, .declined:
+            break
+        case .engineError(let message):
+            DiagnosticsCenter.shared.record(.engine, "Codex engine error", detail: message, level: .error)
+        }
+    }
+
+    private func appendCodexMessage(
+        role: SessionMessage.Role,
+        content: String,
+        toolName: String? = nil
+    ) {
+        guard !content.isEmpty else { return }
+        codexRecord?.messages.append(SessionMessage(
+            role: role,
+            content: content,
+            toolName: toolName,
+            timestamp: Date()))
+    }
+
+    private func codexInvocation(
+        for method: String,
+        params: [String: LFJSONValue]
+    ) -> ToolInvocation {
+        let name = method.contains("command") ? "run_command"
+            : method.contains("fileChange") ? "apply_patch"
+            : "request_permissions"
+        let arguments: LFJSONValue
+        if name == "run_command" {
+            arguments = .object([
+                "command": params["command"] ?? .string("(command not provided)"),
+                "cwd": params["cwd"] ?? .string("")
+            ])
+        } else {
+            arguments = .object(params)
+        }
+        let summary = params["reason"]?.stringValue
+            ?? params["command"]?.stringValue
+            ?? (name == "apply_patch" ? "Codex proposed file changes" : "Codex requested additional permissions")
+        return ToolInvocation(
+            call: ParsedToolCall(name: name, arguments: arguments, index: 0),
+            summary: summary)
+    }
+
+    private func codexInvocation(
+        for type: String,
+        item: [String: LFJSONValue]
+    ) -> ToolInvocation? {
+        let name: String
+        let arguments: LFJSONValue
+        let summary: String
+        switch type {
+        case "commandExecution":
+            name = "run_command"
+            let command = item["command"] ?? .string("")
+            arguments = .object([
+                "command": command,
+                "cwd": item["cwd"] ?? .string("")
+            ])
+            summary = Self.codexDisplay(command)
+        case "fileChange":
+            name = "apply_patch"
+            let changes = item["changes"] ?? .array([])
+            arguments = .object(["changes": changes])
+            let paths = changes.arrayValue?.compactMap { $0.objectValue?["path"]?.stringValue } ?? []
+            summary = paths.isEmpty ? "Codex proposed file changes" : paths.joined(separator: ", ")
+        case "mcpToolCall":
+            let server = item["server"]?.stringValue ?? "mcp"
+            let tool = item["tool"]?.stringValue ?? "tool"
+            name = "mcp:\(server):\(tool)"
+            arguments = item["arguments"] ?? .object([:])
+            summary = server + " · " + tool
+        case "dynamicToolCall":
+            name = "dynamic:\(item["tool"]?.stringValue ?? "tool")"
+            arguments = item["arguments"] ?? .object([:])
+            summary = name
+        case "webSearch":
+            name = "web_search"
+            arguments = .object(["query": item["query"] ?? .string("")])
+            summary = item["query"]?.stringValue ?? "Web search"
+        case "imageView":
+            name = "view_image"
+            arguments = .object(["path": item["path"] ?? .string("")])
+            summary = item["path"]?.stringValue ?? "View image"
+        default:
+            return nil
+        }
+        return ToolInvocation(
+            call: ParsedToolCall(name: name, arguments: arguments, index: 0),
+            summary: summary)
+    }
+
+    private static func codexItemOutput(_ item: [String: LFJSONValue], type: String) -> String {
+        if let error = item["error"]?.objectValue?["message"]?.stringValue { return "error: " + error }
+        switch type {
+        case "commandExecution":
+            return item["aggregatedOutput"]?.stringValue
+                ?? item["status"]?.stringValue
+                ?? "Command finished."
+        case "fileChange":
+            let paths = item["changes"]?.arrayValue?.compactMap {
+                $0.objectValue?["path"]?.stringValue
+            } ?? []
+            return paths.isEmpty ? "File changes finished." : "Changed: " + paths.joined(separator: ", ")
+        case "mcpToolCall":
+            return item["result"]?.stringValue
+                ?? item["result"]?.encoded(prettyPrinted: true)
+                ?? "MCP tool finished."
+        default:
+            return item["contentItems"]?.encoded(prettyPrinted: true)
+                ?? item["status"]?.stringValue
+                ?? "Tool finished."
+        }
+    }
+
+    private static func codexID(_ value: LFJSONValue?) -> String? {
+        value?.stringValue ?? value?.intValue.map(String.init)
+    }
+
+    private static func codexDisplay(_ value: LFJSONValue) -> String {
+        if let text = value.stringValue { return text }
+        if let parts = value.arrayValue?.compactMap(\.stringValue), !parts.isEmpty {
+            return parts.joined(separator: " ")
+        }
+        return value.encoded()
+    }
+
+    private static func codexPrompt(seed: SessionRecord?, current: String) -> String {
+        guard let seed, seed.codexThreadID == nil, !seed.messages.isEmpty else { return current }
+        let history = seed.messages.suffix(12).compactMap { message -> String? in
+            guard message.role == .user || message.role == .assistant else { return nil }
+            let content = String(message.content.prefix(2_000))
+            return (message.role == .user ? "User" : "Assistant") + ": " + content
+        }
+        guard !history.isEmpty else { return current }
+        return "Previous Beet Code conversation context:\n\(history.joined(separator: "\n\n"))\n\nCurrent request:\n\(current)"
+    }
+
+    private static func codexCompletionSummary(_ text: String) -> String {
+        let summary = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "Codex turn completed." : String(summary.prefix(240))
+    }
+
     func stop() {
         startTask?.cancel()
         startTask = nil
+        if loop == nil, let threadID = codexThreadID, let turnID = codexTurnID {
+            let client = codexAccount.client
+            Task {
+                try? await client.interrupt(threadID: threadID, turnID: turnID)
+            }
+            cancelCodexState()
+            return
+        }
         guard let loop else {
             guard isRunning else { return }
             isRunning = false
             finishReason = .cancelled
+            currentPhase = .finished
             clearPending()
             return
         }
@@ -303,6 +894,10 @@ final class AgentSessionController: ObservableObject {
         if let oldLoop {
             Task { await oldLoop.cancel() }
         }
+        codexThreadID = nil
+        codexTurnID = nil
+        codexRecord = nil
+        codexItemInvocations.removeAll()
         runID = UUID()
         isRunning = false
         clearPending()
@@ -325,9 +920,20 @@ final class AgentSessionController: ObservableObject {
     func stopAndWait() async {
         startTask?.cancel()
         startTask = nil
+        if loop == nil, codexTurnID != nil {
+            let threadID = codexThreadID
+            let turnID = codexTurnID
+            let client = codexAccount.client
+            if let threadID, let turnID {
+                try? await client.interrupt(threadID: threadID, turnID: turnID)
+            }
+            cancelCodexState()
+            return
+        }
         guard let loop else {
             runID = UUID()
             isRunning = false
+            currentPhase = .finished
             clearPending()
             return
         }
@@ -372,6 +978,28 @@ final class AgentSessionController: ObservableObject {
         pendingQuestionID = nil
         pendingPlan = nil
         pendingPlanID = nil
+        codexApprovalRequestID = nil
+        codexApprovalInvocation = nil
+        codexApprovalKind = nil
+        codexQuestionRequestID = nil
+        codexQuestionID = nil
+    }
+
+    private func cancelCodexState() {
+        runID = UUID()
+        eventTask?.cancel()
+        eventTask = nil
+        isRunning = false
+        finishReason = .cancelled
+        currentPhase = .finished
+        codexTurnID = nil
+        codexLastError = nil
+        clearPending()
+        dropTokenBuffer()
+        streamingText = ""
+        rawStreamingText = ""
+        isReasoningVisible = false
+        liveReasoningText = ""
     }
 
     /// Publishes buffered deltas. One scheduled flush per batch window; the
@@ -428,6 +1056,10 @@ final class AgentSessionController: ObservableObject {
         if let oldLoop {
             Task { await oldLoop.cancel() }
         }
+        codexThreadID = record.codexThreadID
+        codexTurnID = nil
+        codexRecord = record.modelID.hasPrefix("openai-codex:") ? record : nil
+        codexItemInvocations.removeAll()
         runID = UUID()
         isRunning = false
         pendingApproval = nil
@@ -751,6 +1383,8 @@ final class AgentSessionController: ObservableObject {
     /// allowlist policy in PermissionGate.
     func approve(_ approved: Bool, always: Bool) {
         guard let request = pendingApproval else { return }
+        let codexRequestID = codexApprovalRequestID
+        let codexKind = codexApprovalKind
         pendingApproval = nil
         if approved {
             transcript.append(
@@ -763,6 +1397,30 @@ final class AgentSessionController: ObservableObject {
             transcript.append(
                 TranscriptItem(id: UUID(), kind: .notice("Declined: \(request.invocation.name)")))
             DiagnosticsCenter.shared.record(.approval, "\(request.invocation.name) declined", level: .warning)
+        }
+        if let codexRequestID {
+            let client = codexAccount.client
+            switch codexKind {
+            case .permissions(let requested):
+                let granted = approved ? requested : .object([:])
+                Task {
+                    try? await client.respondToPermissions(
+                        requestID: codexRequestID,
+                        permissions: granted,
+                        scope: approved && always ? "session" : "turn")
+                }
+            case .commandOrFile, .none:
+                Task {
+                    try? await client.respondToApproval(
+                        requestID: codexRequestID,
+                        decision: approved ? (always ? "acceptForSession" : "accept") : "decline")
+                }
+            }
+            codexApprovalRequestID = nil
+            codexApprovalInvocation = nil
+            codexApprovalKind = nil
+            currentPhase = .working
+            return
         }
         if let loop {
             Task { await loop.resolve(requestID: request.id, approved: approved) }
@@ -789,9 +1447,24 @@ final class AgentSessionController: ObservableObject {
 
     func answerQuestion(_ text: String) {
         guard let requestID = pendingQuestionID, pendingQuestion != nil, !text.isEmpty else { return }
+        let codexRequestID = codexQuestionRequestID
+        let codexID = codexQuestionID ?? "answer"
         pendingQuestion = nil
         pendingQuestionID = nil
         transcript.append(TranscriptItem(id: UUID(), kind: .user(text)))
+        if let codexRequestID {
+            let client = codexAccount.client
+            Task {
+                try? await client.respondToUserInput(
+                    requestID: codexRequestID,
+                    questionID: codexID,
+                    answer: text)
+            }
+            self.codexQuestionRequestID = nil
+            self.codexQuestionID = nil
+            currentPhase = .working
+            return
+        }
         if let loop {
             Task { await loop.answerQuestion(requestID: requestID, text: text) }
         }
@@ -970,6 +1643,21 @@ final class AgentSessionController: ObservableObject {
         ComputerKeyTool(),
         ComputerScrollTool(),
     ]
+
+    private static func isLargeLocalMLXModel(
+        engine: any LLMEngine,
+        modelID: String
+    ) -> Bool {
+        guard let router = engine as? EngineRouter,
+              router.source == .localMLX,
+              let model = ModelCatalog.model(id: modelID),
+              model.format == .mlx
+        else { return false }
+
+        // At this size, tool-schema prefill is a larger UX cost than the
+        // optional global MCP capability on a typical 16 GB Apple Silicon Mac.
+        return model.diskBytes >= 8_000_000_000
+    }
     /// Turns attachments into part of the user message: files are quoted
     /// (bounded), images are described through the active vision-capable
     /// provider and their descriptions attached.

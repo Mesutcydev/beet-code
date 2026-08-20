@@ -403,6 +403,20 @@ final class ComposerStoreTests: XCTestCase {
         XCTAssertTrue(store.canSend)
     }
 
+    func testSendReadinessTracksEnginePhaseAfterAttach() async {
+        let (appState, store, _) = makeStack()
+        await openWorkspace(appState, store)
+        store.prompt = "do work"
+
+        appState.enginePhase = .loading("2 Bit")
+        let sawLoading = await waitUntil { store.sendBlocker == "Model is loading…" }
+        XCTAssertTrue(sawLoading, "composer should expose an in-flight model load")
+
+        appState.enginePhase = .ready("2 Bit")
+        let sawReady = await waitUntil { store.canSend }
+        XCTAssertTrue(sawReady, "composer should become sendable when the model is ready")
+    }
+
     func testSendComposesIntentAndDispatchesOneShot() async {
         let (appState, store, engine) = makeStack()
         await openWorkspace(appState, store)

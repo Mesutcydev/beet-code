@@ -77,14 +77,19 @@ struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
     /// Optional schema version. Absent on records written by the original
     /// store — those are v1 and migrated on next save.
     var schemaVersion: Int?
+    /// The Codex app-server thread backing an account-authenticated session.
+    /// It is intentionally just an opaque server id; authentication remains
+    /// owned by the local Codex process.
+    var codexThreadID: String?
 
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     init(
         id: UUID, title: String, createdAt: Date, updatedAt: Date,
         workspacePath: String, modelID: String, messages: [SessionMessage],
         checkpoints: [SessionCheckpoint], source: SessionSource = .app,
-        schemaVersion: Int? = nil
+        schemaVersion: Int? = nil,
+        codexThreadID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -96,6 +101,7 @@ struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
         self.checkpoints = checkpoints
         self.source = source
         self.schemaVersion = schemaVersion
+        self.codexThreadID = codexThreadID
     }
 
     init(from decoder: any Decoder) throws {
@@ -110,6 +116,7 @@ struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
         checkpoints = try container.decode([SessionCheckpoint].self, forKey: .checkpoints)
         source = try container.decodeIfPresent(SessionSource.self, forKey: .source) ?? .app
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+        codexThreadID = try container.decodeIfPresent(String.self, forKey: .codexThreadID)
     }
 }
 

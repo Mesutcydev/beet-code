@@ -73,7 +73,13 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
 
                 self.session = ChatSession(
                     container,
-                    generateParameters: MLXEngine.makeParameters(temperature: 0.6, maxTokens: nil))
+                    generateParameters: MLXEngine.makeParameters(temperature: 0.6, maxTokens: nil),
+                    // Qwen 3.5's chat template enables its hidden thinking
+                    // channel by default. BeetCode already owns a separate
+                    // reasoning surface, so leave the template in direct-
+                    // answer mode; otherwise a short task can consume the
+                    // whole budget before emitting visible text.
+                    additionalContext: ["enable_thinking": false])
                 self.loadedID = modelID
                 self.statsState = EngineStats()
                 self.history.removeAll()

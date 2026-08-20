@@ -80,6 +80,7 @@ struct ModelSelectionPill: View {
     private var icon: String {
         if case .loading = appState.enginePhase { return "hourglass" }
         if case .failed = appState.enginePhase { return "exclamationmark.triangle" }
+        if appState.isCodexActive { return "person.crop.circle.fill" }
         return appState.isRemoteActive ? "cloud.fill" : "cpu.fill"
     }
 
@@ -126,10 +127,17 @@ private struct ModelPickerPopover: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var keyStore = APIKeyStore.shared
+    @ObservedObject private var codexAccount = CodexAccountStore.shared
     private enum Source: String, CaseIterable, Identifiable {
-        case local, api
+        case local, api, account
         var id: String { rawValue }
-        var label: String { self == .local ? "Local models" : "API models" }
+        var label: String {
+            switch self {
+            case .local: "Local models"
+            case .api: "API models"
+            case .account: "OpenAI account"
+            }
+        }
     }
     @State private var source: Source = .local
 
@@ -212,8 +220,10 @@ private struct ModelPickerPopover: View {
                     .padding(.bottom, 2)
                     if source == .local {
                         localSection
-                    } else {
+                    } else if source == .api {
                         apiSection
+                    } else {
+                        accountSection
                     }
                 }
                 .padding(12)
@@ -224,13 +234,14 @@ private struct ModelPickerPopover: View {
         // Opaque themed surface — a material popover would stay neutral
         // gray in Beet mode while everything around it goes plum.
         .background(Theme.surface)
+        .task { await codexAccount.refresh() }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "cpu.fill")
                 .foregroundStyle(Theme.accent)
-            Text(source == .local ? "Local model" : "API model")
+            Text(source == .local ? "Local model" : source == .api ? "API model" : "OpenAI account")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
             Spacer()
@@ -293,7 +304,7 @@ private struct ModelPickerPopover: View {
                         .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
-                    Text("\(model.parameters) · \(model.quantization) · \(budgetHint(budget))")
+                    Text("\(model.parameters) · \(model.quantization) · \(isActive ? "active" : budgetHint(budget))")
                         .font(.system(size: 10.5))
                         .monospacedDigit()
                         .foregroundStyle(Theme.textTertiary)
@@ -317,7 +328,7 @@ private struct ModelPickerPopover: View {
         }
         .buttonStyle(.plain)
         .disabled(loadingThis)
-        .help(budget.helpText)
+        .help(isActive ? "Active model. Its memory was admitted safely when it loaded." : budget.helpText)
     }
 
     private func budgetHint(_ budget: MemoryAdvisor.Budget) -> String {
@@ -354,6 +365,98 @@ private struct ModelPickerPopover: View {
                 apiModelRow(profile)
             }
         }
+    }
+
+    @ViewBuilder
+    private var accountSection: some View {
+        sectionLabel("ChatGPT account models")
+        if !codexAccount.isAvailable {
+            Text("Codex CLI is not available on this Mac. Install Codex, then reopen Beet Code.")
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if !codexAccount.isSignedIn {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Use OpenAI models with your ChatGPT account. API keys are not required for this mode.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Sign in with ChatGPT…") {
+                    Task { await codexAccount.signInWithBrowser() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .controlSize(.small)
+            }
+        } else if codexAccount.models.isEmpty {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Loading account models…")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                Spacer()
+                Button("Refresh") { Task { await codexAccount.refreshModels() } }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.accent)
+            }
+        } else {
+            ForEach(codexAccount.models) { model in
+                codexModelRow(model)
+            }
+        }
+        if let error = codexAccount.errorMessage {
+            Text(error)
+                .font(.caption2)
+                .foregroundStyle(Theme.danger)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func codexModelRow(_ model: CodexModelProfile) -> some View {
+        let isActive = appState.isCodexActive && appState.activeCodexModelID == model.id
+        return Button {
+            Task {
+                if await appState.activateCodex(model: model) { dismiss() }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isActive ? "checkmark.circle.fill" : "person.crop.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(isActive ? Theme.success : Theme.textSecondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.displayName)
+                        .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    Text(model.id)
+                        .font(.system(size: 10.5).monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if !model.description.isEmpty {
+                        Text(model.description)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                if isActive {
+                    Text("Active")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Theme.success)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                    .fill(isActive ? Theme.accentSoft : Color.clear))
+            .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Use OpenAI account model (model.id)")
     }
 
     private func apiModelRow(_ profile: RemoteModelProfile) -> some View {
@@ -422,7 +525,7 @@ private struct ModelPickerPopover: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if appState.activeModelID != nil || appState.isRemoteActive {
+            if appState.activeModelID != nil || appState.isRemoteActive || appState.isCodexActive {
                 Button {
                     dismiss()
                     Task { await appState.deactivate() }
@@ -437,15 +540,22 @@ private struct ModelPickerPopover: View {
             Spacer()
             Button {
                 dismiss()
-                NotificationCenter.default.post(name: .openModelManager, object: nil)
+                if source == .account {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: .openProviderSettings, object: nil)
+                    }
+                } else {
+                    NotificationCenter.default.post(name: .openModelManager, object: nil)
+                }
             } label: {
-                    Label(source == .local ? "Model Manager…" : "Manage API models…",
-                          systemImage: source == .local ? "square.and.arrow.down.on.square" : "key")
+                    Label(source == .local ? "Model Manager…" : source == .api ? "Manage API models…" : "Manage account…",
+                          systemImage: source == .local ? "square.and.arrow.down.on.square" : source == .api ? "key" : "person.crop.circle")
                     .font(.system(size: 12))
             }
             .buttonStyle(.borderless)
             .foregroundStyle(Theme.accent)
-            .help("Download more models, import folders, manage providers")
+            .help(source == .account ? "Open OpenAI account settings" : "Download more models, import folders, manage providers")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

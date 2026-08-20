@@ -389,7 +389,7 @@ struct ChatView: View {
     /// Suggestion chips make sense only when a run could actually start.
     private var canSuggestPrompts: Bool {
         switch appState.enginePhase {
-        case .ready, .idle: return appState.activeModel != nil || appState.isRemoteActive || APIKeyStore.shared.configuredProviders.isEmpty == false
+        case .ready, .idle: return appState.activeModel != nil || appState.isRemoteActive || appState.isCodexActive || APIKeyStore.shared.configuredProviders.isEmpty == false
         case .loading, .failed: return false
         }
     }

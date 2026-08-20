@@ -92,6 +92,10 @@ final class ComposerStore {
     private var cachedHistoryMessageCount = 0
     private var cachedCanCompact = false
     private var historyRefreshTask: Task<Void, Never>?
+    /// Snapshot of the published engine phase used by the synchronous
+    /// send validation. This prevents the Run button from retaining the
+    /// initial Loading state after a large local model finishes paging in.
+    private(set) var currentEnginePhase: AppState.EnginePhase = .idle
     /// Captured persist that has not yet hit disk. Flushed synchronously on
     /// workspace switch so a cancelled debounce cannot drop the old draft.
     private var pendingPersist: (url: URL, state: ComposerDraftState)?
@@ -102,6 +106,18 @@ final class ComposerStore {
     func attach(controller: AgentSessionController, appState: AppState) {
         self.controller = controller
         self.appState = appState
+        currentEnginePhase = appState.enginePhase
+
+        // Subscribe to the phase publisher itself so the composer invalidates
+        // its own observation graph when an MLX load completes.
+        appState.$enginePhase
+            .receive(on: RunLoop.main)
+            .sink { [weak self] phase in
+                guard let self else { return }
+                self.currentEnginePhase = phase
+                self.recomputeEstimate()
+            }
+            .store(in: &cancellables)
 
         // Workspace changes are transactions. Preserve the published value
         // inside the task so a rapid second switch cannot make the first
@@ -321,7 +337,7 @@ final class ComposerStore {
     /// commands bypass this entirely (they run locally).
     var sendBlocker: String? {
         if controller?.workspaceURL == nil { return "Open a project folder first" }
-        if appState?.isModelLoading == true { return "Model is loading…" }
+        if case .loading = currentEnginePhase { return "Model is loading…" }
         if appState?.isModelReady != true { return "Choose a model to run" }
         if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Describe the task first" }
         return nil
@@ -439,7 +455,7 @@ final class ComposerStore {
 extension AppState {
     var isModelReady: Bool {
         if case .ready = enginePhase { return true }
-        return isRemoteActive
+        return isRemoteActive || isCodexActive
     }
     var isModelLoading: Bool {
         if case .loading = enginePhase { return true }

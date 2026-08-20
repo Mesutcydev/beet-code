@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.8.7](https://img.shields.io/badge/Download-Beet%20Code%200.8.7%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.7.zip)
+[![Download Beet Code 0.9.0](https://img.shields.io/badge/Download-Beet%20Code%200.9.0%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.0.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.7.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.0.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -301,6 +301,13 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   and `api_key=…` without storing the wrapper.
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
+
+## v0.9.0 — ChatGPT account access and provider surfaces
+
+- OpenAI account sign-in uses the official local Codex app-server browser/device-code flow; Beet Code never stores ChatGPT refresh tokens or treats account access as an API key.
+- Live account model discovery appears beside local and BYOK API models in the composer picker.
+- Account-backed turns reuse the native transcript, reasoning, approvals, MCP/tool events, persisted thread continuity, and a working Stop/interrupt path.
+- Settings now gives account access its own card and keeps API-key providers independent.
 
 ## v0.8.7 — fast local model readiness
 

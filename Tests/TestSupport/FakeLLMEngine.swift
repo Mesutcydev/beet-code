@@ -226,6 +226,14 @@ final class FakeLLMEngine: LLMEngine, @unchecked Sendable {
 /// arbitrary error type.
 enum FakeEngineTestError: Error, LocalizedError, Sendable {
     case simulated
+    case contextOverflow
 
-    var errorDescription: String? { "simulated engine failure" }
+    var errorDescription: String? {
+        switch self {
+        case .simulated:
+            return "simulated engine failure"
+        case .contextOverflow:
+            return "Provider returned HTTP 400: request (20915 tokens) exceeds the available context size (19712 tokens)"
+        }
+    }
 }

@@ -48,6 +48,15 @@ enum SessionExporter {
                 lines.append("## \(record.source == .app ? "Beet Code" : record.source.label) · \(time.string(from: message.timestamp))")
                 lines.append("")
                 lines.append(prose)
+            case .reasoning:
+                guard !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                lines.append("")
+                lines.append("<details>")
+                lines.append("<summary>Reasoning summary · \(time.string(from: message.timestamp))</summary>")
+                lines.append("")
+                lines.append(message.content)
+                lines.append("")
+                lines.append("</details>")
             case .toolCall:
                 lines.append("")
                 lines.append("> 🔧 `\(message.toolName ?? "tool")`")

@@ -1,0 +1,51 @@
+name: Provider compatibility report
+description: Report a provider, model-list, streaming, or tool-calling incompatibility
+title: "[Provider] "
+labels: [provider]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and endpoint family
+      placeholder: "Gemini native API, LongCat OpenAI-compatible, OpenRouter, or Custom"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model ID
+      placeholder: "Exact model ID returned by the provider"
+    validations:
+      required: true
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Failing operation
+      options:
+        - Model list
+        - Connection test
+        - First response
+        - Second response / history
+        - Streaming
+        - Tool call
+        - Reasoning display
+    validations:
+      required: true
+  - type: input
+    id: status
+    attributes:
+      label: HTTP status or provider error code
+      placeholder: "400, 401, 429, ..."
+  - type: textarea
+    id: response
+    attributes:
+      label: Sanitized response or request shape
+      description: Remove keys, tokens, personal data, and private source code.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true

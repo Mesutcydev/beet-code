@@ -231,6 +231,24 @@ final class ContextCompactorTests: XCTestCase {
         XCTAssertEqual(ContextCompactor.estimate(messages: [], windowTokens: 1000).totalTokens, 0)
     }
 
+    func testRequestEstimateIncludesSystemPromptAndResponseReserve() {
+        let messages = [message(.user, String(repeating: "m", count: 10_400))]
+        let messageOnly = ContextCompactor.estimate(messages: messages, windowTokens: 5_000)
+        let request = ContextCompactor.estimateRequest(
+            messages: messages,
+            systemPrompt: String(repeating: "s", count: 4_400),
+            windowTokens: 5_000,
+            responseReserve: 1_024)
+
+        XCTAssertEqual(request.historyTokens, 2_600)
+        XCTAssertEqual(request.systemTokens, 1_100)
+        XCTAssertEqual(request.totalTokens, 3_700)
+        XCTAssertEqual(request.budgetTokens, 3_976)
+        XCTAssertLessThan(messageOnly.fraction, 0.75)
+        XCTAssertGreaterThan(request.fraction, 0.75)
+        XCTAssertTrue(request.shouldCompact)
+    }
+
     func testCompactionKeepsRecentToolOutputs() {
         var messages: [SessionMessage] = [message(.user, "task")]
         for index in 0..<6 {
@@ -243,6 +261,29 @@ final class ContextCompactorTests: XCTestCase {
         // Non-tool messages untouched.
         XCTAssertEqual(compacted.filter { $0.role == .user }.count, 1)
         XCTAssertEqual(compacted.filter { $0.role == .assistant }.count, 6)
+    }
+
+    func testFitAddsOmissionMarkerWhenProseHistoryExceedsBudget() {
+        var messages: [SessionMessage] = [message(.user, "original objective")]
+        for index in 0..<12 {
+            messages.append(message(.assistant, "assistant turn \(index) " + String(repeating: "a", count: 700)))
+            messages.append(message(.toolResult, "tool result \(index) " + String(repeating: "b", count: 700)))
+        }
+
+        let fitted = ContextCompactor.fit(
+            messages,
+            systemPrompt: String(repeating: "s", count: 1_000),
+            windowTokens: 2_000,
+            responseReserve: 256)
+        let request = ContextCompactor.estimateRequest(
+            messages: fitted,
+            systemPrompt: String(repeating: "s", count: 1_000),
+            windowTokens: 2_000,
+            responseReserve: 256)
+
+        XCTAssertTrue(fitted.contains { $0.content.contains("Earlier conversation omitted") })
+        XCTAssertTrue(fitted.contains { $0.content == "original objective" })
+        XCTAssertLessThanOrEqual(request.totalTokens, request.budgetTokens + 32)
     }
 }
 

@@ -97,6 +97,7 @@ struct BeetCodeApp: App {
 
 extension Notification.Name {
     static let openModelManager = Notification.Name("com.beetcode.openModelManager")
+    static let openRemoteAccess = Notification.Name("com.beetcode.openRemoteAccess")
     static let newChat = Notification.Name("com.beetcode.newChat")
     static let stopAgent = Notification.Name("com.beetcode.stopAgent")
 }

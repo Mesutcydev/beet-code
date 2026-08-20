@@ -1,0 +1,39 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Check formatting hygiene
+        run: git diff --check
+
+      - name: Build and test
+        run: >-
+          xcodebuild
+          -project BeetCode.xcodeproj
+          -scheme BeetCode
+          -destination 'platform=macOS'
+          -derivedDataPath "$RUNNER_TEMP/BeetCodeDerivedData"
+          CODE_SIGNING_ALLOWED=NO
+          ONLY_ACTIVE_ARCH=YES
+          test

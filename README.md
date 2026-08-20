@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.8.1](https://img.shields.io/badge/Download-Beet%20Code%200.8.1%20DMG-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.1.dmg)
+[![Download Beet Code 0.8.2](https://img.shields.io/badge/Download-Beet%20Code%200.8.2%20DMG-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.2.dmg)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [DMG](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.1.dmg), drag **Beet Code** onto Applications (or Desktop). Apple Silicon + macOS 15+.
+**Install:** download the [DMG](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.8.2.dmg), drag **Beet Code** onto Applications (or Desktop). Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 

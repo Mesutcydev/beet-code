@@ -102,7 +102,7 @@ struct BuildDiagnosticsTool: AgentTool, CommandExecuting {
         """
 
     func preview(_ call: ParsedToolCall, in context: ToolContext) -> ApprovalPreview {
-        let command = call.string("command") ?? "swift build"
+        let command = call.string("command") ?? "auto (xcodebuild or swift build)"
         return .command(command)
     }
 
@@ -112,7 +112,13 @@ struct BuildDiagnosticsTool: AgentTool, CommandExecuting {
     }
 
     func executeCommand(_ call: ParsedToolCall, in context: ToolContext) async throws -> CommandResult {
-        let command = call.string("command") ?? "swift build"
+        let command = call.string("command") ?? Self.defaultCommand(in: {
+            if let path = call.string("path"),
+               let resolved = try? context.workspace.resolve(path, access: .read) {
+                return resolved.url
+            }
+            return context.workspace.root
+        }())
         guard !command.isEmpty else { throw ToolError.missingArgument("command") }
 
         // Resolve the project directory through the workspace authority.
@@ -156,5 +162,37 @@ struct BuildDiagnosticsTool: AgentTool, CommandExecuting {
         let raw = RunCommandTool.truncate(result.output, limit: 24_000)
         sections.append("raw output:\n\(raw)")
         return sections.joined(separator: "\n")
+    }
+
+    /// Pick a build command the agent can actually succeed with: Xcode
+    /// projects use xcodebuild (macOS destination), SPM uses swift build.
+    static func defaultCommand(in directory: URL) -> String {
+        let fm = FileManager.default
+        let kids = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        if let proj = kids.first(where: { $0.pathExtension == "xcodeproj" }) {
+            let name = proj.deletingPathExtension().lastPathComponent
+            return "xcodebuild -project \(name).xcodeproj -scheme \(name) -destination 'platform=macOS' build"
+        }
+        let yml = directory.appendingPathComponent("project.yml")
+        if fm.fileExists(atPath: yml.path) {
+            let product = projectName(fromYML: yml) ?? "App"
+            return "xcodegen generate && xcodebuild -project \(product).xcodeproj -scheme \(product) -destination 'platform=macOS' build"
+        }
+        if fm.fileExists(atPath: directory.appendingPathComponent("Package.swift").path) {
+            return "swift build"
+        }
+        return "swift build"
+    }
+
+    static func projectName(fromYML url: URL) -> String? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("name:") else { continue }
+            let value = trimmed.dropFirst("name:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        return nil
     }
 }

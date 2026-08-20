@@ -10,6 +10,24 @@ xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
 
 No model weights or Metal device are needed for the test suite.
 
+Pull requests also run the same generated-project build and macOS test suite
+in GitHub Actions. If you change `project.yml`, regenerate the project before
+testing; the generated `BeetCode.xcodeproj` is intentionally ignored.
+
+Before opening a PR:
+
+```sh
+git diff --check
+xcodegen generate
+xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+```
+
+Provider fixes should include a sanitized contract fixture or a focused test;
+UI changes should include a short before/after note and the interaction that
+was manually verified. Never commit API keys, model weights, session exports,
+or screenshots containing private workspace data.
+
 ## Ground rules for the intelligence layer
 
 1. **Deterministic or it doesn't ship.** Retrieval, ranking, capsules, and

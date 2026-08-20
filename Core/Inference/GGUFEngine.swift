@@ -170,6 +170,10 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     /// loop compacts against this, never the catalog number.
     private var launchedContextSize: Int?
     private var statsState = EngineStats()
+    /// The active HTTP relay task. Retaining it makes Stop cancel the request
+    /// instead of waiting for llama-server to finish the full response.
+    private var generationTask: Task<Void, Never>?
+    private var generationID: UUID?
     /// Stateless replay buffer — identical semantics to RemoteLLMEngine:
     /// llama-server slots are not guaranteed across requests, so every call
     /// sends the full conversation.
@@ -265,18 +269,22 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     }
 
     func unload() async {
-        let (child, watchdog) = withLock { () -> (Process?, Process?) in
+        let (child, watchdog, generation) = withLock { () -> (Process?, Process?, Task<Void, Never>?) in
             let p = process
             let j = janitor
+            let generation = generationTask
             process = nil
             janitor = nil
+            generationTask = nil
+            generationID = nil
             port = 0
             loadedID = nil
             launchedContextSize = nil
             statsState = EngineStats()
             accumulated.removeAll()
-            return (p, j)
+            return (p, j, generation)
         }
+        generation?.cancel()
         // The watchdog exits on its own once the server is gone; terminate it
         // explicitly so unload never waits on its 3 s poll.
         if let watchdog, watchdog.isRunning { watchdog.terminate() }
@@ -320,7 +328,9 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
         // Relay while measuring throughput (same stats contract as the other
         // engines).
         return AsyncThrowingStream { continuation in
+            let id = UUID()
             let task = Task { [weak self] in
+                defer { self?.clearGenerationTask(id: id) }
                 var tokens = 0
                 let started = Date()
                 do {
@@ -345,7 +355,11 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            setGenerationTask(task, id: id)
+            continuation.onTermination = { _ in
+                task.cancel()
+                self.clearGenerationTask(id: id)
+            }
         }
     }
 
@@ -374,8 +388,24 @@ final class GGUFEngine: LLMEngine, @unchecked Sendable {
     }
 
     func cancelGeneration() async {
-        // In-flight HTTP generation stops when the caller cancels the stream;
-        // nothing queued exists on the local server.
+        let task = withLock { generationTask }
+        task?.cancel()
+    }
+
+    private func setGenerationTask(_ task: Task<Void, Never>, id: UUID) {
+        withLock {
+            generationTask = task
+            generationID = id
+        }
+    }
+
+    private func clearGenerationTask(id: UUID) {
+        withLock {
+            if generationID == id {
+                generationTask = nil
+                generationID = nil
+            }
+        }
     }
 
     @discardableResult

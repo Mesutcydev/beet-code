@@ -103,15 +103,29 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.memoryMode: "off",
             DefaultsKeys.compressionLevel: "standard",
             DefaultsKeys.composerFlow: "aurora",
-            DefaultsKeys.showReasoning: false,
+            // Reasoning is a first-class, collapsed-by-default transcript
+            // surface. New installs can see it immediately; users who have
+            // explicitly switched it off keep that choice.
+            DefaultsKeys.showReasoning: true,
             DefaultsKeys.planMode: false,
             DefaultsKeys.appearance: AppAppearance.light.rawValue,
             DefaultsKeys.accentPalette: AccentPalette.beetRed.rawValue,
             DefaultsKeys.composerBorderAnimation: true,
             DefaultsKeys.apiServerEnabled: false,
             DefaultsKeys.apiServerPort: 1234,
+            DefaultsKeys.remoteSessionEnabled: false,
+            DefaultsKeys.remoteSessionPort: 9475,
+            DefaultsKeys.remoteSessionAllowLAN: false,
             DefaultsKeys.enterSends: true,
         ])
+
+        // Earlier builds hid reasoning by default. Migrate that implicit
+        // default once so an existing installation actually sees the new
+        // first-class reasoning surface; a later explicit toggle is retained.
+        if defaults.object(forKey: DefaultsKeys.reasoningVisibilityMigration) == nil {
+            defaults.set(true, forKey: DefaultsKeys.showReasoning)
+            defaults.set(true, forKey: DefaultsKeys.reasoningVisibilityMigration)
+        }
     }
 
     /// Color appearance. Defaults to light; `system` follows macOS.
@@ -280,6 +294,40 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Remote Beetcode browser control. Disabled by default because enabling
+    /// it creates a network listener, even though every control route still
+    /// requires a one-time pairing code followed by a bearer token.
+    var remoteSessionEnabled: Bool {
+        get { defaults.bool(forKey: DefaultsKeys.remoteSessionEnabled) }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.remoteSessionEnabled)
+            objectWillChange.send()
+        }
+    }
+
+    var remoteSessionPort: Int {
+        get {
+            let value = defaults.integer(forKey: DefaultsKeys.remoteSessionPort)
+            return value == 0 ? 9475 : value
+        }
+        set {
+            let clamped = min(max(newValue, 1024), 65_535)
+            defaults.set(clamped, forKey: DefaultsKeys.remoteSessionPort)
+            objectWillChange.send()
+        }
+    }
+
+    /// LAN fallback is opt-in. Tailscale is the safer default because its
+    /// direct interface is encrypted; enabling this is useful only when both
+    /// devices are on a trusted private Wi-Fi network.
+    var remoteSessionAllowLAN: Bool {
+        get { defaults.bool(forKey: DefaultsKeys.remoteSessionAllowLAN) }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.remoteSessionAllowLAN)
+            objectWillChange.send()
+        }
+    }
+
     /// When true, Enter sends and Shift+Enter inserts a newline.
     /// When false, Enter inserts a newline and only ⌘↩ sends.
     var enterSends: Bool {
@@ -302,12 +350,16 @@ final class SettingsStore: ObservableObject {
         static let compressionLevel = "compressionLevel"
         static let composerFlow = "composerFlow"
         static let showReasoning = "showReasoning"
+        static let reasoningVisibilityMigration = "reasoningVisibilityMigration.v1"
         static let planMode = "planMode"
         static let appearance = "appearance"
         static let accentPalette = "accentPalette"
         static let composerBorderAnimation = "composerBorderAnimation"
         static let apiServerEnabled = "apiServerEnabled"
         static let apiServerPort = "apiServerPort"
+        static let remoteSessionEnabled = "remoteSessionEnabled"
+        static let remoteSessionPort = "remoteSessionPort"
+        static let remoteSessionAllowLAN = "remoteSessionAllowLAN"
         static let enterSends = "enterSends"
     }
 }

@@ -26,6 +26,9 @@ final class AppState: ObservableObject {
 
     /// Agent sessions — the UI drives the agent exclusively through this.
     let sessions: AgentSessionController
+    /// Browser control host. It resumes persisted Beetcode sessions; it does
+    /// not expose a terminal or the OpenAI-compatible inference API.
+    let remoteSessionHost: RemoteSessionHost
 
     @Published var activeModelID: String?
     /// The context window the resident engine actually runs with. GGUF loads
@@ -33,6 +36,9 @@ final class AppState: ObservableObject {
     /// catalog window — compaction and the composer gauge must use this, or
     /// llama-server hard-errors (HTTP 400) mid-session. nil → catalog value.
     @Published var effectiveContextWindow: Int?
+    /// Effective remote metadata after applying the cached provider profile
+    /// and any user override. Local models leave this nil.
+    @Published private(set) var activeRemoteProfile: RemoteModelProfile?
     /// True while the simulator side panel is docked — the window must be
     /// allowed to grow so sidebar + chat + simulator never clip each other.
     @Published var isSimulatorPanelOpen = false
@@ -46,6 +52,7 @@ final class AppState: ObservableObject {
     private var pressureCoordinator: MemoryPressureCoordinator?
     private var statsTask: Task<Void, Never>?
     private var thermalTask: Task<Void, Never>?
+    private var remoteSessionSyncTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
 
     /// Local OpenAI-compatible API server (loopback-only). Lazily created when
@@ -53,6 +60,14 @@ final class AppState: ObservableObject {
     private var apiServer: LocalAPIServer?
     @Published var apiServerRunning = false
     @Published var apiServerError: String?
+    @Published var remoteSessionRunning = false
+    @Published var remoteSessionError: String?
+    @Published var remotePairingCode = ""
+    @Published var remotePairingURL: String?
+    @Published var remoteSessionURL: String?
+    @Published var remotePairingExpiresAt: Date?
+    @Published var remotePairedClientCount = 0
+    @Published var remoteNetworkKind: RemoteNetworkKind?
 
     init(
         engine: EngineRouter = EngineRouter(pool: EnginePool()),
@@ -78,7 +93,11 @@ final class AppState: ObservableObject {
             engine: engine,
             settings: SettingsStore.shared,
             thermal: thermal)
-        sessions.activeModelIDHandler = { [weak self] in self?.activeModelID ?? "" }
+        remoteSessionHost = RemoteSessionHost(engine: engine, sessions: sessions)
+        sessions.activeModelIDHandler = { [weak self] in
+            if let remote = self?.engine.activeRemoteEndpoint { return remote.model }
+            return self?.activeModelID ?? ""
+        }
         sessions.onSessionReset = { [weak self] in
             self?.sessionUsage = SessionUsage()
             self?.lastUsageSerial = 0
@@ -88,6 +107,9 @@ final class AppState: ObservableObject {
         // that size context themselves.
         sessions.contextWindowHandler = { [weak self] in
             self?.effectiveContextWindow ?? self?.activeModel?.contextWindow
+        }
+        sessions.maxTokensHandler = { [weak self] in
+            self?.activeRemoteProfile?.maxOutputTokens
         }
         // `/model <id>` slash command: resolve against the catalog and
         // activate (load) the model, exactly like the Model Manager does.
@@ -121,10 +143,18 @@ final class AppState: ObservableObject {
         // while running restart it on the new port. SettingsStore publishes via
         // objectWillChange, so re-evaluate both values on any change.
         settings.objectWillChange
-            .map { [settings] in (settings.apiServerEnabled, settings.apiServerPort) }
+            .map { [settings] in
+                (
+                    settings.apiServerEnabled,
+                    settings.apiServerPort,
+                    settings.remoteSessionEnabled,
+                    settings.remoteSessionPort,
+                    settings.remoteSessionAllowLAN
+                )
+            }
             .removeDuplicates(by: ==)
             .sink { [weak self] _ in
-                self?.syncAPIServer()
+                self?.syncServers()
             }
             .store(in: &cancellables)
 
@@ -132,7 +162,7 @@ final class AppState: ObservableObject {
         startStatsRefresh()
         restoreLaunchState()
         // Honor a persisted "server enabled" across launches.
-        syncAPIServer()
+        syncServers()
     }
 
     // MARK: Launch restore (Phase 3.1)
@@ -142,15 +172,20 @@ final class AppState: ObservableObject {
     /// delete stored state.
     private func restoreLaunchState() {
         let preferences = preferences.current
+        let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
         // Workspace: must still exist and be a directory.
-        if let workspace = self.preferences.validatedWorkspaceURL() {
+        // Test hosts deliberately start without the user's persisted workspace:
+        // each test selects its own isolated fixture, and an asynchronous
+        // launch restore must never race that selection.
+        if !isTestHost, let workspace = self.preferences.validatedWorkspaceURL() {
             Task { await self.sessions.switchWorkspace(to: workspace) }
             Log.app.info("Restored workspace \(workspace.path, privacy: .public)")
         }
 
         // Session: only when its workspace binding is still valid.
-        if let sessionID = preferences.lastSessionID,
+        if !isTestHost,
+           let sessionID = preferences.lastSessionID,
            let record = SessionStore.shared.load(id: sessionID),
            SessionStore.shared.validateWorkspaceBinding(record) {
             _ = sessions.restore(record)
@@ -289,6 +324,15 @@ final class AppState: ObservableObject {
         // An active agent must fully stop before its engine is swapped:
         // cancellation is awaited, so generation can never outlive the model.
         await sessions.stopAndWait()
+        // Remote endpoints do not own local weights, but EngineRouter keeps
+        // the remote selection until explicitly returned to local. Clear it
+        // before loading a local model so a remote session cannot continue to
+        // intercept the freshly loaded local engine.
+        if engine.activeRemoteEndpoint != nil {
+            engine.useLocal()
+            activeRemoteProfile = nil
+            effectiveContextWindow = nil
+        }
         // Multi-resident pool: the previously active model STAYS RESIDENT
         // (warm KV cache) — the pool evicts LRU idle residents only when the
         // memory budget or the residency cap requires it. Single-resident
@@ -342,6 +386,17 @@ final class AppState: ObservableObject {
             enginePhase = .failed("No API key configured for \(endpoint.provider.displayName).")
             return false
         }
+        let baseProfile = preferences.remoteModelProfile(
+            provider: endpoint.provider, model: endpoint.model)
+            ?? RemoteModelProfile(
+                provider: endpoint.provider,
+                model: endpoint.model,
+                supportsVision: endpoint.provider.supportsVision,
+                supportsTools: true,
+                supportsTemperature: true)
+        activeRemoteProfile = baseProfile.applying(
+            preferences.remoteModelOverride(provider: endpoint.provider, model: endpoint.model))
+        effectiveContextWindow = activeRemoteProfile?.contextWindow
         enginePhase = .ready("\(endpoint.provider.displayName) · \(endpoint.model)")
         return true
     }
@@ -353,6 +408,8 @@ final class AppState: ObservableObject {
             await self?.sessions.stopAndWait()
             self?.engine.useLocal()
             self?.activeModelID = nil
+            self?.activeRemoteProfile = nil
+            self?.effectiveContextWindow = nil
             self?.enginePhase = .idle
         }
     }
@@ -366,6 +423,7 @@ final class AppState: ObservableObject {
         await sessions.stopAndWait()
         await engine.unload()
         activeModelID = nil
+        activeRemoteProfile = nil
         effectiveContextWindow = nil
         enginePhase = .idle
         clearPersistedModel()
@@ -381,6 +439,12 @@ final class AppState: ObservableObject {
     }
 
     // MARK: Local API server (v0.3)
+
+    /// Reconciles both network surfaces with their independent settings.
+    private func syncServers() {
+        syncAPIServer()
+        syncRemoteSessionHost()
+    }
 
     /// Reconciles the running server with the Settings toggle + port. Called
     /// whenever either changes; idempotent otherwise.
@@ -427,6 +491,86 @@ final class AppState: ObservableObject {
     /// The URL a client should point at (shown in Settings).
     var apiServerBaseURL: String {
         "http://127.0.0.1:\(settings.apiServerPort)"
+    }
+
+    // MARK: Remote Beetcode sessions
+
+    private func syncRemoteSessionHost() {
+        remoteSessionSyncTask?.cancel()
+        let enabled = settings.remoteSessionEnabled
+        let port = settings.remoteSessionPort
+        let allowLAN = settings.remoteSessionAllowLAN
+        remoteSessionSyncTask = Task { [weak self] in
+            guard let self else { return }
+            if enabled {
+                await self.startRemoteSessionHost(port: port, allowLAN: allowLAN)
+            } else {
+                await self.stopRemoteSessionHost()
+            }
+        }
+    }
+
+    private func startRemoteSessionHost(port: Int, allowLAN: Bool? = nil) async {
+        do {
+            try Task.checkCancellation()
+            try await remoteSessionHost.start(
+                port: port,
+                allowLAN: allowLAN ?? settings.remoteSessionAllowLAN)
+            guard !Task.isCancelled else { return }
+            remoteSessionRunning = remoteSessionHost.isRunning
+            remoteSessionError = nil
+            refreshRemoteSessionSnapshot()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            remoteSessionRunning = false
+            remoteSessionError = error.localizedDescription
+            refreshRemoteSessionSnapshot()
+        }
+    }
+
+    private func stopRemoteSessionHost() async {
+        await remoteSessionHost.stop()
+        guard !Task.isCancelled else { return }
+        remoteSessionRunning = false
+        remoteSessionError = nil
+        refreshRemoteSessionSnapshot()
+    }
+
+    func rotateRemotePairingCode() {
+        remoteSessionHost.rotatePairingCode()
+        refreshRemoteSessionSnapshot()
+    }
+
+    func revokeRemoteClients() {
+        remoteSessionHost.revokeAllClients()
+        refreshRemoteSessionSnapshot()
+    }
+
+    func retryRemoteSessionHost() {
+        remoteSessionError = nil
+        syncRemoteSessionHost()
+    }
+
+    func refreshRemoteSessionStatus() {
+        remoteSessionHost.refreshPairingState()
+        refreshRemoteSessionSnapshot()
+    }
+
+    private func refreshRemoteSessionSnapshot() {
+        let pairingCode = remoteSessionHost.pairingCode
+        let pairingURL = remoteSessionHost.pairingURL
+        let browserURL = remoteSessionHost.browserURL
+        let pairingExpiresAt = remoteSessionHost.pairingExpiresAt
+        let pairedClientCount = remoteSessionHost.pairedClientCount
+        let networkKind = remoteSessionHost.networkKind
+        if remotePairingCode != pairingCode { remotePairingCode = pairingCode }
+        if remotePairingURL != pairingURL { remotePairingURL = pairingURL }
+        if remoteSessionURL != browserURL { remoteSessionURL = browserURL }
+        if remotePairingExpiresAt != pairingExpiresAt { remotePairingExpiresAt = pairingExpiresAt }
+        if remotePairedClientCount != pairedClientCount { remotePairedClientCount = pairedClientCount }
+        if remoteNetworkKind != networkKind { remoteNetworkKind = networkKind }
     }
 
     private func persistActiveModel(_ modelID: String) {

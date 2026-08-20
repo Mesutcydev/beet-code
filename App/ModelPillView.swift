@@ -33,15 +33,21 @@ struct ModelSelectionPill: View {
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(Theme.textTertiary)
             }
-            // The row's one identity control: primary text, and an accent
-            // border once an engine is actually ready — before that it wears
-            // the same hairline as the accessory pills.
+            // Model identity is a text control in the command line, not a
+            // competing badge. The status dot carries readiness at a glance.
             .font(.caption.weight(.semibold))
             .foregroundStyle(Theme.textPrimary)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 24)
-            .background(Theme.surfaceInset, in: Capsule())
-            .overlay(Capsule().strokeBorder(borderColor, lineWidth: 1))
+            .padding(.horizontal, 7)
+            .frame(minHeight: 26)
+            .background(showPopover ? Theme.washStrong(Theme.accent) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(alignment: .bottom) {
+                if case .ready = appState.enginePhase {
+                    Capsule()
+                        .fill(borderColor)
+                        .frame(width: 20, height: 2)
+                }
+            }
             .lfHoverLift()
         }
         .buttonStyle(.plain)

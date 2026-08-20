@@ -37,10 +37,13 @@ final class HFTokenStore: ObservableObject {
     /// after the first read so repeated downloads never re-prompt the
     /// keychain.
     nonisolated static let tokenCacheLock = NSLock()
+    nonisolated static let tokenReadLock = NSLock()
     nonisolated(unsafe) private static var cachedToken: String?
     nonisolated(unsafe) private static var tokenWasRead = false
 
     nonisolated static func currentToken() -> String? {
+        tokenReadLock.lock()
+        defer { tokenReadLock.unlock() }
         tokenCacheLock.lock()
         if tokenWasRead {
             let cached = cachedToken
@@ -71,10 +74,10 @@ final class HFTokenStore: ObservableObject {
     private let service = "com.beetcode.huggingface"
     private let account = "default-token"
 
-    var hasToken: Bool { Keychain.read(service: service, account: account) != nil }
+    var hasToken: Bool { Self.currentToken() != nil }
 
     func token() -> String? {
-        Keychain.read(service: service, account: account)
+        Self.currentToken()
     }
 
     func saveToken(_ token: String) {

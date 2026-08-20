@@ -343,6 +343,45 @@ final class ComposerStoreTests: XCTestCase {
         XCTAssertEqual(store.estimate.contextWindow, ModelCatalog.all.first!.contextWindow)
     }
 
+    func testEstimateIncludesPersistedHistoryAndOffersCompaction() async {
+        let (appState, store, _) = makeStack()
+        await openWorkspace(appState, store)
+        let model = activateFirstModel(appState)
+
+        let now = Date()
+        let history = (0..<8).map { index in
+            SessionMessage(
+                role: .toolResult,
+                content: String(repeating: "tool output \(index) ", count: 2_000),
+                toolName: "read_file",
+                timestamp: now)
+        }
+        let record = SessionRecord(
+            id: UUID(),
+            title: "Large continuation",
+            createdAt: now,
+            updatedAt: now,
+            workspacePath: workspace.url.path,
+            modelID: model.id,
+            messages: history,
+            checkpoints: [])
+        SessionStore.shared.save(record)
+        SessionStore.shared.currentSessionID = record.id
+        XCTAssertTrue(appState.sessions.restore(record))
+
+        store.prompt = "continue the task"
+        let refreshed = await waitUntil { store.estimate.historyTokens > 0 }
+        XCTAssertTrue(refreshed, "the composer should observe the persisted continuation")
+        XCTAssertGreaterThan(store.estimate.historyTokens, store.estimate.totalTokens)
+        XCTAssertEqual(
+            store.estimate.requestTokens,
+            store.estimate.historyTokens + store.estimate.totalTokens)
+        XCTAssertEqual(store.estimate.contextWindow, model.contextWindow)
+        XCTAssertTrue(store.estimate.shouldCompact,
+                      "large continuation history should warn before send")
+        XCTAssertTrue(store.canCompactHistory)
+    }
+
     // MARK: Validation + send
 
     func testSendBlockedWithoutWorkspaceOrModel() async {
@@ -457,7 +496,8 @@ final class ComposerStoreTests: XCTestCase {
         // Draft persistence is debounced; wait for the file to land.
         let draftsDir = appSupport.url(for: "Drafts/ComposerDrafts")
         let persisted = await waitUntil {
-            (try? FileManager.default.contentsOfDirectory(atPath: draftsDir.path).isEmpty) == false
+            (try? FileManager.default.contentsOfDirectory(atPath: draftsDir.path))?
+                .contains(where: { $0.hasSuffix(".json") }) == true
         }
         XCTAssertTrue(persisted, "the draft must be persisted")
 
@@ -475,7 +515,8 @@ final class ComposerStoreTests: XCTestCase {
         store.prompt = "workspace A draft"
         let persisted = await waitUntil {
             (try? FileManager.default.contentsOfDirectory(
-                atPath: appSupport.url(for: "Drafts/ComposerDrafts").path).isEmpty) == false
+                atPath: appSupport.url(for: "Drafts/ComposerDrafts").path))?
+                .contains(where: { $0.hasSuffix(".json") }) == true
         }
         XCTAssertTrue(persisted)
 

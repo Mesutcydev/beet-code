@@ -15,9 +15,11 @@ struct ChatView: View {
     /// selection). Owned by ChatView so it survives view rebuilds; attached
     /// to the live controller/AppState in `.task`.
     @State private var composerStore = ComposerStore()
+    @State private var sessionTitle = "New chat"
 
     var body: some View {
         VStack(spacing: 0) {
+            chatHeader
             transcript
             Divider()
             ComposerView(store: composerStore)
@@ -27,8 +29,89 @@ struct ChatView: View {
         .task {
             composerStore.attach(controller: controller, appState: appState)
         }
+        .task(id: controller.activeSessionID) {
+            let id = controller.activeSessionID
+            let title = await Task.detached(priority: .utility) {
+                guard let id, let record = SessionStore.shared.load(id: id) else {
+                    return "New chat"
+                }
+                return SessionTitle.display(for: record)
+            }.value
+            guard !Task.isCancelled else { return }
+            sessionTitle = title
+        }
         .onPasteCommand(of: [.png, .tiff, .jpeg, .fileURL]) { providers in
             handlePaste(providers)
+        }
+    }
+
+    /// A compact document bar for the conversation itself. It stays quieter
+    /// than a toolbar, but gives restored/imported chats an identity and makes
+    /// the current execution phase visible without opening the sidebar.
+    private var chatHeader: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 24, height: 24)
+                .background(Theme.wash(Theme.accent), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(sessionTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(controller.workspaceURL?.lastPathComponent ?? "Choose a workspace")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(phaseTint)
+                    .frame(width: 6, height: 6)
+                Text(phaseLabel)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(phaseTint)
+            }
+            .padding(.horizontal, 8)
+            .frame(minHeight: 24)
+            .background(Theme.wash(phaseTint), in: Capsule())
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Chat phase")
+            .accessibilityValue(phaseLabel)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 7)
+        .background(Theme.bg)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline.opacity(0.7)).frame(height: 1)
+        }
+    }
+
+    private var phaseLabel: String {
+        switch controller.currentPhase {
+        case .idle: "Ready"
+        case .planning: "Planning"
+        case .awaitingPlanApproval: "Review plan"
+        case .working: "Working"
+        case .awaitingApproval: "Needs approval"
+        case .awaitingQuestion: "Needs answer"
+        case .verifying: "Verifying"
+        case .finished: "Finished"
+        }
+    }
+
+    private var phaseTint: Color {
+        switch controller.currentPhase {
+        case .awaitingApproval, .awaitingPlanApproval, .awaitingQuestion: Theme.warning
+        case .working, .planning, .verifying: Theme.info
+        case .finished: Theme.success
+        case .idle: Theme.textTertiary
         }
     }
 
@@ -48,6 +131,11 @@ struct ChatView: View {
                     ForEach(displayRows) { row in
                         rowView(row)
                             .id(row.id)
+                    }
+                    if controller.isRunning, !controller.liveReasoningText.isEmpty {
+                        LiveReasoningCard(
+                            text: controller.liveReasoningText,
+                            phase: controller.currentPhase)
                     }
                     if !controller.streamingText.isEmpty {
                         StreamingCard(text: controller.streamingText)
@@ -294,19 +382,18 @@ struct ChatView: View {
 }
 // MARK: - Rows
 
-/// One rendered transcript row. Consecutive tool activity (calls, results,
-/// reasoning) collapses into a single "steps" card — the Cursor pattern —
-/// so a run reads as "answer, work, answer", never a wall of alternating
-/// call/result lines.
+/// One rendered transcript row. Tool activity stays grouped, while reasoning
+/// remains its own row so it is discoverable without opening the steps card.
 private enum TranscriptRowModel: Identifiable {
     case user(AgentSessionController.TranscriptItem)
     case assistant(AgentSessionController.TranscriptItem)
     case toolSteps([AgentSessionController.TranscriptItem])
+    case reasoning(AgentSessionController.TranscriptItem)
     case meta(AgentSessionController.TranscriptItem)
 
     var id: String {
         switch self {
-        case .user(let item), .assistant(let item), .meta(let item):
+        case .user(let item), .assistant(let item), .reasoning(let item), .meta(let item):
             return item.id.uuidString
         case .toolSteps(let items):
             return "steps-" + (items.first?.id.uuidString ?? "empty")
@@ -331,8 +418,10 @@ private extension ChatView {
                 flush(); rows.append(.user(item))
             case .assistant:
                 flush(); rows.append(.assistant(item))
-            case .toolCall, .toolResult, .reasoning:
+            case .toolCall, .toolResult:
                 buffer.append(item)
+            case .reasoning:
+                flush(); rows.append(.reasoning(item))
             case .checkpoint, .notice:
                 flush(); rows.append(.meta(item))
             }
@@ -350,6 +439,8 @@ private extension ChatView {
             AssistantMessage(item: item)
         case .toolSteps(let items):
             ToolStepsCard(items: items)
+        case .reasoning(let item):
+            ReasoningCard(item: item)
         case .meta(let item):
             MetaRow(item: item)
         }
@@ -571,7 +662,6 @@ private struct ToolStepsCard: View {
 private struct StepRow: View {
     let item: AgentSessionController.TranscriptItem
     @State private var outputExpanded = false
-    @State private var reasoningExpanded = false
 
     var body: some View {
         switch item.kind {
@@ -620,32 +710,76 @@ private struct StepRow: View {
                     }
                 }
             }
-        case .reasoning(let text):
-            VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    reasoningExpanded.toggle()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: reasoningExpanded ? "brain.head.profile" : "chevron.right.circle")
-                            .foregroundStyle(Theme.accent)
-                        Text(reasoningExpanded ? "Hide reasoning" : "Reasoning")
-                            .font(.caption.bold())
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                }
-                .buttonStyle(.borderless)
-                if reasoningExpanded {
-                    Text(text)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(Theme.textSecondary)
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .background(Theme.wash(Theme.accent), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                }
-            }
         default:
             EmptyView()
         }
+    }
+}
+
+/// Reasoning is a transcript event in its own right, not another tool step.
+/// The card is expanded by default so the feature is discoverable; the
+/// disclosure keeps long traces from taking over the conversation.
+private struct ReasoningCard: View {
+    let item: AgentSessionController.TranscriptItem
+    @State private var expanded = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var text: String {
+        guard case .reasoning(let value) = item.kind else { return "" }
+        return value
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            Button {
+                if reduceMotion {
+                    expanded.toggle()
+                } else {
+                    withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.18)) {
+                        expanded.toggle()
+                    }
+                }
+            } label: {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: expanded ? "brain.head.profile" : "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 24, height: 24)
+                        .background(Theme.washStrong(Theme.accent), in: Circle())
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Reasoning")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(Theme.textPrimary)
+                        Text(expanded ? "Visible model work" : "Tap to reveal the model's work")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    Spacer()
+                    Text("\(text.count.formatted()) chars")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                ScrollView {
+                    Text(text)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(maxHeight: 190)
+                .padding(Spacing.sm)
+                .background(Theme.wash(Theme.accent), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            }
+        }
+        .padding(Spacing.md)
+        .lfTranscriptCard(Theme.accent)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Reasoning")
     }
 }
 
@@ -1133,6 +1267,61 @@ private struct ReasoningIndicator: View {
             }
         }
         .accessibilityLabel("The model is working")
+    }
+}
+
+/// Live reasoning card shown before or alongside the answer. It is compact by
+/// design: useful progress is visible without continuously reflowing a full
+/// height trace while tokens arrive.
+private struct LiveReasoningCard: View {
+    let text: String
+    let phase: AgentPhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.sm) {
+            AssistantAvatar(size: 24)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain.head.profile")
+                        .foregroundStyle(Theme.accent)
+                    Text(phaseLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    Text("live")
+                        .font(.caption2.monospaced().weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                Text(text)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(Spacing.md)
+        .lfTranscriptCard(Theme.accent)
+        .opacity(reduceMotion ? 1 : (pulse ? 1 : 0.92))
+        .task {
+            guard !reduceMotion else { return }
+            while !Task.isCancelled {
+                withAnimation(.easeInOut(duration: 0.7)) { pulse.toggle() }
+                try? await Task.sleep(for: .milliseconds(700))
+            }
+        }
+        .accessibilityLabel("Live reasoning: \(text)")
+    }
+
+    private var phaseLabel: String {
+        switch phase {
+        case .planning: "Planning"
+        case .verifying: "Verifying"
+        case .awaitingApproval: "Preparing an action"
+        case .awaitingQuestion: "Thinking through a question"
+        default: "Working through the task"
+        }
     }
 }
 /// Plan-mode card: the agent's proposed plan with Approve / Revise.

@@ -26,34 +26,24 @@ enum StreamDisplayFilter {
         if hasRepetitionFillerTail(visible) {
             return (trimmingFillerTail(visible), true)
         }
-        var inOpenThink = false
-        var searchFrom = raw.startIndex
-        while searchFrom < raw.endIndex {
-            guard let open = raw.range(
-                of: "<think>",
-                range: searchFrom..<raw.endIndex)
-            else { break }
-            inOpenThink = raw[open.upperBound...]
-                .range(of: "</think>") == nil
-            searchFrom = open.upperBound
-        }
-        // 思考 markers pair up like delimiters (see PromptBuilder
-        // .strippingThinking): an odd count means the last one is still open.
-        if !inOpenThink {
-            var markers = 0
-            var from = raw.startIndex
-            while let m = raw.range(of: "思考", range: from..<raw.endIndex) {
-                markers += 1
-                from = m.upperBound
-            }
-            inOpenThink = markers % 2 == 1
-        }
+        let inOpenThink = PromptBuilder.hasOpenThinkingBlock(raw)
         // Everything streamed so far is think/tool wire format — show the
         // working indicator instead of an empty or raw-JSON bubble.
         if visible.isEmpty, !stripped.isEmpty {
             return ("", true)
         }
         return (visible, inOpenThink)
+    }
+
+    /// Returns the reasoning channel accumulated so far. This uses the same
+    /// raw buffer as `display(_:)`, so live thoughts can be shown without
+    /// leaking half-formed tool JSON into the answer bubble.
+    static func reasoningText(raw: String) -> String {
+        guard !raw.isEmpty else { return "" }
+
+        // Keep a bounded trace so long local generations cannot make every
+        // subsequent SwiftUI body carry an unbounded string.
+        return String(PromptBuilder.extractingThinkingIncludingOpen(raw).suffix(12_000))
     }
 
     /// Cuts a still-streaming tool call off the tail: an unterminated

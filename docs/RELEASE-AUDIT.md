@@ -1,171 +1,184 @@
-# Beet Code — Release Audit (v0.8.0)
+# Beet Code — Release Audit (v0.8.2 / build 7)
 
-Generated 2026-08-19 against the current tree. All numbers below are from real
-runs in this session, not claims. Supersedes the v0.7.0 audit.
-
-**Tree audited:** v0.8.0 (build 5) — activity rail, chat import/export,
-Pantone-anchored Beet theme, diagnostics panel, KV-aware GGUF context, MTP
-speculative decoding, tool-call transcript sanitization, ShellRunner
-EXC_GUARD fix; hermetic suite.
+Generated 2026-08-20 for the v0.8.2 / build 7 release candidate. This audit
+describes the current source tree; the tree must be committed and tagged
+before the results can be treated as a release record.
 
 ## Verdict
 
-**Shippable today as a personal/insider build on your own Macs.**
-Not shippable to strangers: Developer ID signing + notarization remain
-blocked — certificates revoked (see §4.1).
+**Engineering release candidate: PASS. Public macOS distribution: BLOCKED.**
 
-## 1. Build & test evidence (this session)
+The application builds in Debug and Release, the CLI target builds, and the
+full suite passes. The Release app has a valid Apple Development signature,
+but it is not signed for public distribution: it enables `get-task-allow`,
+does not enable the hardened runtime, is not notarized, and is rejected by
+Gatekeeper. A new, non-revoked Developer ID Application certificate and a
+notarization/stapling flow are required before publishing a download.
 
-| Check | Result |
-| --- | --- |
-| Debug build (app) | ✅ BUILD SUCCEEDED (after `xcodegen` regen for new files) |
-| Test suite | ✅ **370/370, 0 failures**, 97 s, zero runner restarts (`TEST SUCCEEDED`) |
-| Targeted re-run (filter + parser) | ✅ 19/19 (StreamDisplayFilterTests, ToolParserTests) |
-| Code signing | ⚠️ ad-hoc (`flags=0x2(adhoc)`), TeamIdentifier unset |
-| Gatekeeper | ❌ rejects ad-hoc — expected; requires Developer ID + notarization |
-| App Sandbox | OFF (`ENABLE_APP_SANDBOX: NO`) — deliberate and required: the agent needs shell/git/workspace access. Must stay documented. |
+## 1. Evidence summary
 
-Test count growth: 304 (v0.7.0) → 370 (v0.8.0, +66: vision agent sessions,
-GGUF metadata/context, workspace history, import/export-adjacent suites,
-engine pool, diagnostics-adjacent coverage).
+| Check | Result | Evidence |
+| --- | --- | --- |
+| XcodeGen regeneration | PASS | `xcodegen generate` completed with XcodeGen 2.46.0; the generated `project.pbxproj` SHA-256 was unchanged. |
+| Debug app test suite | PASS | `xcodebuild test` completed with **632 passed, 1 skipped, 0 failures (633 total)**. |
+| CI-parity unsigned suite | PASS | The GitHub Actions command with `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, and `ONLY_ACTIVE_ARCH=YES` completed with **632 passed, 1 skipped, 0 failures (633 total)**. |
+| Release app build | PASS | `xcodebuild ... -configuration Release ... build` returned `BUILD SUCCEEDED`. |
+| CLI build | PASS | `xcodebuild ... -scheme BeetCodeCLI ... build` returned `BUILD SUCCEEDED`. |
+| Bundle metadata | PASS | `com.beetcode.app`, display name `Beet Code`, version `0.8.2`, build `7`, minimum macOS `15.0`, arm64. |
+| Signature integrity | PASS | `codesign --verify --deep --strict` reported the app valid on disk and satisfying its designated requirement. |
+| Public distribution signature | BLOCKED | Release settings use `Apple Development`; the Release signature carries `get-task-allow=true`. |
+| Hardened runtime | BLOCKED | Release settings report `ENABLE_HARDENED_RUNTIME=NO`. |
+| Gatekeeper assessment | BLOCKED | `spctl --assess --type execute` rejected the Release app. |
+| DMG packaging script | PARTIAL | `scripts/package-beetcode-dmg.sh` is executable and passes `bash -n`; it creates a UDZO DMG and SHA-256 file but does not sign, notarize, staple, or assess the app. |
+| License | PASS | MIT license is present at the repository root. |
+| CI coverage | PARTIAL | macOS build/test CI is present; no automated release, signing, notarization, or artifact-publishing workflow exists. |
 
-**Full-suite flake — root-caused and fixed.** The intermittent
-"unexpected exit, crash, or test timeout" mid-suite (host process died inside
-`EndToEndTests.testPausedDownloadManifestSurvivesRelaunch`) was an
-**EXC_GUARD kill in ShellRunner**: the pipe's read fd was wrapped in a second
-`FileHandle(closeOnDealloc: true)`, so one descriptor had two owners and the
-last dealloc closed an already-closed *guarded* fd. Fixed by reading through
-the pipe's own handle (single owner, no double close) — commits `6d6b4ab`,
-`f16cbfa`. Post-fix suite: no runner restarts.
+The first CI-parity attempt stopped before tests because the temporary build
+volume ran out of space. After removing only audit-created temporary build
+directories, the identical command passed. This was an environment capacity
+issue, not a product or test failure.
 
-## 2. What shipped since the v0.7.0 audit
+## 2. Release gates
 
-- **Activity rail + sidebar redesign**: every panel toggle and action lives
-  in the rail (new chat, sessions/imported tabs, browser, simulator,
-  diagnostics, export, Model Manager, Settings). Imported chats group under
-  collapsible per-project header cards (headline name, accent folder tile,
-  count pill, rotating chevron) with **Claude/Codex/Cursor filter pills**.
-- **Chat history import/export**: import from `~/.claude`, `~/.codex`, Cursor
-  with live parser status and bounded streaming (16 MB/file, 512 KB/message);
-  export via rail button (current chat → Markdown) and per-row context menu
-  (Markdown/JSON) — wire format sanitized out of exports.
-- **Themes**: full-UI Beet mode anchored on the exact Pantone 19-2030 TCX
-  Beet Red `#7A1F3D` window background (one hue, four depths; cards lift,
-  wells sink; glass falls back to opaque themed surfaces); BeetLogo replaces
-  the sparkle avatar and empty-state hammer; brand contract codified in
-  `docs/BRAND-KIT.md`.
-- **Transcript sanitization**: raw tool-call JSON can no longer leak into the
-  transcript — `ToolParser.strippingCalls` cleans live + restored assistant
-  messages; `looksLikeToolCallFragment` turns token-ceiling-truncated calls
-  into protocol-error re-prompts instead of fake "Task complete" answers;
-  streaming display hides in-progress call syntax behind a "Working…"
-  indicator.
-- **Interactive card redesign**: approval/question/plan cards share one
-  silhouette (raised surface, hairline, 3-pt semantic leading bar);
-  destructive actions moved to the far trailing edge; streaming caret is a
-  brand-gradient pulse bar; composer pills can never wrap mid-label.
-- **In-app diagnostics**: docked panel with breadcrumb timeline
-  (session/engine/tool/approval/import/system, 500-entry ring buffer,
-  metadata-only), category filter pills, system snapshot, plain-text log
-  export for bug reports. Spec: `docs/DIAGNOSTICS-SPEC.md`.
-- **KV-aware GGUF context**: fixed 32K clamp replaced by RAM-fitted context
-  (256K ceiling, 4K floor) sniffed from GGUF header dims;
-  `effectiveContextWindow` plumbed engine → pool → router → AppState →
-  AgentLoop compaction + composer gauge (fixes llama-server HTTP 400 overflow
-  when fitted ctx < catalog window).
-- **MTP speculative decoding**: auto-detects nextn tensors (Qwythos),
-  launches llama-server with `--spec-type draft-mtp --spec-draft-n-max 2`,
-  self-healing fallback on older binaries.
-- **Vision**: MLXVLM wired, SmolVLM catalog entries, vision tool covered by
-  real agent-session tests; describe_image refusal surfaces as a failed
-  observation.
-- **Workspace-history digest** in the system prompt (own + imported
-  sessions); 思考-delimited reasoning stripping for Qwen finetunes.
+### P0 — required before public download
 
-## 3. Live verification carried over (still valid)
+1. **Replace development signing with distribution signing.** Obtain a valid
+   `Developer ID Application` certificate. The currently listed Developer ID
+   identities are revoked. Configure the Release build to use the new
+   certificate and a distribution entitlements file.
 
-- **Local API server E2E with a real model**: Qwen3 1.7B 4-bit served via
-  `lf serve --model`; `/v1/models`, non-streaming + SSE completions returned
-  real generated output (v0.6.0 audit).
-- **`lf serve` CLI**: banner, model load, SIGINT teardown clean.
-- Live model lists depend on valid provider keys — not fully verifiable for
-  every provider without them.
-- Attachments (paperclip → quoted files / vision description) exercised in
-  unit/E2E suites; not re-verified end-to-end with a live vision model this
-  session.
+2. **Enable the hardened runtime and remove development entitlements.** The
+   public build must be signed with hardened runtime options and must not carry
+   `com.apple.security.get-task-allow`.
 
-## 4. Release-readiness checklist
+3. **Notarize, staple, and verify the exact artifact.** Submit the signed ZIP
+   or DMG with `xcrun notarytool`, staple the ticket, then verify with
+   `spctl` on a clean machine before publishing.
 
-### 4.1 Must fix before any public distribution
-1. **Developer ID signing + notarization — BLOCKED ON CERTIFICATE.**
-   Both `Developer ID Application` certificates in the login keychain are
-   **revoked** (`CSSMERR_TP_CERT_REVOKED`). Action required: create a new
-   Developer ID Application certificate at developer.apple.com. Then:
-   hardened-runtime + timestamp codesign → `ditto` zip →
-   `xcrun notarytool submit … --wait`.
-2. **Versioning**: 0.8.0 / build 5 in `project.yml` + `App/Info.plist` ✅.
-3. **Entitlements file**: still absent. Create for Developer ID + hardened
-   runtime (MLX/Metal needs no JIT entitlement).
+4. **Create an immutable release source point.** Commit the intended changes,
+   regenerate the project, rerun the audit, and tag the exact release tree.
+   The current audited tree is dirty, so it is not itself a reproducible
+   release reference.
 
-### 4.2 Should fix before 1.0
-4. **Distribution format**: no DMG/zip packaging script, no Sparkle
-   auto-update, no crash reporting. (`hdiutil create` one-liner below works
-   today for ad-hoc DMGs.)
-5. **Local API server**: no Anthropic-format *streaming* parity for
-   `tool_use` blocks (text-only), no per-request rate limiting.
-6. **Info.plist minimal**: no `NSHumanReadableCopyright`, no URL schemes.
-7. **MCP**: stdio + HTTP transports configurable, no OAuth flow execution yet.
-8. **Diagnostics persistence**: breadcrumbs are session-only; bounded JSONL
-   persistence across launches is specced (DIAGNOSTICS-SPEC §6) but unbuilt.
+### P1 — required for a dependable release process
 
-### 4.3 Explicitly fine as-is
-- Ad-hoc signing for self-use ✅
-- Sandbox OFF (documented requirement for shell tools) ✅
-- arm64-only (product decision: Apple Silicon only) ✅
-- Secrets: Keychain-only, sessions AES-GCM encrypted, redaction on —
-  no hardcoded keys (scanned before push) ✅
-- Loopback-only server binding (127.0.0.1) ✅
-- Diagnostics are metadata-only (no message/file contents, no secrets) ✅
-- Repo public at https://github.com/Mesutcydev/beet-code ✅
+5. **Automate release packaging.** The local DMG script is useful, but it only
+   wraps an existing app. Add a protected release workflow that builds,
+   signs, notarizes, staples, runs Gatekeeper verification, generates
+   checksums, and publishes the artifacts.
 
-## 5. Test coverage snapshot (what the 370 tests protect)
+6. **Add clean-machine smoke coverage.** Install the packaged app from the
+   published artifact and exercise launch, model/provider configuration,
+   workspace access, session persistence, and the CLI/server entry point.
 
-AgentLoop + hooks (deny/rewrite + gate non-bypass) · tools/policy/git/
-workspace · BYOK providers + registry · tool parser (incl. call-stripping +
-truncated-fragment detection) · diagnostics parser · diff engine · memory ·
-persistence · repo index · smart downloader · parallel chunk planner · GGUF
-planner + metadata/context · memory advisor · engine pool residency ·
-end-to-end (download-finalize-activate, paused-manifest-relaunch,
-checkpoint-undo) · reasoning folding + stream display filter ·
-intent/composer store pipeline · vision sessions · workspace history digest ·
-local API server · MCP (config transport decode, OAuth planner, tools) ·
-slash commands + AGENTS.md · legacy migration · browser tool registration.
+7. **Publish artifact provenance.** Record the source tag, app version/build,
+   architecture, notarization result, and SHA-256 beside each downloadable
+   artifact.
 
-Known gaps to add before 1.0: idle-TTL unload timing test (needs clock
-control), MCP timeout path under a hanging server, DMG/signing automation,
-live-browser e2e (needs a UI-test harness).
+### P2 — quality and 1.0 follow-up
 
-## 6. Release procedure (repeatable, v0.8)
+- Add `NSHumanReadableCopyright` to the bundle metadata.
+- Add persistence coverage for diagnostics across relaunches.
+- Add timeout-path coverage for a hanging MCP server.
+- Add live-provider, live-browser, and live-vision smoke tests where stable
+  credentials and test fixtures are available.
+- Keep the arm64-only and App Sandbox-off decisions prominent in release notes;
+  both are current product constraints, not accidental omissions.
+
+## 3. Current build and signing configuration
+
+The source-of-truth configuration is `project.yml`:
+
+- Deployment target: macOS 15.0
+- Architecture: arm64 only (`x86_64` excluded)
+- Swift: 6.0
+- App identifier: `com.beetcode.app`
+- Version/build: `0.8.2` / `7`
+- App Sandbox: disabled, because the agent requires workspace, shell, and git
+  access
+- Release signing identity: `Apple Development`
+- Hardened runtime: disabled
+
+There are no entitlements files in the repository. The current Release app
+does have the development `get-task-allow` entitlement, confirming that the
+local Release configuration is not a public-distribution configuration.
+
+## 4. Functional coverage verified by the suite
+
+The passing suite covers the current provider and hybrid-surface work,
+including streamed reasoning/transcript state, remote-session controller
+behavior, provider parsing and tool-call fragments, agent loops and tools,
+BYOK/provider flows, persistence and migration, local API/MCP surfaces,
+diagnostics, model/context management, import/export, and the macOS app/CLI
+targets. The controller-level reasoning regression confirms that an emitted
+reasoning event survives into transcript state, and the stop regression
+confirms that cancelling an active generation reaches a cancelled terminal
+state.
+
+This is automated coverage only. It does not prove that every external model
+provider, live browser/simulator integration, notarized download, or clean
+machine launch works without the corresponding external credentials and
+environment.
+
+## 5. Source and repository hygiene
+
+- `git diff --check`: PASS.
+- No credential-bearing artifact extensions (`.p8`, `.pem`, `.key`,
+  `.mobileprovision`, `.cer`, or `.env`) were found in the audited tree.
+- Token/path-pattern matches were limited to test fixtures, normal system-path
+  handling, and diagnostic/tool implementation; no credential value was
+  observed.
+- The repository has an MIT `LICENSE`.
+- The working tree contains substantial uncommitted product changes and new
+  files. Those changes were preserved and are intentionally included in this
+  audit's scope.
+
+## 6. Repeatable verification commands
+
+Run from the repository root:
 
 ```sh
-cd "new project/BeetCode"
-rm -rf .derived                          # avoid stale-path warnings
-xcodegen generate                        # after any file add/remove
+xcodegen generate
+git diff --check
+
+xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/beetcode-ci-audit \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+  ONLY_ACTIVE_ARCH=YES test
+
 xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -configuration Release -destination 'platform=macOS' \
-  -derivedDataPath .derived build
-# 1) Version is 0.8.0 / 5 in project.yml (info: properties)
-# 2) Sign & notarize (BLOCKED until new Developer ID cert, §4.1):
-#    codesign --force --options runtime --timestamp \
-#      --sign "Developer ID Application: <name>" \
-#      .derived/Build/Products/Release/BeetCode.app
-#    ditto -c -k --keepParent BeetCode.app BeetCode.zip
-#    xcrun notarytool submit BeetCode.zip --apple-id … --wait
-# 3) Package DMG:
-#    hdiutil create -volname BeetCode -srcfolder BeetCode.app -ov BeetCode.dmg
-# 4) Smoke-test the CLI server before tagging a release:
-#    BeetCodeCLI serve --port 1234 --model qwen3-1.7b-4bit
-#    curl http://127.0.0.1:1234/v1/chat/completions \
-#      -H 'Content-Type: application/json' \
-#      -d '{"messages":[{"role":"user","content":"ping"}]}'
+  -derivedDataPath /tmp/beetcode-release-audit build
+
+xcodebuild -project BeetCode.xcodeproj -scheme BeetCodeCLI \
+  -destination 'platform=macOS' build
+
+codesign --verify --deep --strict --verbose=2 \
+  /path/to/BeetCode.app
+spctl --assess --type execute --verbose=4 \
+  /path/to/BeetCode.app
+
+./scripts/package-beetcode-dmg.sh /path/to/BeetCode.app
 ```
+
+The final two checks must be repeated after distribution signing,
+notarization, and stapling. The packaging script writes to `dist/` and emits
+`BeetCode-<version>.dmg` plus its `.sha256` file.
+
+## 7. Release checklist
+
+- [ ] Commit the intended source tree and tag the release.
+- [ ] Obtain a non-revoked Developer ID Application certificate.
+- [ ] Configure hardened runtime and distribution entitlements.
+- [ ] Build the Release app from the tagged tree.
+- [ ] Sign all nested code and the app with a timestamp.
+- [ ] Package the DMG/ZIP and generate checksums.
+- [ ] Submit to Apple notarization and wait for acceptance.
+- [ ] Staple the notarization ticket.
+- [ ] Verify `codesign`, `spctl`, and installation on a clean Mac.
+- [ ] Publish artifacts with version/build, source tag, and SHA-256.
+
+**Final status:** the codebase is ready for continued engineering and
+internal testing. It is not ready for a public macOS download until P0 gates
+1–4 are closed.

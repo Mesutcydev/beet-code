@@ -27,11 +27,16 @@ final class AgentSessionController: ObservableObject {
     /// or a repetition filler loop) — the transcript shows a proper
     /// "Reasoning…" indicator instead of raw filler text.
     @Published private(set) var isReasoningVisible = false
+    /// The reasoning channel currently being generated. It stays separate
+    /// from `streamingText` so an answer can stream while the model's visible
+    /// work remains available above it.
+    @Published private(set) var liveReasoningText = ""
     @Published private(set) var isRunning = false
     @Published private(set) var pendingApproval: ApprovalRequest?
     @Published private(set) var pendingQuestion: String?
     private var pendingQuestionID: UUID?
     @Published private(set) var pendingPlan: String?
+    private var pendingPlanID: UUID?
     @Published private(set) var currentPhase: AgentPhase = .idle
     @Published private(set) var finishReason: AgentFinish?
     @Published private(set) var workspaceURL: URL?
@@ -39,6 +44,9 @@ final class AgentSessionController: ObservableObject {
     private(set) var activeSessionID: UUID?
 
     private var loop: AgentLoop?
+    /// Retained separately from the agent loop so a stop or workspace switch
+    /// can cancel the short preparation window before the loop is created.
+    private var startTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     /// Live MCP servers for the current run; disconnected when it ends.
     private let mcpRegistry = MCPRegistry()
@@ -64,6 +72,9 @@ final class AgentSessionController: ObservableObject {
     /// real launched ctx when known (GGUF fits it to RAM), else the catalog
     /// window. nil → the Configuration default (32 K).
     var contextWindowHandler: () -> Int? = { nil }
+    /// Supplies a remote model's declared output ceiling when known. Local
+    /// models continue to use the user's configured per-turn budget.
+    var maxTokensHandler: () -> Int? = { nil }
 
     let engine: any LLMEngine
     private let settings: SettingsStore
@@ -80,28 +91,41 @@ final class AgentSessionController: ObservableObject {
     func send(_ message: String, attachments: [ComposerAttachment] = [], seed: SessionRecord? = nil) {
         guard workspaceURL != nil, !isRunning else { return }
 
+        // Reserve the run synchronously. Without this reservation two remote
+        // HTTP requests can both pass the guard before the async MCP/model
+        // preparation marks the loop as running.
+        isRunning = true
         // A stale event task must never outlive the run it belongs to.
         eventTask?.cancel()
         pendingApproval = nil
         pendingQuestion = nil
         pendingPlan = nil
+        pendingPlanID = nil
         finishReason = nil
 
-        Task { [weak self] in
+        startTask = Task { [weak self] in
             guard let self else { return }
             await self.startRun(message: message, attachments: attachments, seed: seed)
+            self.startTask = nil
         }
     }
 
     /// The async half of `send`: connects MCP servers (bounded, best-effort)
     /// and then starts the loop with built-in + MCP tools merged.
     private func startRun(message: String, attachments: [ComposerAttachment], seed: SessionRecord?) async {
-        guard let workspace = workspaceURL, !isRunning else { return }
+        guard let workspace = workspaceURL, isRunning, !Task.isCancelled else {
+            isRunning = false
+            return
+        }
         let workspaceScope = Workspace(root: workspace)
 
         // MCP: connect configured servers, collect their tools. Failures are
         // surfaced as notices but never block the run.
         let mcpResult = await mcpRegistry.start(workspaceRoot: workspace)
+        guard isRunning, !Task.isCancelled else {
+            isRunning = false
+            return
+        }
         for error in mcpResult.errors {
             transcript.append(TranscriptItem(id: UUID(), kind: .notice(error)))
         }
@@ -125,7 +149,9 @@ final class AgentSessionController: ObservableObject {
         let autoApproveEdits = settings.autoApproveEdits
         let autoApproveCommands = settings.autoApproveCommands
         let maxTurns = settings.maxTurns
-        let maxTokensPerTurn = settings.maxTokensPerTurn
+        let maxTokensPerTurn = min(
+            settings.maxTokensPerTurn,
+            maxTokensHandler() ?? settings.maxTokensPerTurn)
         let temperature = settings.temperature
         let checkpointingEnabled = settings.checkpointingEnabled
         let showReasoning = settings.showReasoning
@@ -173,7 +199,6 @@ final class AgentSessionController: ObservableObject {
             memory: settings.memoryMode == .off ? nil : AgentMemory(workspacePath: workspace.path),
             taskHint: modelText)
         loop = agentLoop
-        isRunning = true
         let runToken = runID
 
         eventTask = Task { [weak self] in
@@ -191,8 +216,31 @@ final class AgentSessionController: ObservableObject {
     }
 
     func stop() {
-        guard let loop else { return }
+        startTask?.cancel()
+        startTask = nil
+        guard let loop else {
+            guard isRunning else { return }
+            isRunning = false
+            finishReason = .cancelled
+            clearPending()
+            return
+        }
         Task { await loop.cancel() }
+    }
+
+    /// Starts the next turn of a persisted Beetcode session from the remote
+    /// browser surface. The session is restored first, so the agent loop gets
+    /// the same transcript, workspace binding, model choice, and checkpoints
+    /// as a local continuation.
+    @discardableResult
+    func continuePersistedSession(id: UUID, message: String) -> Bool {
+        guard !isRunning,
+              let record = SessionStore.shared.load(id: id),
+              record.source == .app,
+              SessionStore.shared.validateWorkspaceBinding(record),
+              restore(record) else { return false }
+        send(message)
+        return true
     }
 
     /// Switches the controller to a different workspace as ONE transaction:
@@ -210,6 +258,7 @@ final class AgentSessionController: ObservableObject {
         streamingText = ""
         rawStreamingText = ""
         isReasoningVisible = false
+        liveReasoningText = ""
         // Background intelligence index: incremental when a baseline exists,
         // full on first open. Silent on failure — the agent loop degrades to
         // no injected context, never to a blocked session.
@@ -226,6 +275,8 @@ final class AgentSessionController: ObservableObject {
     /// and the next send begins a brand-new session record — no continuation
     /// seed, and the app no longer points at the old session on relaunch.
     func newSession() {
+        startTask?.cancel()
+        startTask = nil
         let oldLoop = loop
         loop = nil
         eventTask?.cancel()
@@ -241,6 +292,7 @@ final class AgentSessionController: ObservableObject {
         streamingText = ""
         rawStreamingText = ""
         isReasoningVisible = false
+        liveReasoningText = ""
         activeSessionID = nil
         gitOutput = nil
         transcript = []
@@ -252,8 +304,12 @@ final class AgentSessionController: ObservableObject {
     /// state before returning. Engine transitions (load/unload/source swap)
     /// must await this so a generation can never outlive its model.
     func stopAndWait() async {
+        startTask?.cancel()
+        startTask = nil
         guard let loop else {
             runID = UUID()
+            isRunning = false
+            clearPending()
             return
         }
         self.loop = nil
@@ -273,6 +329,7 @@ final class AgentSessionController: ObservableObject {
         streamingText = ""
         rawStreamingText = ""
         isReasoningVisible = false
+        liveReasoningText = ""
     }
 
     /// The stream ended without a .finished event (cancel path): clear the
@@ -286,6 +343,7 @@ final class AgentSessionController: ObservableObject {
         streamingText = ""
         rawStreamingText = ""
         isReasoningVisible = false
+        liveReasoningText = ""
         clearPending()
     }
 
@@ -294,6 +352,7 @@ final class AgentSessionController: ObservableObject {
         pendingQuestion = nil
         pendingQuestionID = nil
         pendingPlan = nil
+        pendingPlanID = nil
     }
 
     /// Publishes buffered deltas. One scheduled flush per batch window; the
@@ -320,6 +379,9 @@ final class AgentSessionController: ObservableObject {
         let (visible, reasoning) = StreamDisplayFilter.display(raw: rawStreamingText)
         streamingText = visible
         isReasoningVisible = reasoning
+        liveReasoningText = settings.showReasoning
+            ? StreamDisplayFilter.reasoningText(raw: rawStreamingText)
+            : ""
     }
 
     /// Drops buffered deltas without publishing (run cleanup paths only).
@@ -338,6 +400,8 @@ final class AgentSessionController: ObservableObject {
         guard SessionStore.shared.validateWorkspaceBinding(record) else { return false }
         // Cancel the actual loop, not just its consumer: a tool mid-flight
         // must not keep writing into a workspace we are leaving.
+        startTask?.cancel()
+        startTask = nil
         let oldLoop = loop
         loop = nil
         eventTask?.cancel()
@@ -351,11 +415,13 @@ final class AgentSessionController: ObservableObject {
         pendingQuestion = nil
         pendingQuestionID = nil
         pendingPlan = nil
+        pendingPlanID = nil
         finishReason = nil
         dropTokenBuffer()
         streamingText = ""
         rawStreamingText = ""
         isReasoningVisible = false
+        liveReasoningText = ""
         workspaceURL = URL(fileURLWithPath: record.workspacePath)
 
         var rebuilt: [TranscriptItem] = []
@@ -369,6 +435,10 @@ final class AgentSessionController: ObservableObject {
                 let prose = ToolParser.strippingCalls(from: message.content)
                 if !prose.isEmpty {
                     rebuilt.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
+                }
+            case .reasoning:
+                if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    rebuilt.append(TranscriptItem(id: UUID(), kind: .reasoning(message.content)))
                 }
             case .toolCall:
                 let call = ParsedToolCall(
@@ -400,6 +470,11 @@ final class AgentSessionController: ObservableObject {
         activeSessionID = record.id
         return true
     }
+
+    /// The request identifier is needed by remote clients so a stale approval
+    /// or question response cannot resolve a newer interaction accidentally.
+    var pendingQuestionRequestID: UUID? { pendingQuestionID }
+    var pendingPlanRequestID: UUID? { pendingPlanID }
 
     /// The transcript carries over; the next message continues the session
     /// with its compacted history and checkpoints.
@@ -539,8 +614,10 @@ final class AgentSessionController: ObservableObject {
     }
 
     /// Compresses the active session's history immediately and persists the
-    /// result — the next send continues with the compacted record.
-    private func compactSessionNow() {
+    /// result — the next send continues with the compacted record. This is
+    /// exposed for the composer preflight meter; slash commands use the same
+    /// path so both entry points have identical behavior.
+    func compactNow() {
         guard let id = activeSessionID,
               let record = SessionStore.shared.load(id: id),
               !record.messages.isEmpty
@@ -559,6 +636,10 @@ final class AgentSessionController: ObservableObject {
         updated.updatedAt = Date()
         SessionStore.shared.save(updated)
         notice("Compacted history: \(before) → \(compacted.count) messages (level: \(settings.compressionLevel.rawValue)).")
+    }
+
+    private func compactSessionNow() {
+        compactNow()
     }
 
     private func currentMemory() -> AgentMemory? {
@@ -594,24 +675,32 @@ final class AgentSessionController: ObservableObject {
     }
     // MARK: Plan approval
 
-    func approvePlan() {
-        guard pendingPlan != nil else { return }
+    @discardableResult
+    func approvePlan(requestID: UUID? = nil) -> Bool {
+        guard pendingPlan != nil,
+              requestID == nil || requestID == pendingPlanID else { return false }
         pendingPlan = nil
+        pendingPlanID = nil
         transcript.append(TranscriptItem(id: UUID(), kind: .notice("Plan approved — executing.")))
         DiagnosticsCenter.shared.record(.approval, "Plan approved — executing")
         if let loop {
             Task { await loop.resolvePlan(approved: true) }
         }
+        return true
     }
 
-    func revisePlan(_ feedback: String) {
-        guard pendingPlan != nil else { return }
+    @discardableResult
+    func revisePlan(_ feedback: String, requestID: UUID? = nil) -> Bool {
+        guard pendingPlan != nil,
+              requestID == nil || requestID == pendingPlanID else { return false }
         pendingPlan = nil
+        pendingPlanID = nil
         transcript.append(TranscriptItem(id: UUID(), kind: .user(feedback)))
         DiagnosticsCenter.shared.record(.approval, "Plan sent back for revision")
         if let loop {
             Task { await loop.resolvePlanRevision(feedback: feedback) }
         }
+        return true
     }
 
     // MARK: Interactive responses
@@ -688,6 +777,7 @@ final class AgentSessionController: ObservableObject {
             streamingText = ""
             rawStreamingText = ""
             isReasoningVisible = false
+            liveReasoningText = ""
             diagnostics.record(.session, "Task started")
 
         case .tokenDelta(let chunk):
@@ -699,6 +789,7 @@ final class AgentSessionController: ObservableObject {
             streamingText = ""
             rawStreamingText = ""
             isReasoningVisible = false
+            liveReasoningText = ""
             // Wire format never reaches the transcript: strip tool-call
             // syntax, and drop the bubble entirely if nothing else remains.
             let prose = ToolParser.strippingCalls(from: text)
@@ -711,6 +802,7 @@ final class AgentSessionController: ObservableObject {
             streamingText = ""
             rawStreamingText = ""
             isReasoningVisible = false
+            liveReasoningText = ""
             transcript.append(TranscriptItem(id: UUID(), kind: .toolCall(invocation)))
             diagnostics.record(.tool, "\(invocation.name) started", detail: invocation.summary)
 
@@ -756,11 +848,18 @@ final class AgentSessionController: ObservableObject {
             diagnostics.record(.tool, "Protocol error", detail: message, level: .warning)
 
         case .reasoning(let text):
-            transcript.append(
-                TranscriptItem(id: UUID(), kind: .reasoning(text)))
+            liveReasoningText = text
+            if let lastIndex = transcript.indices.last,
+               case .reasoning(let previous) = transcript[lastIndex].kind {
+                transcript[lastIndex].kind = .reasoning(previous + "\n\n" + text)
+            } else {
+                transcript.append(
+                    TranscriptItem(id: UUID(), kind: .reasoning(text)))
+            }
 
         case .planProposed(let plan):
             pendingPlan = plan
+            pendingPlanID = UUID()
             diagnostics.record(.approval, "Plan proposed — waiting for approval")
 
         case .phaseChanged(let phase):
@@ -771,6 +870,7 @@ final class AgentSessionController: ObservableObject {
             streamingText = ""
             rawStreamingText = ""
             isReasoningVisible = false
+            liveReasoningText = ""
             isRunning = false
             finishReason = reason
             clearPending()
@@ -807,6 +907,7 @@ final class AgentSessionController: ObservableObject {
         ApplyPatchTool(),
         RunCommandTool(),
         BuildDiagnosticsTool(),
+        CreateMacAppTool(),
         SimListDevicesTool(),
         SimBootDeviceTool(),
         SimLaunchAppTool(),

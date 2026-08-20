@@ -15,6 +15,9 @@ struct SessionMessage: Codable, Sendable, Equatable {
     enum Role: String, Codable, Sendable {
         case user
         case assistant
+        /// Provider/local thought summaries shown in the transcript. These
+        /// are durable UI history, never replayed as model context.
+        case reasoning
         case toolCall
         case toolResult
         case system
@@ -117,6 +120,9 @@ enum SessionCrypto {
     // session store decrypts every session file, and each raw SecItem access
     // can trigger a keychain password prompt on an ad-hoc-signed build.
     private static let keyCacheLock = NSLock()
+    // Serialize the first Keychain read as well as the in-memory cache. Two
+    // concurrent session loads must not both ask securityd for the same key.
+    private static let keyReadLock = NSLock()
     // All access happens under keyCacheLock.
     private static nonisolated(unsafe) var cachedKey: SymmetricKey?
     /// Test seam: bypass the Keychain entirely (tests must be deterministic —
@@ -209,6 +215,8 @@ enum SessionCrypto {
             overrideKey = testKey
             return testKey
         }
+        keyReadLock.lock()
+        defer { keyReadLock.unlock() }
         // Fast path: reuse the cached key (no keychain access).
         keyCacheLock.lock()
         if let cached = cachedKey {

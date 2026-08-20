@@ -27,6 +27,11 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
     private nonisolated(unsafe) var loadedID: String?
     private nonisolated(unsafe) var statsState = EngineStats()
     private nonisolated(unsafe) var loading = false
+    /// The active stream task. Retaining it lets Stop cancel the running
+    /// generation instead of only invalidating queued gate work.
+    private nonisolated(unsafe) var generationTask: Task<Void, Never>?
+    private nonisolated(unsafe) var generationID: UUID?
+    private let generationLock = NSLock()
     /// Conversation replayed in full on every generation. ChatSession's KV
     /// reuse across calls is deliberately NOT used: the agent loop re-feeds
     /// assistant turns the session already generated (thinking-stripped), so
@@ -109,7 +114,9 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
         temperature: Double?
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
+            let id = UUID()
             let generationTask = Task {
+                defer { self.clearGenerationTask(id: id) }
                 do {
                     try await self.gate.run {
                         guard let session = self.session else { throw EngineError.notLoaded }
@@ -166,8 +173,10 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            self.setGenerationTask(generationTask, id: id)
             continuation.onTermination = { _ in
                 generationTask.cancel()
+                self.clearGenerationTask(id: id)
             }
         }
     }
@@ -197,7 +206,31 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
     }
 
     public func cancelGeneration() async {
+        let task = withGenerationLock { generationTask }
+        task?.cancel()
         await gate.cancelAll()
+    }
+
+    private func setGenerationTask(_ task: Task<Void, Never>, id: UUID) {
+        generationLock.lock()
+        generationTask = task
+        generationID = id
+        generationLock.unlock()
+    }
+
+    private func clearGenerationTask(id: UUID) {
+        generationLock.lock()
+        if generationID == id {
+            generationTask = nil
+            generationID = nil
+        }
+        generationLock.unlock()
+    }
+
+    private func withGenerationLock<T>(_ body: () -> T) -> T {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return body()
     }
 
     /// Frees Metal buffer cache once any in-flight generation finishes.

@@ -78,11 +78,39 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(names.contains("computer_click"))
         XCTAssertTrue(names.contains("glob"))
         XCTAssertTrue(names.contains("web_fetch"))
+        XCTAssertTrue(names.contains("create_macos_app"))
+    }
+
+    func testAppBuildGuidanceAppearsWithScaffoldTools() {
+        let text = prompt(tools: [StubTool(name: "create_macos_app"), StubTool(name: "build_diagnostics")])
+        XCTAssertTrue(text.contains("Building a native Mac / iOS app"))
+        XCTAssertTrue(text.contains("create_macos_app"))
     }
 
     func testWebFetchAndTaskGuidanceAppearWhenRegistered() {
         let text = prompt(tools: [StubTool(name: "web_fetch"), StubTool(name: "task")])
         XCTAssertTrue(text.contains("Web fetch (web_fetch)"))
         XCTAssertTrue(text.contains("Subagents (task)"))
+    }
+
+    func testPlanModeInstructionsAreIncludedInTheModelPrompt() {
+        let text = PromptBuilder.systemPrompt(
+            tools: [StubTool(name: "read_file")],
+            workspace: Workspace(root: tempRoot),
+            planMode: true)
+        XCTAssertTrue(text.contains("You are in PLAN mode"))
+        XCTAssertTrue(text.contains("Do NOT call any tool yet"))
+    }
+
+    func testPromptBudgetLeavesRoomForAReply() {
+        let oversizedInstructions = String(repeating: "workspace rule ", count: 4_000)
+        let text = PromptBuilder.systemPrompt(
+            tools: [StubTool(name: "read_file")],
+            workspace: Workspace(root: tempRoot),
+            projectInstructions: oversizedInstructions,
+            contextWindowTokens: 8_192,
+            responseReserveTokens: 2_048)
+        XCTAssertLessThanOrEqual(text.count, 8_192 * 3)
+        XCTAssertTrue(text.contains("read_file"))
     }
 }

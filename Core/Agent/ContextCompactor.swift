@@ -46,13 +46,56 @@ enum ContextCompactor {
         var shouldCompact: Bool { fraction > 0.75 }
     }
 
+    /// A request-level estimate that includes the system/tool protocol. The
+    /// old message-only estimate could undercount a large system prompt and
+    /// still let a remote provider reject a request before generation began.
+    struct RequestEstimate: Sendable, Equatable {
+        var historyTokens: Int
+        var systemTokens: Int
+        var totalTokens: Int
+        var windowTokens: Int
+        var responseReserve: Int
+
+        var budgetTokens: Int {
+            max(1, windowTokens - max(1_024, responseReserve))
+        }
+
+        var fraction: Double {
+            Double(totalTokens) / Double(budgetTokens)
+        }
+
+        var shouldCompact: Bool {
+            fraction > 0.75
+        }
+
+        var exceedsBudget: Bool {
+            totalTokens > budgetTokens
+        }
+    }
+
     static func estimateTokens(_ text: String) -> Int {
         max(1, text.utf8.count / 4)
     }
 
     static func estimate(messages: [SessionMessage], windowTokens: Int) -> Estimate {
-        let total = messages.reduce(0) { $0 + estimateTokens($1.content) }
+        let total = contextBearingTokens(messages)
         return Estimate(totalTokens: total, windowTokens: windowTokens)
+    }
+
+    static func estimateRequest(
+        messages: [SessionMessage],
+        systemPrompt: String,
+        windowTokens: Int,
+        responseReserve: Int
+    ) -> RequestEstimate {
+        let historyTokens = contextBearingTokens(messages)
+        let systemTokens = estimateTokens(systemPrompt)
+        return RequestEstimate(
+            historyTokens: historyTokens,
+            systemTokens: systemTokens,
+            totalTokens: historyTokens + systemTokens,
+            windowTokens: windowTokens,
+            responseReserve: responseReserve)
     }
 
     /// Replaces the content of old tool results (keeping the most recent
@@ -89,5 +132,139 @@ enum ContextCompactor {
             }
             return message
         }
+    }
+
+    /// Fits a compacted transcript into the request budget when tool-output
+    /// replacement alone is not enough. This is the hard backstop for small
+    /// local contexts and resumed sessions with many prose turns: keep the
+    /// first user objective, the newest messages, and a visible omission
+    /// marker instead of sending a request the provider must reject.
+    static func fit(
+        _ messages: [SessionMessage],
+        systemPrompt: String,
+        windowTokens: Int,
+        responseReserve: Int
+    ) -> [SessionMessage] {
+        let budget = max(1_024, windowTokens - max(1_024, responseReserve))
+        let systemTokens = estimateTokens(systemPrompt)
+        // Leave room for the omission marker and provider tokenization
+        // variance. The request estimate is intentionally conservative.
+        let historyBudget = max(128, budget - systemTokens - 64)
+        guard contextBearingTokens(messages) > historyBudget
+                || estimateRequest(
+                    messages: messages,
+                    systemPrompt: systemPrompt,
+                    windowTokens: windowTokens,
+                    responseReserve: responseReserve).exceedsBudget
+        else { return messages }
+
+        guard !messages.isEmpty else { return messages }
+
+        let firstUserIndex = messages.firstIndex { $0.role == .user }
+        var selectedIndices: [Int] = []
+        var prepared: [Int: SessionMessage] = [:]
+        var used = 0
+
+        if let firstUserIndex {
+            let first = messages[firstUserIndex]
+            let kept = boundedMessage(first, maxTokens: min(estimateTokens(first.content), historyBudget / 3))
+            selectedIndices.append(firstUserIndex)
+            prepared[firstUserIndex] = kept
+            used += estimateTokens(kept.content)
+        }
+
+        var tail: [(index: Int, message: SessionMessage)] = []
+        for index in messages.indices.reversed()
+            where index != firstUserIndex && messages[index].role != .reasoning {
+            let message = messages[index]
+            let remaining = historyBudget - used
+            guard remaining > 0 else { break }
+            let kept = boundedMessage(message, maxTokens: remaining)
+            let cost = estimateTokens(kept.content)
+            guard cost > 0 else { continue }
+            tail.append((index, kept))
+            prepared[index] = kept
+            used += cost
+            if cost < estimateTokens(message.content) { break }
+        }
+
+        selectedIndices.append(contentsOf: tail.map(\.index))
+        selectedIndices = Array(
+            Set(selectedIndices + requiredToolPairingIndices(
+                in: messages,
+                selected: selectedIndices))).sorted()
+
+        var result: [SessionMessage] = []
+        var insertedMarker = false
+        for index in selectedIndices {
+            if !insertedMarker,
+               let first = selectedIndices.first,
+               index != first,
+               messages.distance(from: first, to: index) > 1 {
+                result.append(SessionMessage(
+                    role: .user,
+                    content: "[Earlier conversation omitted to preserve context; the newest work is kept below.]",
+                    toolName: nil,
+                    timestamp: messages[index].timestamp))
+                insertedMarker = true
+            }
+            result.append(prepared[index] ?? messages[index])
+        }
+
+        return result.isEmpty ? [messages.last!] : result
+    }
+
+    /// Reasoning summaries are durable transcript rows, but they are not
+    /// replayed to the model. Excluding them from the budget keeps a visible
+    /// thought history from triggering another provider-side context error.
+    private static func contextBearingTokens(_ messages: [SessionMessage]) -> Int {
+        messages.reduce(0) { total, message in
+            guard message.role != .reasoning else { return total }
+            return total + estimateTokens(message.content)
+        }
+    }
+
+    private static func boundedMessage(
+        _ message: SessionMessage,
+        maxTokens: Int
+    ) -> SessionMessage {
+        let maxCharacters = max(64, maxTokens * 4)
+        guard message.content.count > maxCharacters else { return message }
+        var bounded = message
+        let marker = "\n…[middle of message omitted]…\n"
+        let half = max(1, (maxCharacters - marker.count) / 2)
+        bounded.content = String(message.content.prefix(half))
+            + marker
+            + String(message.content.suffix(half))
+        return bounded
+    }
+
+    /// Tool observations are only meaningful with the assistant turn that
+    /// requested them. A tail-only fit can otherwise select the newest result
+    /// while dropping its assistant/tool-call pair, producing invalid replay
+    /// history on the next generation.
+    private static func requiredToolPairingIndices(
+        in messages: [SessionMessage],
+        selected: [Int]
+    ) -> [Int] {
+        var required = Set<Int>()
+        for index in selected {
+            guard messages[index].role == .toolResult || messages[index].role == .toolCall else {
+                continue
+            }
+            var callIndex: Int?
+            if messages[index].role == .toolCall {
+                callIndex = index
+            } else {
+                callIndex = messages[..<index].lastIndex { $0.role == .toolCall }
+            }
+            guard let callIndex else { continue }
+            guard let assistantIndex = messages[..<callIndex].lastIndex(where: { $0.role == .assistant }) else {
+                continue
+            }
+            required.insert(assistantIndex)
+            required.insert(callIndex)
+        }
+        return required.filter { !selected.contains($0) }
     }
 }

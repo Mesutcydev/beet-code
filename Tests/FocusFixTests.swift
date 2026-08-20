@@ -40,6 +40,16 @@ final class StreamDisplayFilterTests: XCTestCase {
         XCTAssertTrue(reasoning)
     }
 
+    func testLiveReasoningTextExtractsOpenAndClosedBlocks() {
+        let raw = "<think>first pass</think>Answer <think>still working"
+        XCTAssertEqual(StreamDisplayFilter.reasoningText(raw: raw), "first pass\n\nstill working")
+    }
+
+    func testLiveReasoningTextExtractsChineseMarkers() {
+        let raw = "思考先检查构建 思考答案"
+        XCTAssertEqual(StreamDisplayFilter.reasoningText(raw: raw), "先检查构建")
+    }
+
     func testRepetitionFillerIsReasoning() {
         let raw = "thinking thinking thinking thinking thinking"
         let (visible, reasoning) = StreamDisplayFilter.display(raw: raw)

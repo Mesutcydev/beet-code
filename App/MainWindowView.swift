@@ -8,6 +8,8 @@ struct MainWindowView: View {
     @State private var showSimulator = false
     @State private var showBrowser = false
     @State private var showDiagnostics = false
+    @State private var showRemoteAccess = false
+    @State private var showCompactSidebar = false
 
     private var dockedPanelOpen: Bool {
         showSimulator || showBrowser || showDiagnostics
@@ -18,86 +20,247 @@ struct MainWindowView: View {
     private var chatMinWidth: CGFloat { dockedPanelOpen ? 300 : 380 }
 
     var body: some View {
+        notificationView
+    }
+
+    private var configuredLayout: some View {
+        responsiveLayout
+            .navigationTitle(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
+            .onChange(of: appState.enginePhase) { _, phase in
+                switch phase {
+                case .idle:
+                    DiagnosticsCenter.shared.record(.engine, "Engine idle")
+                case .loading(let name):
+                    DiagnosticsCenter.shared.record(.engine, "Loading \(name)…")
+                case .ready(let name):
+                    DiagnosticsCenter.shared.record(.engine, "\(name) ready")
+                case .failed(let reason):
+                    DiagnosticsCenter.shared.record(.engine, "Model load failed",
+                                                    detail: reason, level: .error)
+                }
+            }
+            .toolbarBackground(Theme.bg, for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
+            .background(Theme.bg)
+    }
+
+    private var presentationView: some View {
+        configuredLayout
+            .sheet(isPresented: $showModelManager) {
+                ModelManagerView()
+                    .environmentObject(appState)
+                    .frame(minWidth: 640, minHeight: 480)
+            }
+            .sheet(isPresented: $showRemoteAccess) {
+                RemoteAccessView()
+                    .environmentObject(appState)
+            }
+    }
+
+    private var notificationView: some View {
+        presentationView
+            .onReceive(NotificationCenter.default.publisher(for: .openModelManager)) { _ in
+                showModelManager = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openRemoteAccess)) { _ in
+                showRemoteAccess = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openBrowserPanel)) { _ in
+                showBrowser = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleBrowserPanel)) { _ in
+                showBrowser.toggle()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleSimulatorPanel)) { _ in
+                showSimulator.toggle()
+                appState.isSimulatorPanelOpen = showSimulator
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleDiagnosticsPanel)) { _ in
+                showDiagnostics.toggle()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .gitStatus)) { _ in
+                sessions.gitStatus()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .gitDiff)) { _ in
+                sessions.gitDiff()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .undoCheckpoint)) { _ in
+                sessions.undoLastCheckpoint()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .exportChatMarkdown)) { _ in
+                exportCurrentChat(format: .markdown)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .exportChatJSON)) { _ in
+                exportCurrentChat(format: .json)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .newChat)) { _ in
+                sessions.newSession()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .stopAgent)) { _ in
+                sessions.stop()
+            }
+    }
+
+    /// Export the active conversation even when the sidebar is collapsed. The
+    /// sidebar rows still offer the same actions for older chats; these
+    /// notifications make the current chat reachable from the top bar too.
+    private func exportCurrentChat(format: SessionExporter.Format) {
+        let id = sessions.activeSessionID ?? SessionStore.shared.currentSessionID
+        guard let id, let record = SessionStore.shared.load(id: id) else {
+            let alert = NSAlert()
+            alert.messageText = "Nothing to export yet"
+            alert.informativeText = "Run a task first — the conversation is exported once it has been saved."
+            alert.alertStyle = .informational
+            alert.runModal()
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Export Chat"
+        panel.prompt = "Export"
+        panel.nameFieldStringValue = SessionExporter.suggestedName(for: record, format: format)
+        panel.allowedContentTypes = [format == .markdown ? .plainText : .json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            switch format {
+            case .markdown:
+                try SessionExporter.markdown(for: record)
+                    .write(to: url, atomically: true, encoding: .utf8)
+            case .json:
+                guard let data = SessionExporter.json(for: record) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try data.write(to: url, options: .atomic)
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Export failed"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
+    private var responsiveLayout: some View {
+        GeometryReader { proxy in
+            layout(for: proxy.size.width)
+        }
+    }
+
+    private func layout(for width: CGFloat) -> AnyView {
+        if width < 900 {
+            return AnyView(portraitLayout)
+        }
+        return AnyView(wideLayout)
+    }
+
+    private var wideLayout: some View {
         NavigationSplitView {
             SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
-                        showDiagnostics: $showDiagnostics)
-                // The 46-pt activity rail eats into the column — keep the
-                // list's share wide enough for two-line session rows.
-                .navigationSplitViewColumnWidth(min: 200, ideal: 260, max: 340)
+                        showDiagnostics: $showDiagnostics,
+                        showRemoteAccess: $showRemoteAccess)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 292, max: 380)
         } detail: {
             HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    ChatView(controller: sessions)
-                    Divider()
-                    StatusBarView()
-                }
-                .frame(minWidth: chatMinWidth, maxWidth: .infinity, maxHeight: .infinity)
-                .layoutPriority(1)
-
+                chatColumn
+                    .frame(minWidth: chatMinWidth, maxWidth: .infinity, maxHeight: .infinity)
                 if showSimulator {
                     Divider()
                     SimulatorPanelView(onClose: {
                         showSimulator = false
                         appState.isSimulatorPanelOpen = false
                     })
-                        .environmentObject(appState)
-                        .frame(minWidth: 260, idealWidth: 340, maxWidth: 440, maxHeight: .infinity)
-                        .layoutPriority(0)
+                    .environmentObject(appState)
+                    .frame(minWidth: 260, idealWidth: 340, maxWidth: 440, maxHeight: .infinity)
                 }
-
                 if showBrowser {
                     Divider()
                     BrowserPanelView(onClose: { showBrowser = false })
                         .frame(minWidth: 280, idealWidth: 380, maxWidth: 520, maxHeight: .infinity)
-                        .layoutPriority(0)
                 }
-
                 if showDiagnostics {
                     Divider()
                     DiagnosticsPanelView(onClose: { showDiagnostics = false })
                         .frame(minWidth: 240, idealWidth: 320, maxWidth: 400, maxHeight: .infinity)
-                        .layoutPriority(0)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg)
         }
-        .navigationTitle(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
-        // Engine transitions are breadcrumbs too — recorded from this single
-        // observation point so AppState needs no diagnostics dependency.
-        .onChange(of: appState.enginePhase) { _, phase in
-            switch phase {
-            case .idle:
-                DiagnosticsCenter.shared.record(.engine, "Engine idle")
-            case .loading(let name):
-                DiagnosticsCenter.shared.record(.engine, "Loading \(name)…")
-            case .ready(let name):
-                DiagnosticsCenter.shared.record(.engine, "\(name) ready")
-            case .failed(let reason):
-                DiagnosticsCenter.shared.record(.engine, "Model load failed",
-                                                detail: reason, level: .error)
+    }
+
+    private var chatColumn: some View {
+        VStack(spacing: 0) {
+            ChatView(controller: sessions)
+            Divider()
+            StatusBarView()
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
+    }
+
+    /// Portrait windows use one readable column. Sidebar/history and tools
+    /// become sheets instead of competing for horizontal space with the
+    /// transcript and composer.
+    private var portraitLayout: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    showCompactSidebar = true
+                } label: {
+                    Label("Chats", systemImage: "sidebar.left")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button {
+                    sessions.newSession()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("New chat")
+                Spacer()
+                Text(sessions.workspaceURL?.lastPathComponent ?? "Beet Code")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Theme.bg)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+            }
+
+            chatColumn
         }
-        // Tint the system chrome too: without this the toolbar and sidebar
-        // stay neutral gray while Beet mode plums every themed surface.
-        .toolbarBackground(Theme.bg, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
         .background(Theme.bg)
-        // No toolbar buttons on purpose: every action lives in the sidebar's
-        // activity rail — one home for navigation, panels and app windows.
-        .sheet(isPresented: $showModelManager) {
-            ModelManagerView()
-                .environmentObject(appState)
-                .frame(minWidth: 640, minHeight: 480)
+        .sheet(isPresented: $showCompactSidebar) {
+            SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
+                        showDiagnostics: $showDiagnostics,
+                        showRemoteAccess: $showRemoteAccess)
+            .environmentObject(appState)
+            .environmentObject(sessions)
+            .frame(minWidth: 320, idealWidth: 360, minHeight: 500)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .openModelManager)) { _ in
-            showModelManager = true
+        .sheet(isPresented: $showBrowser) {
+            BrowserPanelView(onClose: { showBrowser = false })
+                .frame(minWidth: 360, idealWidth: 520, minHeight: 520)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .newChat)) { _ in
-            sessions.newSession()
+        .sheet(isPresented: $showSimulator) {
+            SimulatorPanelView(onClose: {
+                showSimulator = false
+                appState.isSimulatorPanelOpen = false
+            })
+            .environmentObject(appState)
+            .frame(minWidth: 360, idealWidth: 520, minHeight: 520)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .stopAgent)) { _ in
-            sessions.stop()
+        .sheet(isPresented: $showDiagnostics) {
+            DiagnosticsPanelView(onClose: { showDiagnostics = false })
+                .frame(minWidth: 360, idealWidth: 520, minHeight: 420)
         }
     }
 }
@@ -105,11 +268,12 @@ struct MainWindowView: View {
 private struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var sessions: AgentSessionController
-    /// Docked panel state lives in MainWindowView; the activity rail drives
+    /// Docked panel state lives in MainWindowView; the sidebar footer drives
     /// it through these bindings (one source of truth, no notifications).
     @Binding var showBrowser: Bool
     @Binding var showSimulator: Bool
     @Binding var showDiagnostics: Bool
+    @Binding var showRemoteAccess: Bool
     // Sessions are decrypted OFF the main thread: loadAll() does Keychain +
     // AES-GCM per file, which blocked body evaluation (and hung the app when
     // the ad-hoc build raised a Keychain prompt). The list renders from
@@ -138,10 +302,11 @@ private struct SidebarView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            activityRail
+        VStack(spacing: 0) {
+            sidebarHeader
             Divider().overlay(Theme.hairline)
             List(selection: $selectedSessionID) {
+                historyListHeader
                 if sidebarTab == .sessions {
                     ownSections
                 } else {
@@ -149,11 +314,16 @@ private struct SidebarView: View {
                 }
             }
             .listStyle(.sidebar)
-            // The sidebar List's system material ignores the Theme ramp —
-            // hide it so Beet mode's plum bg shows here too.
+            // The system list material is neutral; the explicit background
+            // keeps the sidebar in the same visual world as Beet mode while
+            // the rows themselves provide the elevation and selection cues.
             .scrollContentBackground(.hidden)
             .background(Theme.bg)
+            // Tool destinations live in the conversation top bar now; keep
+            // the bottom edge free so the chat list gets the full height.
+            Color.clear.frame(height: 8)
         }
+        .background(Theme.bg)
         // Selection IS the restore: picking a tagged row switches to that
         // session (and reports why when it can't — no more silent no-ops).
         .onChange(of: selectedSessionID) { _, newValue in
@@ -180,155 +350,328 @@ private struct SidebarView: View {
         }
     }
 
-    // MARK: Activity rail
+    // MARK: Sidebar header
 
-    /// Slim icon-only rail on the sidebar's leading edge (VS Code style).
-    /// One home for every button in the window, in a fixed order:
-    /// navigation tabs → docked tool panels → (spacer) → app windows.
-    /// The Imported icon carries a badge — a live spinner while an import
-    /// runs, otherwise the imported-chat count.
-    private var activityRail: some View {
-        VStack(spacing: Spacing.xs) {
-            // Compose: a fresh chat in the current workspace.
-            railIcon(icon: "square.and.pencil",
-                     help: "New chat") {
-                sessions.newSession()
-                selectedSessionID = nil
-                sidebarTab = .sessions
+    /// A single macOS-style navigation header: identity first, then the
+    /// primary action, history switcher, and search. The list below is allowed
+    /// to stay visually quiet because the header already answers “where am I?”.
+    private var sidebarHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                workspaceMark
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("BEET CODE")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(1.1)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(sessions.workspaceURL?.lastPathComponent ?? "Choose a workspace")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                Button(action: chooseWorkspace) {
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Switch workspace")
+                .accessibilityLabel("Switch workspace")
             }
-            railDivider()
-            // Navigation: which history the panel shows.
-            railIcon(icon: "bubble.left.and.bubble.right",
-                     help: "Your sessions",
-                     isActive: sidebarTab == .sessions) {
-                sidebarTab = .sessions
+
+            HStack(spacing: 7) {
+                Button {
+                    sessions.newSession()
+                    selectedSessionID = nil
+                    sidebarTab = .sessions
+                } label: {
+                    Label("New chat", systemImage: "square.and.pencil")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .controlSize(.small)
+                .help("Start a new chat in this workspace")
+
+                if sidebarTab == .imported {
+                    Button(action: runImport) {
+                        Image(systemName: isImporting ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isImporting)
+                    .help("Scan Claude, Codex and Cursor history again")
+                    .accessibilityLabel("Scan imported chats again")
+                }
+
+                Menu {
+                    Button("Open workspace…", action: chooseWorkspace)
+                    Divider()
+                    Button("Import chats…", action: runImport)
+                        .disabled(isImporting)
+                    Button("Refresh chat list") { Task { await reloadSessions() } }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .menuStyle(.borderlessButton)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("More chat actions")
+                .accessibilityLabel("More chat actions")
             }
-            railIcon(icon: "tray.and.arrow.down",
-                     help: "Chats imported from Claude, Codex and Cursor",
-                     isActive: sidebarTab == .imported, badge: true) {
-                sidebarTab = .imported
-            }
-            railDivider()
-            // Docked tool panels (the old top-right toolbar duplicates —
-            // moved here so the rail is the only place buttons live).
-            railIcon(icon: "safari",
-                     help: "Browser panel — the agent can drive it via browser_* tools",
-                     isActive: showBrowser) {
-                showBrowser.toggle()
-            }
-            railIcon(icon: "iphone",
-                     help: "Simulator panel — the agent can drive it via argent tools",
-                     isActive: showSimulator) {
-                showSimulator.toggle()
-                appState.isSimulatorPanelOpen = showSimulator
-            }
-            railIcon(icon: "stethoscope",
-                     help: "Diagnostics — breadcrumb timeline and system info",
-                     isActive: showDiagnostics) {
-                showDiagnostics.toggle()
-            }
-            Spacer()
-            // Export the chat currently on screen (Markdown document).
-            railIcon(icon: "square.and.arrow.up",
-                     help: "Export current chat as Markdown") {
-                exportCurrentChat()
-            }
-            // App windows, anchored to the bottom like macOS conventions.
-            railIcon(icon: "square.and.arrow.down.on.square",
-                     help: "Model Manager (⇧⌘M)") {
-                NotificationCenter.default.post(name: .openModelManager, object: nil)
-            }
-            railIcon(icon: "gearshape", help: "Settings (⌘,)") {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            }
+
+            historyModeBar
+            searchField
         }
-        .padding(.vertical, Spacing.sm)
-        .frame(width: 46)
-        .frame(maxHeight: .infinity)
-        .background(Theme.bg)
+        .padding(.horizontal, 14)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+        .background(Theme.surface.opacity(0.38))
     }
 
-    /// One rail button: 32×32 icon, accent wash when active, optional
-    /// top-trailing badge slot (used by the Imported tab).
-    private func railIcon(icon: String, help: String, isActive: Bool = false,
-                          badge: Bool = false,
-                          action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(isActive ? Theme.accent : Theme.textSecondary)
-                .frame(width: 32, height: 32)
-                .background(
-                    isActive ? Theme.wash(Theme.accent) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                .overlay(alignment: .topTrailing) {
-                    if badge { importedBadge }
+    private var workspaceMark: some View {
+        Group {
+            if let workspace = sessions.workspaceURL,
+               let icon = AppIconLookup.workspace(workspace.path) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: sessions.workspaceURL == nil ? "folder.badge.plus" : "folder.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+            }
+        }
+        .frame(width: 30, height: 30)
+        .background(Theme.washStrong(Theme.accent), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(Theme.washBorder(Theme.accent), lineWidth: 1))
+        .accessibilityHidden(true)
+    }
+
+    private var historyModeBar: some View {
+        HStack(spacing: 0) {
+            historyModeButton(.sessions, title: "Chats", icon: "bubble.left.and.bubble.right")
+            historyModeButton(.imported, title: "Imported", icon: "tray.and.arrow.down",
+                              count: recentSessions.filter { $0.source != .app }.count)
+        }
+        .padding(.bottom, 1)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+    }
+
+    private func historyModeButton(_ mode: HistoryTab, title: String, icon: String,
+                                   count: Int? = nil) -> some View {
+        let active = sidebarTab == mode
+        return Button {
+            sidebarTab = mode
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: active ? .semibold : .medium))
+                if let count, count > 0 {
+                    Text("\(min(count, 99))")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(active ? Theme.textPrimary : Theme.textTertiary)
                 }
+            }
+            .foregroundStyle(active ? Theme.textPrimary : Theme.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: 28)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(active ? Theme.accent : Color.clear)
+                    .frame(height: 2)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(active ? [.isSelected] : [])
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.textTertiary)
+            TextField(sidebarTab == .sessions ? "Search chats" : "Search imported chats",
+                      text: $historySearch)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+            if !historySearch.isEmpty {
+                Button { historySearch = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 30)
+        .background(Theme.surfaceInset.opacity(0.65), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(Theme.hairline.opacity(0.8), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(sidebarTab == .sessions ? "Search chats" : "Search imported chats")
+    }
+
+    /// A quiet library header makes the two history modes feel like distinct
+    /// destinations. The old list began immediately with a project row, which
+    /// made imported chats and local chats look like the same flat collection.
+    @ViewBuilder
+    private var historyListHeader: some View {
+        if sidebarTab == .sessions {
+            historyListHeader(
+                eyebrow: "LOCAL LIBRARY",
+                title: "Your chats",
+                detail: "Saved in Beet Code",
+                count: recentSessions.filter { $0.source == .app }.count,
+                icon: "bubble.left.and.bubble.right.fill",
+                tint: Theme.accent)
+        } else {
+            historyListHeader(
+                eyebrow: "CHAT ARCHIVE",
+                title: "Imported chats",
+                detail: "Claude · Codex · Cursor",
+                count: recentSessions.filter { $0.source != .app }.count,
+                icon: "tray.and.arrow.down.fill",
+                tint: Theme.info)
+        }
+    }
+
+    private func historyListHeader(
+        eyebrow: String,
+        title: String,
+        detail: String,
+        count: Int,
+        icon: String,
+        tint: Color
+    ) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 25, height: 25)
+                .background(Theme.wash(tint), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(eyebrow)
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(0.9)
+                    .foregroundStyle(Theme.textTertiary)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(detail)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            Spacer(minLength: 6)
+            Text("\(count)")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 3, trailing: 8))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title), \(count) chats")
+    }
+
+    // MARK: Sidebar footer
+
+    /// Tool destinations stay in the sidebar, but are named and grouped so
+    /// they read as part of the navigation model rather than as unexplained
+    /// floating glyphs in a second rail.
+    private var sidebarFooter: some View {
+        VStack(spacing: 8) {
+            Divider().overlay(Theme.hairline)
+            HStack(spacing: 4) {
+                footerTool("Browser", icon: "safari", isActive: showBrowser) {
+                    showBrowser.toggle()
+                }
+                footerTool("Simulator", icon: "iphone", isActive: showSimulator) {
+                    showSimulator.toggle()
+                    appState.isSimulatorPanelOpen = showSimulator
+                }
+                footerTool("Diagnostics", icon: "stethoscope", isActive: showDiagnostics) {
+                    showDiagnostics.toggle()
+                }
+                Menu {
+                    Button("Remote sessions…") { showRemoteAccess = true }
+                    Divider()
+                    Button("Export current chat…") { exportCurrentChat() }
+                    Button("Model manager…") {
+                        NotificationCenter.default.post(name: .openModelManager, object: nil)
+                    }
+                    Button("Settings…") {
+                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("More")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 38)
+                }
+                .menuStyle(.borderlessButton)
+                .buttonStyle(.plain)
+                .help("More tools and app actions")
+                .accessibilityLabel("More tools and app actions")
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 9)
+        }
+        .background(Theme.surface.opacity(0.28))
+    }
+
+    private func footerTool(_ title: String, icon: String, isActive: Bool,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 9, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(isActive ? Theme.accent : Theme.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: 38)
+            .background(isActive ? Theme.wash(Theme.accent) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
         .lfHoverLift()
-        .help(help)
-        .accessibilityLabel(help)
+        .help(title)
+        .accessibilityLabel(title)
         .accessibilityAddTraits(isActive ? [.isSelected] : [])
-    }
-
-    private func railDivider() -> some View {
-        Divider()
-            .overlay(Theme.hairline)
-            .padding(.horizontal, Spacing.sm)
-            .padding(.vertical, Spacing.xs)
-    }
-
-    /// Badge on the Imported rail icon: a live spinner while the import
-    /// runs, then the number of imported chats (hidden when zero).
-    @ViewBuilder
-    private var importedBadge: some View {
-        if isImporting {
-            ProgressView()
-                .controlSize(.mini)
-                .frame(width: 14, height: 14)
-                .offset(x: 4, y: -4)
-        } else {
-            let count = recentSessions.filter { $0.source != .app }.count
-            if count > 0 {
-                Text("\(min(count, 99))")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Theme.accent, in: Capsule())
-                    .offset(x: 6, y: -6)
-            }
-        }
     }
 
     // MARK: Own sessions
 
     @ViewBuilder
     private var ownSections: some View {
-        Section {
-            HStack(alignment: .center, spacing: Spacing.sm) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Your chats")
-                        .font(.headline)
-                        .foregroundStyle(Theme.textPrimary)
-                    Text(sessions.workspaceURL?.lastPathComponent ?? "Open a project folder to start")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Button(action: chooseWorkspace) {
-                    Image(systemName: sessions.workspaceURL == nil ? "folder.badge.plus" : "folder")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .buttonStyle(.borderless)
-                .help(sessions.workspaceURL == nil ? "Open project folder" : "Switch project folder")
-            }
-            TextField("Search chats…", text: $historySearch)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
+        if needsKeychainUnlock || sessionRestoreError != nil {
+            Section {
             if needsKeychainUnlock {
                 HStack(spacing: Spacing.sm) {
                     Text("History is locked")
@@ -350,19 +693,11 @@ private struct SidebarView: View {
                     .foregroundStyle(Theme.warning)
                     .lineLimit(3)
             }
+            }
         }
 
         if sessions.workspaceURL != nil {
             Section {
-                HStack(spacing: 8) {
-                    Button("Status") { sessions.gitStatus() }
-                        .controlSize(.small)
-                    Button("Diff") { sessions.gitDiff() }
-                        .controlSize(.small)
-                    Button("Undo") { sessions.undoLastCheckpoint() }
-                        .controlSize(.small)
-                    Spacer()
-                }
                 if let output = sessions.gitOutput {
                     ScrollView {
                         Text(output)
@@ -432,84 +767,125 @@ private struct SidebarView: View {
 
     @ViewBuilder
     private var importedSections: some View {
-        Section {
-            HStack(alignment: .center, spacing: Spacing.sm) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Imported chats")
-                        .font(.headline)
-                        .foregroundStyle(Theme.textPrimary)
-                    Text(importHeadline)
-                        .font(.caption)
+        if isImporting, let importStatus {
+            Section {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(importStatus)
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(2)
+                        .truncationMode(.middle)
                 }
-                Spacer(minLength: 8)
-                Button(action: runImport) {
-                    if isImporting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                }
-                .buttonStyle(.borderless)
-                .disabled(isImporting)
-                .help("Scan Claude, Codex and Cursor histories on this Mac")
-                .accessibilityLabel("Scan again")
+                .padding(.vertical, 4)
             }
-            if isImporting, let importStatus {
-                Text(importStatus)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
-            TextField("Search chats, projects…", text: $historySearch)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
         }
 
         let imported = recentSessions.filter { $0.source != .app }
         if imported.isEmpty {
             Section {
-                Text("Nothing imported yet — tap the refresh icon to scan this Mac.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textSecondary)
+                importedEmptyState
             }
         } else {
             Section {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Spacing.xs) {
-                        sourcePill(source: nil, label: "All",
-                                   icon: "tray.full", count: imported.count)
-                        ForEach(importSources, id: \.self) { source in
-                            sourcePill(source: source, label: source.label,
-                                       icon: source.systemImage,
-                                       count: imported.filter { $0.source == source }.count)
-                        }
-                    }
-                    .padding(.vertical, 1)
-                }
+                importSourceBar(imported)
             }
 
             let filtered = visibleImported(imported)
             if filtered.isEmpty {
                 Section {
-                    Text(historySearch.isEmpty
-                         ? "No chats from \(sourceFilter?.label ?? "this tool")."
-                         : "No chats match “\(historySearch)”.")
-                        .font(.callout)
-                        .foregroundStyle(Theme.textSecondary)
+                    emptySearchState(historySearch.isEmpty
+                                     ? "No chats from \(sourceFilter?.label ?? "this tool")."
+                                     : "No chats match “\(historySearch)”.")
                 }
             } else {
-                ForEach(projectGroups(filtered)) { group in
-                    collapsibleGroup(key: group.key, icon: group.icon,
-                                     name: group.name, records: group.records,
-                                     workspacePath: group.key,
-                                     subtitle: sourceFilter == nil ? { $0.source.label } : nil)
+                ForEach(importGroups(filtered)) { group in
+                    collapsibleGroup(key: "import:\(group.source.rawValue)",
+                                     icon: group.source.systemImage,
+                                     name: group.source.label,
+                                     records: group.records,
+                                     workspacePath: "import:\(group.source.rawValue)",
+                                     subtitle: { importRowSubtitle($0) })
                 }
             }
         }
+    }
+
+    private func workspaceAction(_ title: String, icon: String,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .help(title)
+    }
+
+    private var importedEmptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: "tray.and.arrow.down")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Theme.accent)
+            Text("Bring your other coding chats here")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Import Claude, Codex, or Cursor history. Everything stays on this Mac.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                runImport()
+            } label: {
+                Label("Scan for chats", systemImage: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(Theme.accent)
+            .disabled(isImporting)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func emptySearchState(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(Theme.textTertiary)
+            Text(message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func importSourceBar(_ imported: [SessionRecord]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("SOURCES")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(0.9)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Text("\(imported.count) chats")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    sourcePill(source: nil, label: "All", icon: "tray.full", count: imported.count)
+                    ForEach(importSources, id: \.self) { source in
+                        sourcePill(source: source, label: source.label,
+                                   icon: source.systemImage,
+                                   count: imported.filter { $0.source == source }.count)
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+        }
+        .padding(.vertical, 3)
     }
 
     private var importHeadline: String {
@@ -593,25 +969,27 @@ private struct SidebarView: View {
             }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .bold))
+                if source == nil {
+                    Image(systemName: icon)
+                        .font(.system(size: 9, weight: .semibold))
+                }
                 Text(label)
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 10, weight: .semibold))
                 Text("\(count)")
-                    .font(.caption2.weight(.bold))
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(isActive ? Theme.textPrimary : Theme.textTertiary)
             }
             .foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(isActive ? Theme.surface : Theme.surfaceInset,
-                        in: Capsule())
+            .padding(.horizontal, 7)
+            .frame(minHeight: 25)
+            .background(isActive ? Theme.surface : Theme.surfaceInset.opacity(0.72),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
-                Capsule().strokeBorder(
+                RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(
                     isActive ? Theme.hairline : Color.clear,
                     lineWidth: 1))
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isActive ? [.isSelected] : [])
@@ -638,6 +1016,12 @@ private struct SidebarView: View {
         var id: String { key }
     }
 
+    private struct ImportGroup: Identifiable {
+        let source: SessionSource
+        let records: [SessionRecord]
+        var id: String { source.rawValue }
+    }
+
     private func projectGroups(_ records: [SessionRecord]) -> [ProjectGroup] {
         var byPath: [String: [SessionRecord]] = [:]
         for record in records { byPath[record.workspacePath, default: []].append(record) }
@@ -655,31 +1039,78 @@ private struct SidebarView: View {
         .sorted { $0.latest > $1.latest }
     }
 
+    private func importGroups(_ records: [SessionRecord]) -> [ImportGroup] {
+        SessionSource.allCases
+            .filter { $0 != .app }
+            .compactMap { source in
+                let records = records
+                    .filter { $0.source == source }
+                    .sorted { $0.updatedAt > $1.updatedAt }
+                guard !records.isEmpty else { return nil }
+                return ImportGroup(source: source, records: records)
+            }
+            .sorted { lhs, rhs in
+                (lhs.records.first?.updatedAt ?? .distantPast)
+                    > (rhs.records.first?.updatedAt ?? .distantPast)
+            }
+    }
+
+    private func importRowSubtitle(_ record: SessionRecord) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        guard !record.workspacePath.isEmpty,
+              record.workspacePath != home else {
+            return "No project folder"
+        }
+        return URL(fileURLWithPath: record.workspacePath).lastPathComponent
+    }
+
     /// One session row — tagged for List selection, marked and explained
     /// when its project folder is gone. `subtitle` prefixes the metadata
     /// line (used to badge the import source).
     private func sessionRow(_ record: SessionRecord, subtitle: String?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(SessionTitle.display(for: record))
-                .font(.callout.weight(.medium))
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(2)
-            HStack(spacing: 6) {
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Theme.textSecondary)
+        let selected = selectedSessionID == record.id
+        return HStack(spacing: 10) {
+            Image(systemName: record.source.systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(record.source == .app ? Theme.accent : Theme.info)
+                .frame(width: 24, height: 24)
+                .background(Theme.surfaceInset.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(SessionTitle.display(for: record))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                HStack(spacing: 5) {
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Theme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("·")
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    Text("\(record.messages.count) messages")
+                        .monospacedDigit()
                     Text("·")
-                        .foregroundStyle(Theme.textTertiary)
+                    Text(SessionTitle.compactAge(record.updatedAt))
+                        .monospacedDigit()
                 }
-                Text("\(record.messages.count)")
-                    .monospacedDigit()
-                Text("·")
-                Text(SessionTitle.compactAge(record.updatedAt))
-                    .monospacedDigit()
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textTertiary)
             }
-            .font(.caption2)
-            .foregroundStyle(Theme.textTertiary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(selected ? Theme.wash(Theme.accent) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(selected ? Theme.accent : Color.clear)
+                .frame(width: 3, height: 25)
         }
         .tag(record.id)
         // Every row can be exported on its own — the rail button covers the
@@ -688,6 +1119,9 @@ private struct SidebarView: View {
             Button("Export as Markdown…") { export(record, format: .markdown) }
             Button("Export as JSON…") { export(record, format: .json) }
         }
+        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
         // Missing workspace: row stays visible (the session exists) but is
         // marked and explained on click.
         .disabled(!SessionStore.shared.validateWorkspaceBinding(record))

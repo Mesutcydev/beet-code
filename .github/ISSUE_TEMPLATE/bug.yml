@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible problem in Beet Code
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove API keys, tokens, private paths, and proprietary source
+        code from screenshots and logs before attaching them.
+  - type: input
+    id: version
+    attributes:
+      label: Beet Code version
+      placeholder: "0.8.1 or commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS and Mac
+      placeholder: "macOS 15.6 · Apple Silicon"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Provider or model loading
+        - Agent tools or approvals
+        - Composer or chat UI
+        - Imported chats
+        - Browser or simulator
+        - Build or installation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Include the exact provider/model and HTTP status when relevant, but never an API key.

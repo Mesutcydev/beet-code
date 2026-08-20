@@ -217,6 +217,21 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(collector.assistantMessages(), ["Here is the answer."])
     }
 
+    func testReasoningIsEmittedAndPersistedWithoutEnteringModelHistory() async throws {
+        var config = AgentLoop.Configuration()
+        config.showReasoning = true
+        engine.enqueue(.text("<thinking>inspect the project</thinking>Here is the answer."))
+        let loop = makeLoop(config: config)
+        let collector = await runToCompletion(loop)
+
+        XCTAssertTrue(collector.all.contains(.reasoning("inspect the project")))
+        let record = await loop.sessionRecord
+        XCTAssertEqual(record.messages.filter { $0.role == .reasoning }.map(\.content), ["inspect the project"])
+        XCTAssertFalse(
+            engine.turnHistory.flatMap { $0 }.contains { $0.content.contains("inspect the project") },
+            "reasoning summaries are transcript history, not prompt history")
+    }
+
     /// Long reasoning traces are capped at the tail so the bubble stays
     /// readable.
     func testReasoningFallbackCapsLongTraces() {
@@ -570,7 +585,7 @@ final class AgentLoopTests: XCTestCase {
             case .toolResult:
                 XCTAssertTrue(pendingAssistant, "toolResult without preceding assistant turn")
                 pendingAssistant = false
-            case .toolCall, .user, .system:
+            case .toolCall, .user, .reasoning, .system:
                 break
             }
         }
@@ -688,5 +703,19 @@ final class AgentLoopTests: XCTestCase {
             return XCTFail("expected engineError, got \(String(describing: collector.finish))")
         }
         XCTAssertTrue(message.contains("simulated engine failure"), message)
+    }
+
+    func testContextOverflowCompactsAndRetriesOnce() async throws {
+        engine.enqueue(
+            .failure(FakeEngineTestError.contextOverflow),
+            .text("Recovered after trimming the request."))
+        let loop = makeLoop()
+        let collector = await runToCompletion(loop)
+
+        XCTAssertEqual(
+            collector.finish,
+            .completed("Recovered after trimming the request."))
+        XCTAssertEqual(engine.streamCallCount, 2)
+        XCTAssertGreaterThanOrEqual(engine.resetCallCount, 2)
     }
 }

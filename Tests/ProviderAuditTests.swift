@@ -1,6 +1,55 @@
 import XCTest
 @testable import BeetCode
 
+private final class ProviderFixtureStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var responder: @Sendable (URLRequest) -> (status: Int, data: Data) = { _ in
+        (200, Data())
+    }
+    private(set) var requests: [URLRequest] = []
+
+    func setResponder(_ responder: @escaping @Sendable (URLRequest) -> (status: Int, data: Data)) {
+        lock.lock()
+        self.responder = responder
+        requests.removeAll()
+        lock.unlock()
+    }
+
+    func response(for request: URLRequest) -> (status: Int, data: Data) {
+        lock.lock()
+        requests.append(request)
+        let result = responder(request)
+        lock.unlock()
+        return result
+    }
+
+    func snapshotRequests() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+}
+
+private let providerFixtureStore = ProviderFixtureStore()
+
+private final class ProviderFixtureURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let fixture = providerFixtureStore.response(for: request)
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: fixture.status,
+            httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: fixture.data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 /// Regression tests for the provider audit fixes (P1–P13). All offline —
 /// they exercise the pure preparation/parsing layers, never the network.
 final class ProviderAuditTests: XCTestCase {
@@ -131,7 +180,7 @@ final class ProviderAuditTests: XCTestCase {
     // MARK: P4/P5 — provider registry additions
 
     func testProviderRegistryExtensions() {
-        XCTAssertEqual(LLMProvider.allCases.count, 9)
+        XCTAssertEqual(LLMProvider.allCases.count, 10)
         XCTAssertNotNil(LLMProvider.anthropic.anthropicBaseURL)
         XCTAssertEqual(LLMProvider.anthropic.anthropicBaseURL?.host, "api.anthropic.com")
         XCTAssertNil(LLMProvider.anthropic.openAICompatibleBaseURL)
@@ -140,6 +189,143 @@ final class ProviderAuditTests: XCTestCase {
         // Custom has no URL until configured (prefs untouched by tests —
         // customBaseURL defaults to nil in a fresh prefs store).
         XCTAssertEqual(LLMProvider.custom.defaultModel, "")
+    }
+
+    func testCurrentProviderDefaultsAndRoutes() {
+        XCTAssertEqual(LLMProvider.longCat.defaultModel, "LongCat-2.0")
+        XCTAssertEqual(LLMProvider.longCat.suggestedModels, ["LongCat-2.0"])
+        XCTAssertEqual(LLMProvider.longCat.openAICompatibleBaseURL?.absoluteString,
+                       "https://api.longcat.chat/openai/v1")
+        XCTAssertEqual(LLMProvider.longCat.modelsURL?.absoluteString,
+                       "https://api.longcat.chat/openai/v1/models")
+        XCTAssertEqual(LLMProvider.gemini.defaultModel, "gemini-3.7-flash")
+        XCTAssertEqual(LLMProvider.openCode.openAICompatibleBaseURL?.absoluteString,
+                       "https://opencode.ai/zen/v1")
+        XCTAssertEqual(LLMProvider.openCode.modelsURL?.absoluteString,
+                       "https://opencode.ai/zen/v1/models")
+    }
+
+    func testCompatibleModelCatalogAcceptsCommonGatewayEnvelopes() throws {
+        let bodies = [
+            #"[{"id":"array-model"}]"#,
+            #"{"models":[{"model":"models-key"}]}"#,
+            #"{"results":[{"name":"result-model","display_name":"Result"}]}"#
+        ]
+        let names = try bodies.flatMap {
+            try RemoteLLMClient.compatibleModelProfiles(
+                from: Data($0.utf8), provider: .openCode).map(\.model)
+        }
+        XCTAssertEqual(names, ["array-model", "models-key", "result-model"])
+    }
+
+    // MARK: Deterministic provider contract fixtures
+
+    func testLongCatModelListFixtureUsesOpenAIContract() async throws {
+        providerFixtureStore.setResponder { _ in
+            let body = #"{"data":[{"id":"LongCat-2.0","name":"LongCat 2"},{"id":"LongCat-2.0-thinking"}]}"#
+            return (200, Data(body.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProviderFixtureURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let profiles = try await RemoteLLMClient.fetchModelProfiles(
+            provider: .longCat, apiKey: "fixture-key", session: session)
+
+        XCTAssertEqual(profiles.map(\.model), ["LongCat-2.0", "LongCat-2.0-thinking"])
+        let request = try XCTUnwrap(providerFixtureStore.snapshotRequests().first)
+        XCTAssertEqual(request.url?.path, "/openai/v1/models")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-key")
+    }
+
+    func testGeminiModelListFixturePaginatesAndKeepsCapabilities() async throws {
+        providerFixtureStore.setResponder { request in
+            let isSecondPage = request.url?.query?.contains("pageToken=next") == true
+            if isSecondPage {
+                let body = #"{"models":[{"name":"models/future-coder","inputTokenLimit":32768,"outputTokenLimit":4096,"supportedGenerationMethods":["generateContent"]}]}"#
+                return (200, Data(body.utf8))
+            }
+            let body = #"{"models":[{"name":"models/not-an-embedder","displayName":"Coder","inputTokenLimit":16384,"outputTokenLimit":2048,"supportedGenerationMethods":["generateContent"],"supportsVision":true},{"name":"models/embed","supportedGenerationMethods":["embedContent"]}],"nextPageToken":"next"}"#
+            return (200, Data(body.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProviderFixtureURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let profiles = try await RemoteLLMClient.fetchModelProfiles(
+            provider: .gemini, apiKey: "gemini-fixture", session: session)
+
+        XCTAssertEqual(profiles.map(\.model), ["future-coder", "not-an-embedder"])
+        let coder = try XCTUnwrap(profiles.first { $0.model == "not-an-embedder" })
+        XCTAssertEqual(coder.contextWindow, 16_384)
+        XCTAssertEqual(coder.maxOutputTokens, 2_048)
+        XCTAssertEqual(coder.supportsTools, true)
+        XCTAssertEqual(coder.supportsVision, true)
+        XCTAssertEqual(providerFixtureStore.snapshotRequests().count, 2)
+    }
+
+    func testProviderErrorFixturePreservesHTTPStatusAndMessage() async throws {
+        providerFixtureStore.setResponder { _ in
+            let body = #"{"error":{"message":"invalid api key"}}"#
+            return (401, Data(body.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProviderFixtureURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+
+        do {
+            _ = try await RemoteLLMClient.fetchModels(
+                provider: .longCat, apiKey: "bad", session: session)
+            XCTFail("fixture should return a provider error")
+        } catch let error as RemoteLLMError {
+            guard case .badStatus(let code, let detail) = error else {
+                return XCTFail("unexpected remote error: \(error)")
+            }
+            XCTAssertEqual(code, 401)
+            XCTAssertTrue(detail.contains("invalid api key"))
+        }
+    }
+
+    func testStreamingFixturesCoverOpenAIGeminiAndAnthropicShapes() {
+        let openAI = RemoteLLMClient.processSSELine(
+            Array(Data(#"data: {"choices":[{"delta":{"content":"hello"}}]}"#.utf8)))
+        XCTAssertEqual(openAI, .text("hello"))
+
+        let gemini = RemoteLLMClient.processSSELine(
+            Array(Data(#"data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"README.md"}}}]}}]}"#.utf8)))
+        guard case .toolFragment(let index, let name, let arguments) = gemini else {
+            return XCTFail("Gemini function calls must remain a tool fragment")
+        }
+        XCTAssertEqual(index, 0)
+        XCTAssertEqual(name, "read_file")
+        XCTAssertTrue(arguments?.contains("README.md") == true)
+
+        let anthropic = RemoteLLMClient.processSSELine(
+            Array(Data(#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"README.md\"}"}}"#.utf8)))
+        guard case .toolFragment(let anthropicIndex, _, let partial) = anthropic else {
+            return XCTFail("Anthropic input_json_delta must remain a tool fragment")
+        }
+        XCTAssertEqual(anthropicIndex, 0)
+        XCTAssertTrue(partial?.contains("README.md") == true)
+    }
+
+    func testGeminiModelFilteringUsesGenerationCapability() {
+        let valid = RemoteLLMClient.GeminiModelEntry(
+            name: "models/gemini-3.7-flash",
+            supportedGenerationMethods: ["countTokens", "generateContent"])
+        let validAlias = RemoteLLMClient.GeminiModelEntry(
+            name: "models/future-coding-alias",
+            supportedGenerationMethods: ["generateContent"])
+        let embedding = RemoteLLMClient.GeminiModelEntry(
+            name: "models/text-embedding-005",
+            supportedGenerationMethods: ["embedContent"])
+
+        XCTAssertEqual(RemoteLLMClient.geminiModelID(from: valid), "gemini-3.7-flash")
+        XCTAssertEqual(RemoteLLMClient.geminiModelID(from: validAlias), "future-coding-alias")
+        XCTAssertNil(RemoteLLMClient.geminiModelID(from: embedding))
+    }
+
+    func testGeminiModelIDsAcceptShortAndQualifiedForms() {
+        XCTAssertEqual(RemoteLLMClient.normalizedGeminiModelID("gemini-3.7-flash"), "gemini-3.7-flash")
+        XCTAssertEqual(RemoteLLMClient.normalizedGeminiModelID("models/gemini-3.7-flash"), "gemini-3.7-flash")
     }
 
     // MARK: P9 — usage wire types
@@ -161,6 +347,56 @@ final class ProviderAuditTests: XCTestCase {
         XCTAssertEqual(RemoteLLMClient.extractText(from: Data(json.utf8)), "hi")
         let thinking = #"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}"#
         XCTAssertEqual(RemoteLLMClient.extractText(from: Data(thinking.utf8)), "<think>hmm</think>")
+    }
+
+    func testGeminiThoughtPartStaysOnReasoningChannel() {
+        let json = #"{"candidates":[{"content":{"parts":[{"thought":true,"text":"inspect the project"},{"text":"The answer"}]}}]}"#
+        XCTAssertEqual(
+            RemoteLLMClient.extractText(from: Data(json.utf8)),
+            "<think>inspect the project</think>The answer")
+    }
+
+    func testOpenAIReasoningAndAnswerInOneDeltaAreBothPreserved() {
+        let json = #"{"choices":[{"delta":{"reasoning_content":"inspect the project","content":"The answer"}}]}"#
+        XCTAssertEqual(
+            RemoteLLMClient.extractText(from: Data(json.utf8)),
+            "<think>inspect the project</think>The answer")
+    }
+
+    func testOpenAIReasoningIsPreservedAlongsideToolDelta() {
+        let json = #"{"choices":[{"delta":{"reasoning_content":"inspect the project","tool_calls":[{"index":0,"function":{"name":"read_file"}}]}}]}"#
+        let extracted = RemoteLLMClient.extract(from: Data(json.utf8))
+
+        XCTAssertEqual(extracted?.text, "<think>inspect the project</think>")
+        XCTAssertEqual(extracted?.tool?.index, 0)
+        XCTAssertEqual(extracted?.tool?.name, "read_file")
+    }
+
+    func testSSELinePreservesTextAlongsideToolDelta() {
+        let json = #"data: {"choices":[{"delta":{"reasoning_content":"inspect","tool_calls":[{"index":0,"function":{"name":"read_file"}}]}}]}"#
+        guard case .textAndToolFragment(
+            text: let text,
+            index: let index,
+            name: let name,
+            arguments: let arguments) = RemoteLLMClient.processSSELine(Array(json.utf8))
+        else {
+            return XCTFail("reasoning and tool data must share one SSE action")
+        }
+
+        XCTAssertEqual(text, "<think>inspect</think>")
+        XCTAssertEqual(index, 0)
+        XCTAssertEqual(name, "read_file")
+        XCTAssertNil(arguments)
+    }
+
+    func testSSELinePreservesTextAndUsageTogether() {
+        let json = #"data: {"choices":[{"delta":{"content":"done"}}],"usage":{"prompt_tokens":12,"completion_tokens":3}}"#
+        guard case .textAndUsage(let text, let usage) = RemoteLLMClient.processSSELine(Array(json.utf8)) else {
+            return XCTFail("a final chunk must not drop either text or usage")
+        }
+        XCTAssertEqual(text, "done")
+        XCTAssertEqual(usage.promptTokens, 12)
+        XCTAssertEqual(usage.completionTokens, 3)
     }
 
     // MARK: Browser — JS literal escaping (the only arg→JS boundary)

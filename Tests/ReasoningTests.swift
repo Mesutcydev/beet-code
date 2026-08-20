@@ -16,6 +16,26 @@ final class ReasoningTests: XCTestCase {
         XCTAssertEqual(stripped, "visible")
     }
 
+    func testReasoningAliasesAndOpenBlockAreSupported() {
+        let text = "<|thinking|>inspect the project<|/thinking|>Answer <reasoning>check the build</reasoning>"
+        XCTAssertEqual(
+            PromptBuilder.extractingThinking(text),
+            "inspect the project\n\ncheck the build")
+        XCTAssertEqual(PromptBuilder.strippingThinking(text), "Answer")
+        XCTAssertEqual(
+            PromptBuilder.extractingThinkingIncludingOpen("Answer <thinking>still working"),
+            "still working")
+        XCTAssertTrue(PromptBuilder.hasOpenThinkingBlock("<|assistant_thought|>still working"))
+    }
+
+    func testStreamFilterKeepsReasoningSeparateFromAnswer() {
+        let raw = "<thinking>inspect the project</thinking>Final answer"
+        let (visible, reasoning) = StreamDisplayFilter.display(raw: raw)
+        XCTAssertEqual(visible, "Final answer")
+        XCTAssertFalse(reasoning)
+        XCTAssertEqual(StreamDisplayFilter.reasoningText(raw: raw), "inspect the project")
+    }
+
     func testNumberAccessor() {
         let call = ParsedToolCall(name: "t", arguments: .object(["x": .number(0.5)]), index: 0)
         XCTAssertEqual(call.number("x"), 0.5)

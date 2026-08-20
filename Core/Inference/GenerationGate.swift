@@ -62,7 +62,14 @@ public actor GenerationGate {
         // Keep the chain alive regardless of this task's outcome.
         tail = Task { _ = try? await task.value }
 
-        let value = try await task.value
+        // Propagate cancellation into the unstructured gate task. Without
+        // this bridge, the outer stream can be cancelled while the task that
+        // owns the Metal operation keeps running until the model finishes.
+        let value = try await withTaskCancellationHandler(operation: {
+            try await task.value
+        }, onCancel: {
+            task.cancel()
+        })
         return value
     }
 

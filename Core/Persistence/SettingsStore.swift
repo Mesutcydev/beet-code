@@ -23,6 +23,36 @@ enum AppAppearance: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+/// How a new task should begin. Auto is the fast direct path; Goal asks for
+/// an explicit plan before tools run and then keeps working until completion.
+enum AgentMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case auto
+    case goal
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: "Auto"
+        case .goal: "Goal"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .auto: "wand.and.stars"
+        case .goal: "target"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .auto: "Run the task directly while keeping normal approval gates."
+        case .goal: "Make a plan first, then continue through the goal until it is complete."
+        }
+    }
+}
+
 /// Accent color palettes. Every entry ships a light+dark hex pair for both
 /// the accent and its brighter variant; `Theme` resolves them at draw time.
 /// `beetRed` is the identity default (Pantone 19-2030 TCX, #7A1F3D).
@@ -103,15 +133,30 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.memoryMode: "off",
             DefaultsKeys.compressionLevel: "standard",
             DefaultsKeys.composerFlow: "aurora",
-            DefaultsKeys.showReasoning: false,
+            // Reasoning is a first-class, collapsed-by-default transcript
+            // surface. New installs can see it immediately; users who have
+            // explicitly switched it off keep that choice.
+            DefaultsKeys.showReasoning: true,
             DefaultsKeys.planMode: false,
+            DefaultsKeys.agentMode: AgentMode.auto.rawValue,
             DefaultsKeys.appearance: AppAppearance.light.rawValue,
             DefaultsKeys.accentPalette: AccentPalette.beetRed.rawValue,
             DefaultsKeys.composerBorderAnimation: true,
             DefaultsKeys.apiServerEnabled: false,
             DefaultsKeys.apiServerPort: 1234,
+            DefaultsKeys.remoteSessionEnabled: false,
+            DefaultsKeys.remoteSessionPort: 9475,
+            DefaultsKeys.remoteSessionAllowLAN: false,
             DefaultsKeys.enterSends: true,
         ])
+
+        // Earlier builds hid reasoning by default. Migrate that implicit
+        // default once so an existing installation actually sees the new
+        // first-class reasoning surface; a later explicit toggle is retained.
+        if defaults.object(forKey: DefaultsKeys.reasoningVisibilityMigration) == nil {
+            defaults.set(true, forKey: DefaultsKeys.showReasoning)
+            defaults.set(true, forKey: DefaultsKeys.reasoningVisibilityMigration)
+        }
     }
 
     /// Color appearance. Defaults to light; `system` follows macOS.
@@ -218,6 +263,21 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// User-facing mode shortcut. Goal mode owns the plan gate so the two
+    /// concepts cannot drift apart when selected from the composer or slash
+    /// commands. The legacy plan toggle remains available for compatibility.
+    var agentMode: AgentMode {
+        get {
+            AgentMode(rawValue: defaults.string(forKey: DefaultsKeys.agentMode)
+                      ?? AgentMode.auto.rawValue) ?? .auto
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: DefaultsKeys.agentMode)
+            defaults.set(newValue == .goal, forKey: DefaultsKeys.planMode)
+            objectWillChange.send()
+        }
+    }
+
     /// Composer signature: the animated gradient underline. Off = static
     /// hairline (also friendlier for Reduce Motion sensibilities).
     var composerBorderAnimation: Bool {
@@ -280,6 +340,40 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Remote Beetcode browser control. Disabled by default because enabling
+    /// it creates a network listener, even though every control route still
+    /// requires a one-time pairing code followed by a bearer token.
+    var remoteSessionEnabled: Bool {
+        get { defaults.bool(forKey: DefaultsKeys.remoteSessionEnabled) }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.remoteSessionEnabled)
+            objectWillChange.send()
+        }
+    }
+
+    var remoteSessionPort: Int {
+        get {
+            let value = defaults.integer(forKey: DefaultsKeys.remoteSessionPort)
+            return value == 0 ? 9475 : value
+        }
+        set {
+            let clamped = min(max(newValue, 1024), 65_535)
+            defaults.set(clamped, forKey: DefaultsKeys.remoteSessionPort)
+            objectWillChange.send()
+        }
+    }
+
+    /// LAN fallback is opt-in. Tailscale is the safer default because its
+    /// direct interface is encrypted; enabling this is useful only when both
+    /// devices are on a trusted private Wi-Fi network.
+    var remoteSessionAllowLAN: Bool {
+        get { defaults.bool(forKey: DefaultsKeys.remoteSessionAllowLAN) }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.remoteSessionAllowLAN)
+            objectWillChange.send()
+        }
+    }
+
     /// When true, Enter sends and Shift+Enter inserts a newline.
     /// When false, Enter inserts a newline and only ⌘↩ sends.
     var enterSends: Bool {
@@ -302,12 +396,17 @@ final class SettingsStore: ObservableObject {
         static let compressionLevel = "compressionLevel"
         static let composerFlow = "composerFlow"
         static let showReasoning = "showReasoning"
+        static let reasoningVisibilityMigration = "reasoningVisibilityMigration.v1"
         static let planMode = "planMode"
+        static let agentMode = "agentMode"
         static let appearance = "appearance"
         static let accentPalette = "accentPalette"
         static let composerBorderAnimation = "composerBorderAnimation"
         static let apiServerEnabled = "apiServerEnabled"
         static let apiServerPort = "apiServerPort"
+        static let remoteSessionEnabled = "remoteSessionEnabled"
+        static let remoteSessionPort = "remoteSessionPort"
+        static let remoteSessionAllowLAN = "remoteSessionAllowLAN"
         static let enterSends = "enterSends"
     }
 }

@@ -41,18 +41,38 @@ final class ComposerStore {
     private(set) var focusAvailability: [FocusSource: FocusAvailability] = [:]
     private(set) var estimate = TokenEstimate(
         draftTokens: 0, intentTokens: 0, focusTokens: 0, attachmentTokens: 0,
-        totalTokens: 0, contextWindow: nil, utilization: nil)
+        totalTokens: 0, historyTokens: 0, requestTokens: 0,
+        contextWindow: nil, responseReserve: 4_096,
+        historyMessageCount: 0, canCompact: false, utilization: nil)
 
     struct TokenEstimate: Sendable, Equatable {
         var draftTokens: Int
         var intentTokens: Int
         var focusTokens: Int
         var attachmentTokens: Int
+        /// The current turn only. Kept separate so the UI can explain why a
+        /// request is large without pretending the prompt is the whole chat.
         var totalTokens: Int
+        /// Estimated tokens already persisted in the continuation session.
+        var historyTokens: Int
+        /// History plus the current turn, before the system prompt/tool
+        /// envelope. This is the useful preflight number for the composer.
+        var requestTokens: Int
         /// The loaded local model's context window; nil for remote engines
         /// (unknown → no percentage, per the honesty rule).
         var contextWindow: Int?
+        var responseReserve: Int
+        var historyMessageCount: Int
+        var canCompact: Bool
         var utilization: Double?
+
+        var shouldCompact: Bool {
+            canCompact && (utilization ?? 0) >= 0.75
+        }
+
+        var isOverBudget: Bool {
+            (utilization ?? 0) >= 1
+        }
     }
 
     /// Resolved focus content, cached so typing never shells out to git.
@@ -68,6 +88,10 @@ final class ComposerStore {
     private var persistTask: Task<Void, Never>?
     private var workspaceKey: String?
     private var lastEstimateRefresh = Date.distantPast
+    private var cachedHistoryTokens = 0
+    private var cachedHistoryMessageCount = 0
+    private var cachedCanCompact = false
+    private var historyRefreshTask: Task<Void, Never>?
     /// Captured persist that has not yet hit disk. Flushed synchronously on
     /// workspace switch so a cancelled debounce cannot drop the old draft.
     private var pendingPersist: (url: URL, state: ComposerDraftState)?
@@ -79,12 +103,12 @@ final class ComposerStore {
         self.controller = controller
         self.appState = appState
 
-        // Task { @MainActor } delivers under XCTest's cooperative executor;
-        // `.receive(on: RunLoop.main)` can sit unprocessed for seconds in
-        // async tests and flake draft restore on workspace switch.
+        // Workspace changes are transactions. Preserve the published value
+        // inside the task so a rapid second switch cannot make the first
+        // callback reread the wrong workspace.
         controller.$workspaceURL
-            .sink { [weak self] _ in
-                Task { @MainActor in self?.workspaceDidChange() }
+            .sink { [weak self] url in
+                Task { @MainActor in self?.workspaceDidChange(to: url) }
             }
             .store(in: &cancellables)
 
@@ -101,16 +125,40 @@ final class ComposerStore {
             }
             .store(in: &cancellables)
 
-        workspaceDidChange()
+        // Session persistence is the source of truth for continuation
+        // context. Refresh it when the controller changes, but keep the
+        // actual disk read out of the prompt's per-keystroke path.
+        controller.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                // `objectWillChange` is emitted in willSet for @Published
+                // properties. Defer one run-loop turn so a session selection
+                // has finished updating `currentSessionID` before we read it.
+                self.historyRefreshTask?.cancel()
+                self.historyRefreshTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(80))
+                    guard !Task.isCancelled, let self else { return }
+                    self.refreshHistoryEstimate()
+                    self.recomputeEstimate()
+                }
+            }
+            .store(in: &cancellables)
+
+        workspaceDidChange(to: controller.workspaceURL)
     }
 
     // MARK: Availability — driven by REAL application state
 
-    private func workspaceDidChange() {
+    private func workspaceDidChange(to workspace: URL?) {
+        // Ignore a queued callback for an older switch; the newer callback
+        // will load the current workspace's draft.
+        guard workspace?.path == controller?.workspaceURL?.path else { return }
         flushPersistNow()
-        workspaceKey = controller?.workspaceURL?.path
-        loadDraft(for: controller?.workspaceURL)
+        workspaceKey = workspace?.path
+        loadDraft(for: workspace)
         refreshAvailability()
+        refreshHistoryEstimate()
     }
 
     func refreshAvailability() {
@@ -216,6 +264,7 @@ final class ComposerStore {
         let focusTokens = selection.orderedFocus.reduce(0) { $0 + IntentTokens.estimate(resolvedFocusCache[$1] ?? "") }
         let attachmentTokens = attachments.reduce(0) { $0 + estimatedAttachmentTokens($1) }
         let total = draftTokens + intentTokens + focusTokens + attachmentTokens
+        let requestTokens = cachedHistoryTokens + total
 
         // The engine's REAL launched window (GGUF fits ctx to RAM) is the
         // honest denominator; the catalog value is the fallback.
@@ -223,12 +272,37 @@ final class ComposerStore {
         // The denominator is the window minus the response reserve; when the
         // window is unknown (remote engine) there is no percentage, by design.
         let reserve = 4_096
-        let utilization = window.map { Double(total) / Double(max(1, $0 - reserve)) }
+        let utilization = window.map { Double(requestTokens) / Double(max(1, $0 - reserve)) }
 
         estimate = TokenEstimate(
             draftTokens: draftTokens, intentTokens: intentTokens,
             focusTokens: focusTokens, attachmentTokens: attachmentTokens,
-            totalTokens: total, contextWindow: window, utilization: utilization)
+            totalTokens: total,
+            historyTokens: cachedHistoryTokens,
+            requestTokens: requestTokens,
+            contextWindow: window,
+            responseReserve: reserve,
+            historyMessageCount: cachedHistoryMessageCount,
+            canCompact: cachedCanCompact,
+            utilization: utilization)
+    }
+
+    /// Reads only the persisted continuation record. The active loop owns its
+    /// private mutable record; after a run finishes it is persisted and the
+    /// controller publishes a change, so the next composer estimate includes
+    /// the actual history the next request will replay.
+    private func refreshHistoryEstimate() {
+        guard let seed = controller?.restoredSeed else {
+            cachedHistoryTokens = 0
+            cachedHistoryMessageCount = 0
+            cachedCanCompact = false
+            return
+        }
+        cachedHistoryTokens = seed.messages.reduce(0) { total, message in
+            total + ContextCompactor.estimateTokens(message.content)
+        }
+        cachedHistoryMessageCount = seed.messages.count
+        cachedCanCompact = seed.messages.contains { $0.role == .toolResult }
     }
 
     /// Matches what the send pipeline actually injects: text attachments are
@@ -255,6 +329,12 @@ final class ComposerStore {
 
     var canSend: Bool {
         sendBlocker == nil && controller?.isRunning == false
+    }
+
+    /// A compact action is offered only when the persisted history contains
+    /// tool output that the compactor can actually collapse.
+    var canCompactHistory: Bool {
+        cachedCanCompact && controller?.isRunning == false
     }
 
     /// Slash → local command; otherwise compose the intent block and dispatch

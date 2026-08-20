@@ -64,8 +64,8 @@ enum Theme {
     // beet tiers are warm pinks tuned to stay readable on the saturated
     // Pantone background (secondary ≈ 5.6:1, tertiary ≈ 3.5:1).
     static let textPrimary   = Color.dynamic(light: 0x14161A, dark: 0xF2F4F8, beet: 0xFDF2F6)
-    static let textSecondary = Color.dynamic(light: 0x5B616E, dark: 0xA3AABB, beet: 0xE7B8C8)
-    static let textTertiary  = Color.dynamic(light: 0x8A909C, dark: 0x717889, beet: 0xC08CA0)
+    static let textSecondary = Color.dynamic(light: 0x5B616E, dark: 0xA3AABB, beet: 0xF7D6E1)
+    static let textTertiary  = Color.dynamic(light: 0x8A909C, dark: 0x717889, beet: 0xE5B3C4)
 
     /// Elevation shadow: a whisper in light mode, much deeper in dark —
     /// after the surface lift above, the shadow is what separates a card
@@ -251,21 +251,29 @@ private struct LFGlassModifier<S: InsettableShape>: ViewModifier {
             content
                 .background(Theme.surface, in: shape)
                 .overlay(shape.strokeBorder(Theme.hairline, lineWidth: 1))
-        } else if #available(macOS 26.0, *) {
-            content.background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .glassEffect(
-                            contentLegibility ? .regular : .clear,
-                            in: shape)
-                        .allowsHitTesting(false)
-                }
-            }
         } else {
+#if swift(>=6.2)
+            if #available(macOS 26.0, *) {
+                content.background {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .glassEffect(
+                                contentLegibility ? .regular : .clear,
+                                in: shape)
+                            .allowsHitTesting(false)
+                    }
+                }
+            } else {
+                content.background(
+                    contentLegibility ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial),
+                    in: shape)
+            }
+#else
             content.background(
                 contentLegibility ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial),
                 in: shape)
+#endif
         }
     }
 }

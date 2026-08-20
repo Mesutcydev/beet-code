@@ -86,8 +86,9 @@ private struct SettingsCard<Content: View>: View {
 
             if let footer {
                 Text(footer)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(Theme.textSecondary)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -393,6 +394,53 @@ private struct GeneralTab: View {
                     .disabled(!appState.apiServerRunning)
                 }
             }
+
+            SettingsCard(title: "Remote Beetcode Sessions", icon: "iphone", footer: "Tailscale is the secure default. Local Wi‑Fi fallback is opt-in for trusted private networks. The QR contains only a short-lived, one-time pairing code; after pairing, the browser receives a scoped token valid for 30 days (or until revoked) and can continue saved Beetcode sessions. It never exposes the terminal CLI or the local model API.") {
+                SettingToggle(label: "Enable remote session access", isOn: $settings.remoteSessionEnabled)
+                SettingRow(label: "Port") {
+                    TextField("9475", value: $settings.remoteSessionPort, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 90)
+                        .monospacedDigit()
+                }
+                SettingToggle(label: "Allow trusted local-network fallback", isOn: $settings.remoteSessionAllowLAN)
+                if settings.remoteSessionAllowLAN {
+                    Label("Use this only on a private Wi‑Fi network. Tailscale remains preferred when connected.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: Spacing.sm) {
+                    Circle()
+                        .fill(appState.remoteSessionRunning ? Theme.success : Theme.textTertiary)
+                        .frame(width: 8, height: 8)
+                    if appState.remoteSessionRunning {
+                        Text(appState.remoteSessionURL ?? "Remote host ready")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(Theme.textSecondary)
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else if let error = appState.remoteSessionError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(Theme.warning)
+                            .lineLimit(2)
+                    } else {
+                        Text("Not running")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    Spacer()
+                    if appState.remoteSessionRunning {
+                        Button("Open pairing", systemImage: "iphone") {
+                            NotificationCenter.default.post(name: .openRemoteAccess, object: nil)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
         }
         .onAppear { tokenDraft = tokenStore.token() ?? "" }
     }
@@ -406,6 +454,14 @@ private struct AgentTab: View {
     var body: some View {
         TabScroll {
             SettingsCard(title: "Autonomy", icon: "shield.lefthalf.filled", footer: "Reads are always automatic. Every write shows a diff preview and asks first unless file edits are auto-approved. Auto-approving commands is a safe-command policy, not a shell bypass: only exact invocations of known read-only executables (swift, xcodebuild, ls, git status, rg, …) with arguments inside the workspace are admitted; shell operators, substitutions, redirections, backgrounding, and any path outside the workspace always require an approval card.") {
+                SettingRow(label: "Agent mode", value: settings.agentMode.help) {
+                    Picker("Agent mode", selection: $settings.agentMode) {
+                        ForEach(AgentMode.allCases) { mode in
+                            Label(mode.label, systemImage: mode.icon).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                }
                 SettingToggle(label: "Auto-approve file edits", isOn: $settings.autoApproveEdits)
                 SettingToggle(label: "Auto-approve safe commands", isOn: $settings.autoApproveCommands)
             }
@@ -637,7 +693,38 @@ private struct ProviderCard: View {
     @State private var baseURDraft = ""
     /// Models fetched live from the provider (P10); merged into the picker.
     @State private var liveModels: [String] = []
+    @State private var liveProfiles: [RemoteModelProfile] = []
     @State private var refreshingModels = false
+    @State private var modelListError: String?
+    @State private var overrideContextWindow = ""
+    @State private var overrideOutputTokens = ""
+    @State private var overrideVision: CapabilityMode = .automatic
+    @State private var overrideTools: CapabilityMode = .automatic
+    @State private var overrideReasoning: CapabilityMode = .automatic
+    @State private var overrideTemperature: CapabilityMode = .automatic
+
+    private enum CapabilityMode: String, CaseIterable, Identifiable {
+        case automatic = "Auto"
+        case enabled = "On"
+        case disabled = "Off"
+
+        var id: String { rawValue }
+        var value: Bool? {
+            switch self {
+            case .automatic: nil
+            case .enabled: true
+            case .disabled: false
+            }
+        }
+
+        init(value: Bool?) {
+            switch value {
+            case .some(true): self = .enabled
+            case .some(false): self = .disabled
+            case .none: self = .automatic
+            }
+        }
+    }
 
     enum TestState: Equatable {
         case idle
@@ -646,8 +733,12 @@ private struct ProviderCard: View {
         case failed(String)
     }
     @State private var testState: TestState = .idle
+    @State private var saveMessage: String?
 
-    private var hasKey: Bool { keyStore.key(for: provider) != nil }
+    private var hasKey: Bool { keyStore.hasKey(for: provider) }
+    private var keyAvailableForUse: Bool {
+        hasKey || !keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private var endpointLabel: String {
         provider.openAICompatibleBaseURL?.absoluteString
@@ -725,20 +816,37 @@ private struct ProviderCard: View {
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                 Button("Save") {
-                    if !keyDraft.trimmingCharacters(in: .whitespaces).isEmpty {
-                        keyStore.save(key: keyDraft, for: provider)
+                    let draft = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let keyForRefresh: String?
+                    if !draft.isEmpty {
+                        guard keyStore.save(key: draft, for: provider) else {
+                            saveMessage = "Could not save this key to the Keychain. Try again or unlock Keychain access."
+                            return
+                        }
+                        keyForRefresh = draft
+                    } else {
+                        keyForRefresh = resolvedKey.isEmpty ? nil : resolvedKey
                     }
                     if provider == .custom { persistBaseURLDraft() }
                     persistModelDraft()
                     keyDraft = ""
+                    saveMessage = draft.isEmpty ? "Settings saved." : "API key saved securely."
                     testState = .idle
-                    // The provider's own live /models list is the original
-                    // source of truth — fetch it as soon as a key lands.
-                    if resolvedKey.isEmpty == false { refreshModels() }
+                    // Use the just-saved draft directly. A protected or
+                    // migrated Keychain item must not make a valid new key
+                    // disappear between Save and model discovery.
+                    if let keyForRefresh { refreshModels(apiKey: keyForRefresh) }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
                 .disabled(keyDraft.trimmingCharacters(in: .whitespaces).isEmpty && modelUnchanged && baseURUnchanged)
+            }
+
+            if let saveMessage {
+                Label(saveMessage, systemImage: saveMessage.hasPrefix("Could") ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(saveMessage.hasPrefix("Could") ? Theme.danger : Theme.success)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // Model choice — stacked: the picker gets its own full-width row,
@@ -764,6 +872,13 @@ private struct ProviderCard: View {
                                     Text(model).tag(model)
                                 }
                             }
+                            if !modelDraft.isEmpty,
+                               !liveModels.contains(modelDraft),
+                               !provider.suggestedModels.contains(modelDraft) {
+                                Section("Selected") {
+                                    Text(modelDraft).tag(modelDraft)
+                                }
+                            }
                         }
                         .labelsHidden()
                     }
@@ -785,11 +900,12 @@ private struct ProviderCard: View {
                     }
                     .buttonStyle(.bordered)
                     .help("Fetch the provider's live model list")
-                    .disabled(refreshingModels || (resolvedKey.isEmpty && !provider.keyOptional))
+                    .accessibilityLabel("Refresh \(provider.displayName) model list")
+                    .disabled(refreshingModels || (!keyAvailableForUse && !provider.keyOptional))
 
                     Button("Test") { runTest() }
                         .buttonStyle(.bordered)
-                        .disabled(testState == .running || (resolvedKey.isEmpty && !provider.keyOptional))
+                        .disabled(testState == .running || (!keyAvailableForUse && !provider.keyOptional))
                 }
 
                 if !liveModels.isEmpty {
@@ -801,6 +917,19 @@ private struct ProviderCard: View {
                         .font(.caption)
                         .foregroundStyle(Theme.textTertiary)
                 }
+                if let modelListError {
+                    Label(modelListError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let profile = selectedProfile {
+                    Text(profileSummary(profile))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                modelCapabilitiesEditor
             }
 
             // Test result — only rendered once a test is underway or done,
@@ -840,10 +969,14 @@ private struct ProviderCard: View {
         .onAppear {
             modelDraft = AppPreferencesStore.shared.current.remoteModel[provider.rawValue]
                 ?? provider.defaultModel
+            loadModelOverride()
             if provider == .custom {
                 baseURDraft = AppPreferencesStore.shared.current.customBaseURL ?? ""
             }
+            // Do not probe every provider's protected Keychain item on
+            // settings launch. Refresh is explicit, or follows a Save.
         }
+        .onChange(of: modelDraft) { _, _ in loadModelOverride() }
     }
 
     /// Status pill in the card header — washed fill + border from the tint
@@ -904,19 +1037,131 @@ private struct ProviderCard: View {
         AppPreferencesStore.shared.save(preferences)
     }
 
-    private func refreshModels() {
+    private func refreshModels(apiKey: String? = nil) {
         refreshingModels = true
-        let key = resolvedKey.isEmpty ? nil : resolvedKey
+        modelListError = nil
+        let key = apiKey ?? (resolvedKey.isEmpty ? nil : resolvedKey)
         Task {
-            let fetched = await RemoteLLMClient.fetchModels(provider: provider, apiKey: key)
-            await MainActor.run {
-                liveModels = fetched
-                refreshingModels = false
-                if fetched.isEmpty {
-                    testState = .failed("Could not fetch the model list — check the key/URL (or type a model id manually).")
+            do {
+                let profiles = try await RemoteLLMClient.fetchModelProfiles(provider: provider, apiKey: key)
+                await MainActor.run {
+                    liveProfiles = profiles
+                    liveModels = profiles.map(\.model)
+                    AppPreferencesStore.shared.saveRemoteModelProfiles(profiles)
+                    refreshingModels = false
+                    if profiles.isEmpty {
+                        modelListError = "The provider returned no usable models — type a model id manually or check its account access."
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    // Keep the saved/manual model choices usable when a
+                    // provider does not implement `/models` or blocks it for
+                    // the account tier. Discovery is optional, credentials
+                    // are not.
+                    refreshingModels = false
+                    let detail = (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                    modelListError = "Model discovery unavailable — you can still enter a model id manually. (detail)"
                 }
             }
         }
+    }
+
+    private var selectedProfile: RemoteModelProfile? {
+        let model = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { return nil }
+        let cached = liveProfiles.first(where: { $0.model == model })
+            ?? AppPreferencesStore.shared.remoteModelProfile(provider: provider, model: model)
+        let base = cached ?? RemoteModelProfile(
+            provider: provider,
+            model: model,
+            supportsVision: provider.supportsVision,
+            supportsTools: true,
+            supportsTemperature: true)
+        return base.applying(AppPreferencesStore.shared.remoteModelOverride(provider: provider, model: model))
+    }
+
+    private func profileSummary(_ profile: RemoteModelProfile) -> String {
+        var parts: [String] = []
+        if let context = profile.contextWindow { parts.append("context \(context.formatted())") }
+        if let output = profile.maxOutputTokens { parts.append("output \(output.formatted())") }
+        if profile.supportsTools == true { parts.append("tools") }
+        if profile.supportsReasoning == true { parts.append("reasoning") }
+        if profile.supportsVision == true { parts.append("vision") }
+        return parts.isEmpty ? "Model metadata is unknown — use the capability overrides below for unusual gateways." : parts.joined(separator: " · ")
+    }
+
+    private var modelCapabilitiesEditor: some View {
+        DisclosureGroup("Model capability overrides") {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                HStack(spacing: Spacing.sm) {
+                    TextField("Context window", text: $overrideContextWindow)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                    TextField("Max output", text: $overrideOutputTokens)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                }
+                capabilityPicker("Tools", selection: $overrideTools)
+                capabilityPicker("Reasoning", selection: $overrideReasoning)
+                capabilityPicker("Vision", selection: $overrideVision)
+                capabilityPicker("Temperature", selection: $overrideTemperature)
+                HStack {
+                    Text("Overrides apply to this provider/model only and never store API keys.")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                    Spacer()
+                    Button("Save overrides") { saveModelOverride() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.top, Spacing.xs)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(Theme.textSecondary)
+    }
+
+    private func capabilityPicker(_ title: String, selection: Binding<CapabilityMode>) -> some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+            Spacer()
+            Picker(title, selection: selection) {
+                ForEach(CapabilityMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+        }
+    }
+
+    private func loadModelOverride() {
+        let model = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let override = AppPreferencesStore.shared.remoteModelOverride(provider: provider, model: model)
+        overrideContextWindow = override?.contextWindow.map(String.init) ?? ""
+        overrideOutputTokens = override?.maxOutputTokens.map(String.init) ?? ""
+        overrideVision = CapabilityMode(value: override?.supportsVision)
+        overrideTools = CapabilityMode(value: override?.supportsTools)
+        overrideReasoning = CapabilityMode(value: override?.supportsReasoning)
+        overrideTemperature = CapabilityMode(value: override?.supportsTemperature)
+    }
+
+    private func saveModelOverride() {
+        let model = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { return }
+        let override = RemoteModelOverride(
+            contextWindow: Int(overrideContextWindow.trimmingCharacters(in: .whitespacesAndNewlines)),
+            maxOutputTokens: Int(overrideOutputTokens.trimmingCharacters(in: .whitespacesAndNewlines)),
+            supportsVision: overrideVision.value,
+            supportsTools: overrideTools.value,
+            supportsReasoning: overrideReasoning.value,
+            supportsTemperature: overrideTemperature.value)
+        AppPreferencesStore.shared.saveRemoteModelOverride(override, provider: provider, model: model)
     }
 
     private func runTest() {
@@ -939,6 +1184,22 @@ private struct ProviderCard: View {
                     provider: provider, apiKey: key, model: model)
                 testState = .ok("Connected — answered as \(answered) (\(model))")
             } catch {
+                // A valid credential can still be paired with a stale or
+                // account-inaccessible model id. Probe the catalog once so
+                // the UI distinguishes “key works” from “choose another
+                // model” instead of rejecting both as an auth failure.
+                if let remoteError = error as? RemoteLLMError,
+                   case .badStatus(let code, _) = remoteError,
+                   (400..<500).contains(code), !key.isEmpty {
+                    if let profiles = try? await RemoteLLMClient.fetchModelProfiles(
+                        provider: provider, apiKey: key), !profiles.isEmpty {
+                        liveProfiles = profiles
+                        liveModels = profiles.map(\.model)
+                        AppPreferencesStore.shared.saveRemoteModelProfiles(profiles)
+                        testState = .ok("Key accepted. \(model) is unavailable for this account; choose one of the \(profiles.count) available models.")
+                        return
+                    }
+                }
                 testState = .failed((error as? LocalizedError)?.errorDescription
                                       ?? error.localizedDescription)
             }

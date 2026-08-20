@@ -46,7 +46,12 @@ struct BrowserPanelView: View {
                     .onSubmit {
                         let target = urlDraft.trimmingCharacters(in: .whitespaces)
                         if !target.isEmpty {
-                            _ = try? controller.open(target)
+                            do {
+                                _ = try controller.open(target)
+                                urlFocused = false
+                            } catch {
+                                controller.lastError = error.localizedDescription
+                            }
                         }
                     }
 

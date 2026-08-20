@@ -18,6 +18,11 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var remoteModel: [String: String] = [:]
     /// Base URL for the `.custom` OpenAI-compatible provider (v0.6).
     var customBaseURL: String?
+    /// Optional capability overrides keyed by `provider:model`.
+    var remoteModelOverrides: [String: RemoteModelOverride] = [:]
+    /// Last provider metadata observed from a live `/models` catalog. This is
+    /// cacheable, non-secret data and lets the composer stay honest offline.
+    var remoteModelProfiles: [String: RemoteModelProfile] = [:]
 }
 
 /// JSON-file-backed preferences under Application Support/BeetCode.
@@ -50,6 +55,38 @@ final class AppPreferencesStore: @unchecked Sendable {
         let url = fileURL
         lock.unlock()
         Self.write(preferences, to: url)
+    }
+
+    func remoteModelOverride(provider: LLMProvider, model: String) -> RemoteModelOverride? {
+        current.remoteModelOverrides[remoteModelKey(provider: provider, model: model)]
+    }
+
+    func remoteModelProfile(provider: LLMProvider, model: String) -> RemoteModelProfile? {
+        current.remoteModelProfiles[remoteModelKey(provider: provider, model: model)]
+    }
+
+    func saveRemoteModelProfiles(_ profiles: [RemoteModelProfile]) {
+        guard !profiles.isEmpty else { return }
+        var preferences = current
+        for profile in profiles {
+            preferences.remoteModelProfiles[remoteModelKey(provider: profile.provider, model: profile.model)] = profile
+        }
+        save(preferences)
+    }
+
+    func saveRemoteModelOverride(_ override: RemoteModelOverride?, provider: LLMProvider, model: String) {
+        var preferences = current
+        let key = remoteModelKey(provider: provider, model: model)
+        if let override, !override.isEmpty {
+            preferences.remoteModelOverrides[key] = override
+        } else {
+            preferences.remoteModelOverrides.removeValue(forKey: key)
+        }
+        save(preferences)
+    }
+
+    private func remoteModelKey(provider: LLMProvider, model: String) -> String {
+        "\(provider.rawValue):\(model.trimmingCharacters(in: .whitespacesAndNewlines))"
     }
 
     /// Validates the stored workspace and returns a restore-safe URL.

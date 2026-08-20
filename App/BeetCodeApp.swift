@@ -51,7 +51,7 @@ struct BeetCodeApp: App {
                 .environmentObject(appState)
                 .environmentObject(appState.sessions)
                 // A real working minimum: sidebar + chat + docked panel need room.
-                .frame(minWidth: 880, minHeight: 640)
+                .frame(minWidth: 520, minHeight: 640)
                 .preferredColorScheme(settings.appearance.colorScheme)
                 // Keep AppKit's appearance in sync so Theme's dynamic NSColors
                 // resolve to the forced scheme, not just the OS one.
@@ -97,6 +97,15 @@ struct BeetCodeApp: App {
 
 extension Notification.Name {
     static let openModelManager = Notification.Name("com.beetcode.openModelManager")
+    static let openRemoteAccess = Notification.Name("com.beetcode.openRemoteAccess")
+    static let toggleBrowserPanel = Notification.Name("com.beetcode.toggleBrowserPanel")
+    static let toggleSimulatorPanel = Notification.Name("com.beetcode.toggleSimulatorPanel")
+    static let toggleDiagnosticsPanel = Notification.Name("com.beetcode.toggleDiagnosticsPanel")
+    static let gitStatus = Notification.Name("com.beetcode.gitStatus")
+    static let gitDiff = Notification.Name("com.beetcode.gitDiff")
+    static let undoCheckpoint = Notification.Name("com.beetcode.undoCheckpoint")
+    static let exportChatMarkdown = Notification.Name("com.beetcode.exportChatMarkdown")
+    static let exportChatJSON = Notification.Name("com.beetcode.exportChatJSON")
     static let newChat = Notification.Name("com.beetcode.newChat")
     static let stopAgent = Notification.Name("com.beetcode.stopAgent")
 }

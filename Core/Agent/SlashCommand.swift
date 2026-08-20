@@ -6,6 +6,8 @@ import Foundation
 /// they never consume an agent turn.
 enum SlashCommand: Equatable {
     case plan
+    case auto
+    case goal
     case undo
     case compact
     case model(String)      // argument: model id
@@ -27,6 +29,8 @@ enum SlashCommand: Equatable {
 
         switch command {
         case "plan": return .plan
+        case "auto": return .auto
+        case "goal": return .goal
         case "undo": return .undo
         case "compact": return .compact
         case "model":
@@ -46,6 +50,8 @@ enum SlashCommand: Equatable {
     static let helpText = """
     Slash commands:
       /plan        Toggle plan mode (agent plans first, you approve)
+      /auto        Use direct task mode with normal approval gates
+      /goal        Use goal mode: plan first, then work until complete
       /undo        Restore the workspace to the last checkpoint
       /compact     Compress this session's history now
       /model <id>  Switch the active model (see Model Manager for ids)

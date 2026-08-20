@@ -35,13 +35,23 @@ enum LegacyMigration {
         }
         return pairs
     }()
+    private static let runLock = NSLock()
+    nonisolated(unsafe) private static var didRun = false
 
     /// Entry point — call once during app startup, before SessionStore /
     /// ModelStore / providers are touched.
     static func runOnce() {
         guard !Keychain.runningUnderXCTest else { return }
+        runLock.lock()
+        if didRun {
+            runLock.unlock()
+            return
+        }
+        didRun = true
+        runLock.unlock()
         migrateKeychainItems()
         migrateAppSupportFolder()
+        seedConfiguredProviderHints()
     }
 
     /// Renames whose destination item is still missing — i.e. the silent
@@ -73,10 +83,20 @@ enum LegacyMigration {
             migrated += copyGenericPasswords(
                 from: legacy, to: current, allowAuthenticationUI: true)
         }
+        seedConfiguredProviderHints()
         if migrated > 0 {
             Log.app.info("Interactive keychain migration restored \(migrated) item(s)")
         }
         return migrated
+    }
+
+    /// Reads only non-secret Keychain attributes with authentication skipped.
+    /// This restores provider badges for existing installations without
+    /// reopening their secret values at launch.
+    private static func seedConfiguredProviderHints() {
+        for provider in LLMProvider.allCases where itemExists(service: provider.keychainService) {
+            APIKeyStore.markConfiguredHint(for: provider)
+        }
     }
 
     /// Existence probe that never prompts: attribute-only query without
@@ -167,6 +187,9 @@ enum LegacyMigration {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            // Migration is a silent startup operation. Never turn the
+            // destination existence check into another authorization prompt.
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
         ]
         // Destination already populated → never overwrite.
         if SecItemCopyMatching(check as CFDictionary, nil) == errSecSuccess { return false }

@@ -2,6 +2,10 @@ import AppKit
 import Foundation
 import WebKit
 
+extension Notification.Name {
+    static let openBrowserPanel = Notification.Name("com.beetcode.openBrowserPanel")
+}
+
 /// In-app browser the agent can control.
 ///
 /// One shared WKWebView, hosted in the docked browser panel, driven by the
@@ -64,6 +68,8 @@ final class BrowserController: ObservableObject {
     func open(_ urlString: String, filePolicy: BrowserURLValidator.FilePolicy = .allowAny) throws -> URL {
         let url = try BrowserURLValidator.validatedURL(urlString, filePolicy: filePolicy)
         navigationCount += 1
+        isLoading = true
+        lastError = nil
         webView.load(URLRequest(url: url))
         currentURL = url
         return url
@@ -79,6 +85,14 @@ final class BrowserController: ObservableObject {
     func waitForLoad(timeout: TimeInterval = 12) async {
         let deadline = Date().addingTimeInterval(timeout)
         while isLoading, Date() < deadline {
+            // The navigation delegate is attached by the SwiftUI panel. If
+            // an agent navigates before that panel is mounted, use the page's
+            // own readyState as a fallback so the tool still settles.
+            if let state = try? await webView.evaluateJavaScript("document.readyState") as? String,
+               state == "interactive" || state == "complete" {
+                isLoading = false
+                break
+            }
             try? await Task.sleep(for: .milliseconds(100))
         }
         // One grace settle for post-load JS activity.
@@ -232,15 +246,16 @@ final class BrowserController: ObservableObject {
     func snapshot(to fileURL: URL) async throws -> URL {
         let config = WKSnapshotConfiguration()
         config.snapshotWidth = NSNumber(value: 1280)
-        let image: NSImage = try await withCheckedThrowingContinuation { continuation in
+        let captured: SnapshotImage = try await withCheckedThrowingContinuation { continuation in
             webView.takeSnapshot(with: config) { snapshot, error in
                 if let snapshot {
-                    continuation.resume(returning: snapshot)
+                    continuation.resume(returning: SnapshotImage(image: snapshot))
                 } else {
                     continuation.resume(throwing: BrowserError.snapshotFailed)
                 }
             }
         }
+        let image = captured.image
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:])
@@ -249,6 +264,14 @@ final class BrowserController: ObservableObject {
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try png.write(to: fileURL)
         return fileURL
+    }
+
+    /// AppKit images are main-actor objects, but Swift 6 models continuation
+    /// results as crossing an actor boundary. The wrapper documents that the
+    /// value never leaves this MainActor controller while satisfying the
+    /// Xcode 16.4 compiler used by CI.
+    private struct SnapshotImage: @unchecked Sendable {
+        let image: NSImage
     }
 
     // MARK: JS string safety

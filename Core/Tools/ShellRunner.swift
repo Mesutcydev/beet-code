@@ -93,11 +93,9 @@ enum ShellRunner {
         // posix_spawn does NOT inherit the caller's working directory — it
         // must be set explicitly or the child starts in the parent's cwd.
         _ = workingDirectory.path.withCString { path in
-            if #available(macOS 26.0, *) {
-                posix_spawn_file_actions_addchdir(&fileActions, path)
-            } else {
-                posix_spawn_file_actions_addchdir_np(&fileActions, path)
-            }
+            // The `_np` spelling is available in the macOS 15 SDK used by
+            // CI; newer SDKs may also expose the non-suffixed alias.
+            posix_spawn_file_actions_addchdir_np(&fileActions, path)
         }
         defer { posix_spawn_file_actions_destroy(&fileActions) }
 

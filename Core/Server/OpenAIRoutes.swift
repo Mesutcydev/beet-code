@@ -12,11 +12,24 @@ public enum OpenAIRoutes {
     public static func route(
         _ request: LocalAPIServer.Request,
         engine: any LLMEngine,
-        resolver: LocalAPIServer.RouteResolver
+        resolver: LocalAPIServer.RouteResolver,
+        includeStandardRoutes: Bool = true
     ) async -> LocalAPIServer.RouteResult {
-        // OPTIONS preflight for CORS.
+        // Custom surfaces get first refusal. A network-facing server can opt
+        // out of the standard inference routes entirely, which keeps a
+        // session-control listener from exposing the model API by accident.
+        if let custom = await resolver(request) {
+            return custom
+        }
+        // OPTIONS preflight for CORS. Let a custom surface validate or reject
+        // its own origin before this generic local-API response is returned.
         if request.method == "OPTIONS" {
             return .response(LocalAPIServer.Response(status: 204, contentType: "text/plain"))
+        }
+        guard includeStandardRoutes else {
+            return .response(.json(
+                errorJSON(message: "Unknown endpoint: \(request.method) \(request.path)", type: "invalid_request_error"),
+                status: 404))
         }
 
         switch (request.method, request.path) {
@@ -41,10 +54,6 @@ public enum OpenAIRoutes {
                 "  GET  /health\n"))
 
         default:
-            // Give the caller a chance to supply a custom route first.
-            if let custom = await resolver(request) {
-                return custom
-            }
             return .response(.json(
                 errorJSON(message: "Unknown endpoint: \(request.method) \(request.path)", type: "invalid_request_error"),
                 status: 404))

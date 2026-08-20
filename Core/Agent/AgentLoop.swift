@@ -23,8 +23,12 @@ actor AgentLoop {
         /// Show chain-of-thought (think) blocks in the transcript (v0.3).
         var showReasoning: Bool = false
         /// Plan mode: the model must present a plan and the user must approve
-    /// it before ANY tool executes (v0.4).
-    var planMode: Bool = false
+        /// it before ANY tool executes (v0.4).
+        var planMode: Bool = false
+        /// Goal mode is the explicit long-running task vocabulary layered on
+        /// top of plan mode. It gives the model the same contract when the
+        /// mode is selected from the composer or `/goal`.
+        var goalMode: Bool = false
         /// Long-term memory mode (v0.3).
         var memoryMode: MemoryMode = .off
         /// How aggressively old tool outputs are compacted (v0.3).
@@ -122,7 +126,13 @@ actor AgentLoop {
         self.systemPrompt = PromptBuilder.systemPrompt(
             tools: allTools, workspace: workspace, repoIndex: repoIndex,
             memorySection: memorySection, projectInstructions: projectInstructions,
-            workspaceHistory: historySection)
+            workspaceHistory: historySection,
+            planMode: configuration.planMode,
+            goalMode: configuration.goalMode,
+            contextWindowTokens: configuration.contextWindowTokens,
+            responseReserveTokens: configuration.maxTokensPerTurn)
+        (engine as? any NativeToolConfigurable)?.configureNativeTools(
+            allTools.map { NativeToolSpec(tool: $0) })
         if let seed = seedRecord {
             // Continuation: resume an existing session instead of starting a
             // fresh record — history and checkpoints carry over.
@@ -302,6 +312,11 @@ actor AgentLoop {
                         return ChatTurn(role: .user, content: message.content)
                     case .assistant:
                         return ChatTurn(role: .assistant, content: message.content)
+                    case .reasoning:
+                        // Reasoning is transcript history only. Replaying it
+                        // would inflate context and can expose provider
+                        // summaries back to a model that did not ask for them.
+                        return nil
                     case .toolResult:
                         return ChatTurn(role: .tool, content: message.content)
                     case .system:
@@ -328,18 +343,38 @@ actor AgentLoop {
                 """
             }
             history.append(ChatTurn(role: .user, content: effectiveMessage))
+            // A resumed session may already contain large tool observations.
+            // Compact before the first generation as well as after later tool
+            // calls, so the initial plan/reply gets the same protection.
+            await compactIfNeeded()
 
             while turns < configuration.maxTurns && !cancelled {
                 turns += 1
 
-                // 1. Generate.
-                let raw = try await generate()
+                // 1. Generate. A provider can know a smaller effective
+                // context than the catalog/app configuration (common with
+                // local gateways and GGUF servers). Recover once from an
+                // explicit context-length rejection instead of surfacing a
+                // dead task that the user has to restart manually.
+                let raw: String
+                do {
+                    raw = try await generate()
+                } catch {
+                    guard Self.isContextOverflow(error),
+                          await recoverFromContextOverflow(error) else {
+                        throw error
+                    }
+                    raw = try await generate()
+                }
                 // Cancellation arriving during generation must not be
                 // reported as a successful completion.
                 if cancelled { finish(.cancelled); return }
+                let extractedReasoning = PromptBuilder.extractingThinking(raw)
                 if configuration.showReasoning,
-                    let think = PromptBuilder.extractingThinking(raw),
-                    !think.isEmpty {
+                   let think = extractedReasoning,
+                   !think.isEmpty {
+                    record.messages.append(
+                        SessionMessage(role: .reasoning, content: think, toolName: nil, timestamp: Date()))
                     eventContinuation?.yield(.reasoning(think))
                 }
                 var visible = PromptBuilder.strippingThinking(raw)
@@ -374,7 +409,7 @@ actor AgentLoop {
                 if calls.isEmpty, visible.isEmpty {
                     emptyReplyStreak += 1
                     if emptyReplyStreak >= 2,
-                       let think = PromptBuilder.extractingThinking(raw),
+                       let think = extractedReasoning,
                        !think.isEmpty {
                         // Never re-parse the reasoning for tool calls: it
                         // contains hypothetical calls the model considered,
@@ -661,6 +696,108 @@ actor AgentLoop {
         return result
     }
 
+    /// Context errors are recoverable only when the provider gives us a
+    /// recognizable signal. Authentication, transport, and malformed-request
+    /// failures must still surface immediately instead of being retried as if
+    /// they were a sizing problem.
+    private static func isContextOverflow(_ error: Error) -> Bool {
+        let text = error.localizedDescription.lowercased()
+        return text.contains("context") && (
+            text.contains("exceed") ||
+            text.contains("too long") ||
+            text.contains("maximum") ||
+            text.contains("length") ||
+            text.contains("tokens")
+        )
+    }
+
+    /// Applies a more conservative, provider-reported context budget and
+    /// rebuilds the engine replay state. This is deliberately one bounded
+    /// recovery pass; repeated retries would hide a broken gateway or a bad
+    /// model template.
+    private func recoverFromContextOverflow(_ error: Error) async -> Bool {
+        let reportedLimit = Self.contextLimit(in: error)
+        let targetWindow = min(
+            configuration.contextWindowTokens,
+            reportedLimit ?? configuration.contextWindowTokens)
+        let compacted = ContextCompactor.compact(
+            record.messages,
+            keepRecent: 1,
+            maxToolResultChars: 2_000)
+        let fitted = ContextCompactor.fit(
+            compacted,
+            systemPrompt: systemPrompt,
+            windowTokens: targetWindow,
+            responseReserve: configuration.maxTokensPerTurn)
+
+        // If the provider did not disclose a smaller limit and fitting made no
+        // progress, a retry would be identical and only waste a turn.
+        guard fitted != record.messages || targetWindow < configuration.contextWindowTokens else {
+            return false
+        }
+
+        let activeUserTurn: ChatTurn? = {
+            guard let last = history.last, last.role == .user,
+                  last.content != fitted.last?.content else { return nil }
+            return last
+        }()
+        record.messages = fitted
+        rebuildHistory(from: fitted, replacingLastUserWith: activeUserTurn)
+        sentTurnCount = 0
+        await engine.reset()
+        saveTaskCapsule()
+        return true
+    }
+
+    /// The most common provider wording is “request (N tokens) exceeds the
+    /// available context size (M tokens)”. Keep this parser tolerant of
+    /// gateways that use “maximum context length” instead.
+    private static func contextLimit(in error: Error) -> Int? {
+        let text = error.localizedDescription.lowercased()
+        let markers = [
+            "available context size",
+            "maximum context length",
+            "context window",
+            "context size"
+        ]
+        for marker in markers {
+            guard let range = text.range(of: marker) else { continue }
+            let suffix = text[range.upperBound...]
+            let digits = suffix.drop(while: { !$0.isNumber }).prefix(while: { $0.isNumber })
+            if let value = Int(digits), value > 0 { return value }
+        }
+        return nil
+    }
+
+    /// Rebuilds model-facing history from the durable transcript while keeping
+    /// the current task's enriched intelligence block in the active user turn.
+    private func rebuildHistory(
+        from messages: [SessionMessage],
+        replacingLastUserWith activeUserTurn: ChatTurn?
+    ) {
+        history = [ChatTurn(role: .system, content: systemPrompt)]
+        history.append(contentsOf: messages.compactMap { message in
+            switch message.role {
+            case .user:
+                return ChatTurn(role: .user, content: message.content)
+            case .assistant:
+                return ChatTurn(role: .assistant, content: message.content)
+            case .reasoning:
+                return nil
+            case .toolResult:
+                return ChatTurn(role: .tool, content: message.content)
+            case .system:
+                return ChatTurn(role: .system, content: message.content)
+            case .toolCall:
+                return nil
+            }
+        })
+        if let activeUserTurn,
+           let index = history.lastIndex(where: { $0.role == .user }) {
+            history[index] = activeUserTurn
+        }
+    }
+
     /// Runs the configured verification build after an edit, through the
     /// same permission gate as any other command. Declined or failed
     /// verifications are observations, not crashes.
@@ -708,25 +845,51 @@ actor AgentLoop {
     }
 
     /// Keeps transcripts within the context window by collapsing old tool
-    /// outputs. Assistant/tool-result pairing is preserved: assistant turns
-    /// are never dropped and old results are stubbed in place.
+    /// outputs. If prose history alone is still too large, the compactor
+    /// keeps the objective plus the newest work and inserts an omission
+    /// marker instead of allowing a provider-side context 400.
     private func compactIfNeeded() async {
         let messages = record.messages
         let estimate = ContextCompactor.estimate(
             messages: messages,
             windowTokens: configuration.contextWindowTokens)
-        guard estimate.shouldCompact else { return }
-        record.messages = ContextCompactor.compact(
+        let request = ContextCompactor.estimateRequest(
+            messages: messages,
+            systemPrompt: systemPrompt,
+            windowTokens: configuration.contextWindowTokens,
+            responseReserve: configuration.maxTokensPerTurn)
+        // Compact against the whole request, not only the persisted messages:
+        // system instructions and native/text tool protocol can consume a
+        // meaningful part of a remote provider's context window.
+        let compacted = ContextCompactor.compact(
             messages,
             keepRecent: configuration.compressionLevel.keepRecent,
             maxToolResultChars: configuration.compressionLevel.maxToolResultChars)
+        let fitted = ContextCompactor.fit(
+            compacted,
+            systemPrompt: systemPrompt,
+            windowTokens: configuration.contextWindowTokens,
+            responseReserve: configuration.maxTokensPerTurn)
+        guard estimate.shouldCompact || request.shouldCompact || fitted != messages else { return }
+
+        // Keep the per-task intelligence block in the active model history;
+        // the persisted session intentionally stores the clean user message.
+        let activeUserTurn: ChatTurn? = {
+            guard let last = history.last, last.role == .user,
+                  last.content != messages.last?.content else { return nil }
+            return last
+        }()
+
+        record.messages = fitted
         history = [ChatTurn(role: .system, content: systemPrompt)]
-        history.append(contentsOf: record.messages.compactMap { message in
+        history.append(contentsOf: fitted.compactMap { message in
             switch message.role {
             case .user:
                 return ChatTurn(role: .user, content: message.content)
             case .assistant:
                 return ChatTurn(role: .assistant, content: message.content)
+            case .reasoning:
+                return nil
             case .toolResult:
                 return ChatTurn(role: .tool, content: message.content)
             case .system:
@@ -736,12 +899,16 @@ actor AgentLoop {
                 return nil
             }
         })
+        if let activeUserTurn,
+           let index = history.lastIndex(where: { $0.role == .user }) {
+            history[index] = activeUserTurn
+        }
         sentTurnCount = 0
         await engine.reset()
         // Epoch boundary: persist the durable task capsule so agent progress
         // survives any termination — this is deliberate state, not cache.
         saveTaskCapsule()
-        Log.agent.info("Compacted transcript from \(estimate.totalTokens) estimated tokens")
+        Log.agent.info("Compacted transcript from \(request.totalTokens) estimated request tokens")
     }
 
     /// Deterministically extracts the durable continuation state (changed

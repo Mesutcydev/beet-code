@@ -35,7 +35,7 @@ enum RemoteLLMClient {
         var content: String
     }
 
-    struct OpenAIRequest: Codable, Sendable {
+    struct OpenAIRequest: Encodable, Sendable {
         var model: String
         var messages: [OpenAIMessage]
         var temperature: Double?
@@ -44,9 +44,17 @@ enum RemoteLLMClient {
         /// looks like a reasoning model the caller sets this instead.
         var max_completion_tokens: Int?
         var stream: Bool = true
+        var tools: [NativeToolBridge.OpenAITool]?
+        /// LongCat exposes its reasoning switch as an OpenAI-compatible
+        /// extension. Keep it provider-gated so strict OpenAI-compatible
+        /// servers never receive an unknown field.
+        var thinking: Thinking?
         /// Asks OpenAI-compatible servers for a final usage chunk — powers
         /// truthful token stats instead of chunk counting.
         var stream_options: StreamOptions?
+        struct Thinking: Codable, Sendable {
+            var type: String
+        }
         struct StreamOptions: Codable, Sendable {
             var include_usage: Bool = true
         }
@@ -60,6 +68,15 @@ enum RemoteLLMClient {
                 /// DeepSeek reasoner / OpenAI o-series reasoning deltas.
                 var reasoning_content: String?
                 var reasoning: String?
+                var tool_calls: [ToolCallDelta]?
+            }
+            struct ToolCallDelta: Codable, Sendable {
+                var index: Int?
+                var function: FunctionDelta?
+                struct FunctionDelta: Codable, Sendable {
+                    var name: String?
+                    var arguments: String?
+                }
             }
             var delta: Delta?
             var finish_reason: String?
@@ -87,12 +104,23 @@ enum RemoteLLMClient {
         }
         struct Part: Codable, Sendable {
             var text: String?
+            var functionCall: FunctionCall? = nil
+            /// Gemini thought summaries are marked on response parts. They
+            /// must not be merged into the visible answer text.
+            var thought: Bool? = nil
+            var thoughtSignature: String? = nil
+
+            struct FunctionCall: Codable, Sendable {
+                var name: String?
+                var args: NativeToolBridge.JSONBox?
+            }
         }
         struct GenerationConfig: Codable, Sendable {
             var temperature: Double?
             var maxOutputTokens: Int?
         }
         var contents: [Content]
+        var tools: [NativeToolBridge.GeminiTool]? = nil
         /// Proper home for the system prompt (the old code folded it into
         /// the first user turn, degrading instruction adherence).
         var systemInstruction: Content?
@@ -135,19 +163,28 @@ enum RemoteLLMClient {
         var content: String
     }
 
-    struct AnthropicRequest: Codable, Sendable {
+    struct AnthropicRequest: Encodable, Sendable {
         var model: String
         var max_tokens: Int  // mandatory on Anthropic
         var system: String?
         var messages: [AnthropicMessage]
         var temperature: Double?
         var stream: Bool = true
+        var tools: [NativeToolBridge.AnthropicTool]?
     }
 
     struct AnthropicChunk: Codable, Sendable {
         struct Delta: Codable, Sendable {
             var type: String?
             var text: String?
+            var thinking: String?
+            var partial_json: String?
+        }
+        struct ContentBlock: Codable, Sendable {
+            var type: String?
+            var name: String?
+            /// Some Anthropic-compatible gateways put the first thinking
+            /// text on the block-start event instead of a thinking_delta.
             var thinking: String?
         }
         struct Usage: Codable, Sendable {
@@ -159,6 +196,8 @@ enum RemoteLLMClient {
         }
         var type: String?
         var delta: Delta?
+        var content_block: ContentBlock?
+        var index: Int?
         var usage: Usage?
         var message: MessageInfo?
         var error: OpenAIErrorBody?
@@ -166,7 +205,7 @@ enum RemoteLLMClient {
 
     // MARK: Public API
 
-    static let userAgent = "BeetCode/0.5 (macOS coding agent)"
+    static let userAgent = "BeetCode/0.8.2 (macOS coding agent)"
 
     // MARK: Message preparation (P2/P7 — provider-safe role mapping)
 
@@ -254,7 +293,8 @@ enum RemoteLLMClient {
     /// o-series and gpt-5-era models reject `max_tokens`.
     static func usesMaxCompletionTokens(_ model: String) -> Bool {
         let m = model.lowercased()
-        return m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4") || m.hasPrefix("gpt-5")
+        return m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4")
+            || m.hasPrefix("gpt-5") || m.hasPrefix("codex-")
     }
 
     /// Models that reject an explicit `temperature` (o-series wants the
@@ -348,6 +388,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        tools: [NativeToolSpec] = [],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
@@ -356,28 +397,41 @@ enum RemoteLLMClient {
                     let first = streamOpenAIOnce(
                         provider: provider, baseURL: baseURL, apiKey: apiKey,
                         model: model, turns: turns, temperature: temperature,
-                        maxTokens: maxTokens, includeStreamOptions: true, onUsage: onUsage)
+                        maxTokens: maxTokens, includeStreamOptions: true,
+                        tools: tools, onUsage: onUsage)
                     for try await chunk in first {
                         if Task.isCancelled { throw RemoteLLMError.cancelled }
                         continuation.yield(chunk)
                     }
                     continuation.finish()
                 } catch RemoteLLMError.badStatus(let code, _) where code == 400 {
-                    // Compatibility fallback: strict OpenAI-compatible
-                    // servers (older vLLM/llama.cpp builds, some proxies)
-                    // reject the unknown `stream_options` field with a 400
-                    // before any content streams. Retry once without it;
-                    // usage stats degrade to chunk counting.
                     do {
                         let retry = streamOpenAIOnce(
                             provider: provider, baseURL: baseURL, apiKey: apiKey,
                             model: model, turns: turns, temperature: temperature,
-                            maxTokens: maxTokens, includeStreamOptions: false, onUsage: onUsage)
+                            maxTokens: maxTokens, includeStreamOptions: false,
+                            tools: tools, onUsage: onUsage)
                         for try await chunk in retry {
                             if Task.isCancelled { throw RemoteLLMError.cancelled }
                             continuation.yield(chunk)
                         }
                         continuation.finish()
+                    } catch RemoteLLMError.badStatus(400, _) where !tools.isEmpty {
+                        // Older proxies / Ollama builds reject `tools`.
+                        do {
+                            let plain = streamOpenAIOnce(
+                                provider: provider, baseURL: baseURL, apiKey: apiKey,
+                                model: model, turns: turns, temperature: temperature,
+                                maxTokens: maxTokens, includeStreamOptions: false,
+                                tools: [], onUsage: onUsage)
+                            for try await chunk in plain {
+                                if Task.isCancelled { throw RemoteLLMError.cancelled }
+                                continuation.yield(chunk)
+                            }
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
                     } catch {
                         continuation.finish(throwing: error)
                     }
@@ -400,11 +454,13 @@ enum RemoteLLMClient {
         temperature: Double?,
         maxTokens: Int?,
         includeStreamOptions: Bool,
+        tools: [NativeToolSpec] = [],
         onUsage: (@Sendable (UsageInfo) -> Void)?
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
             let messages = prepareOpenAIMessages(turns)
             let reasoningCap = usesMaxCompletionTokens(model)
+            let reasoningEnabled = UserDefaults.standard.object(forKey: "showReasoning") as? Bool ?? true
             let body = OpenAIRequest(
                 model: model,
                 messages: messages,
@@ -412,6 +468,10 @@ enum RemoteLLMClient {
                 max_tokens: reasoningCap ? nil : maxTokens,
                 max_completion_tokens: reasoningCap ? maxTokens : nil,
                 stream: true,
+                tools: tools.isEmpty ? nil : NativeToolBridge.openAITools(from: tools),
+                thinking: provider == .longCat
+                    ? .init(type: reasoningEnabled ? "enabled" : "disabled")
+                    : nil,
                 stream_options: includeStreamOptions ? .init() : nil)
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
@@ -441,15 +501,18 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        tools: [NativeToolSpec] = [],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
             let (system, contents) = prepareGeminiPayload(turns)
+            let modelID = normalizedGeminiModelID(model)
             let url = baseURL
-                .appendingPathComponent("models/\(model):streamGenerateContent")
+                .appendingPathComponent("models/\(modelID):streamGenerateContent")
                 .appending(queryItems: [URLQueryItem(name: "alt", value: "sse")])
             let body = GeminiRequest(
                 contents: contents,
+                tools: tools.isEmpty ? nil : NativeToolBridge.geminiTools(from: tools),
                 systemInstruction: system.map { .init(role: "user", parts: [.init(text: $0)]) },
                 generationConfig: .init(
                     temperature: temperature,
@@ -476,6 +539,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        tools: [NativeToolSpec] = [],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error>(bufferingPolicy: .unbounded) { continuation in
@@ -486,7 +550,8 @@ enum RemoteLLMClient {
                 system: system,
                 messages: messages,
                 temperature: omitsTemperature(model) ? nil : temperature,
-                stream: true)
+                stream: true,
+                tools: tools.isEmpty ? nil : NativeToolBridge.anthropicTools(from: tools))
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("messages"))
                 request.httpMethod = "POST"
@@ -522,7 +587,8 @@ enum RemoteLLMClient {
             guard let base = provider.geminiBaseURL else {
                 throw RemoteLLMError.invalidConfiguration("no endpoint URL")
             }
-            let url = base.appendingPathComponent("models/\(model):generateContent")
+            let modelID = normalizedGeminiModelID(model)
+            let url = base.appendingPathComponent("models/\(modelID):generateContent")
             var r = URLRequest(url: url)
             r.httpMethod = "POST"
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -585,7 +651,7 @@ enum RemoteLLMClient {
         guard let http = response as? HTTPURLResponse else {
             throw RemoteLLMError.transport("non-HTTP response")
         }
-        guard http.statusCode == 200 else {
+        guard (200..<300).contains(http.statusCode) else {
             let text = String(decoding: data, as: UTF8.self)
             let detail = errorDetail(from: text) ?? String(text.prefix(220))
             throw RemoteLLMError.badStatus(http.statusCode, detail)
@@ -602,74 +668,202 @@ enum RemoteLLMClient {
 
     // MARK: Live model discovery (P10)
 
-    struct ModelListResponse: Codable, Sendable {
-        struct Entry: Codable, Sendable {
-            var id: String
-        }
-        var data: [Entry]?
+    /// Fetches the provider's live model catalog. Errors are preserved so the
+    /// settings UI can tell the user whether the key, endpoint, or provider
+    /// response is the problem instead of silently looking like an empty list.
+    static func fetchModels(
+        provider: LLMProvider,
+        apiKey: String?,
+        session: URLSession = .shared
+    ) async throws -> [String] {
+        try await fetchModelProfiles(provider: provider, apiKey: apiKey, session: session).map(\.model)
     }
 
-    /// Fetches the provider's live model catalog (`GET /v1/models` for
-    /// OpenAI-compatible, native list for Gemini). Returns an empty list on
-    /// any failure — callers fall back to the static presets.
-    static func fetchModels(provider: LLMProvider, apiKey: String?) async -> [String] {
+    /// Fetches live model metadata where the provider exposes it. OpenAI-
+    /// compatible and Anthropic catalogs generally return only ids, so those
+    /// profiles intentionally leave capabilities unknown until an override is
+    /// supplied.
+    static func fetchModelProfiles(
+        provider: LLMProvider,
+        apiKey: String?,
+        session: URLSession = .shared
+    ) async throws -> [RemoteModelProfile] {
         switch provider {
         case .gemini:
-            guard let base = provider.geminiBaseURL else { return [] }
-            var request = URLRequest(url: base.appendingPathComponent("models")
-                .appending(queryItems: [URLQueryItem(name: "pageSize", value: "200")]))
-            request.timeoutInterval = 15
-            if let apiKey { request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key") }
-            struct GeminiModels: Codable {
-                struct Model: Codable { var name: String? }
-                var models: [Model]?
+            guard let base = provider.modelsURL else {
+                throw RemoteLLMError.invalidConfiguration("no Gemini models endpoint")
             }
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  (response as? HTTPURLResponse)?.statusCode == 200,
-                  let decoded = try? JSONDecoder().decode(GeminiModels.self, from: data)
-            else { return [] }
-            // Strip the "models/" prefix; keep only generateContent-capable
-            // chat models (AQA/embedding-only models are useless here).
-            return decoded.models?.compactMap { entry -> String? in
-                guard let name = entry.name else { return nil }
-                let short = name.replacingOccurrences(of: "models/", with: "")
-                let m = short.lowercased()
-                guard m.contains("gemini") else { return nil }
-                if m.contains("embedding") || m.contains("aqa") { return nil }
-                return short
-            } ?? []
+            var models: [RemoteModelProfile] = []
+            var pageToken: String?
+            // The API is paginated. A bounded loop prevents a malformed
+            // nextPageToken from turning Settings into an unbounded request.
+            for _ in 0..<10 {
+                var query = [URLQueryItem(name: "pageSize", value: "200")]
+                if let pageToken, !pageToken.isEmpty {
+                    query.append(URLQueryItem(name: "pageToken", value: pageToken))
+                }
+                var request = URLRequest(url: base.appending(queryItems: query))
+                request.timeoutInterval = 15
+                if let apiKey, !apiKey.isEmpty {
+                    request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+                }
+                let data = try await get(request, provider: provider, session: session)
+                let decoded = try JSONDecoder().decode(GeminiModels.self, from: data)
+                models.append(contentsOf: decoded.models.compactMap { entry in
+                    guard let model = Self.geminiModelID(from: entry) else { return nil }
+                    return RemoteModelProfile(
+                        provider: provider,
+                        model: model,
+                        displayName: entry.displayName,
+                        contextWindow: entry.inputTokenLimit,
+                        maxOutputTokens: entry.outputTokenLimit,
+                        supportsVision: entry.supportsVision,
+                        supportsTools: entry.supportedGenerationMethods.contains("generateContent"),
+                        supportsReasoning: nil,
+                        supportsTemperature: true)
+                })
+                guard let next = decoded.nextPageToken, !next.isEmpty else { break }
+                pageToken = next
+            }
+            return deduplicatedProfiles(models)
         case .anthropic:
-            guard let base = provider.anthropicBaseURL else { return [] }
-            var request = URLRequest(url: base.appendingPathComponent("models")
+            guard let base = provider.modelsURL else {
+                throw RemoteLLMError.invalidConfiguration("no Anthropic models endpoint")
+            }
+            var request = URLRequest(url: base
                 .appending(queryItems: [URLQueryItem(name: "limit", value: "100")]))
             request.timeoutInterval = 15
             if let apiKey { request.setValue(apiKey, forHTTPHeaderField: "x-api-key") }
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-            struct AnthropicModels: Codable {
-                struct Model: Codable { var id: String? }
-                var data: [Model]?
-            }
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  (response as? HTTPURLResponse)?.statusCode == 200,
-                  let decoded = try? JSONDecoder().decode(AnthropicModels.self, from: data)
-            else { return [] }
-            return decoded.data?.compactMap(\.id) ?? []
+            let data = try await get(request, provider: provider, session: session)
+            let decoded = try JSONDecoder().decode(AnthropicModels.self, from: data)
+            return deduplicatedProfiles(decoded.data.compactMap { model in
+                guard let id = model.id else { return nil }
+                return RemoteModelProfile(provider: provider, model: id)
+            })
         default:
-            guard let base = provider.openAICompatibleBaseURL else { return [] }
-            var request = URLRequest(url: base.appendingPathComponent("models"))
+            guard let base = provider.modelsURL else {
+                throw RemoteLLMError.invalidConfiguration(
+                    provider == .custom ? "no custom base URL configured" : "no models endpoint")
+            }
+            var request = URLRequest(url: base)
             request.timeoutInterval = 15
             if let apiKey, !apiKey.isEmpty {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             if provider == .openRouter {
                 request.setValue("Beet Code", forHTTPHeaderField: "HTTP-Referer")
                 request.setValue("Beet Code", forHTTPHeaderField: "X-Title")
             }
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  (response as? HTTPURLResponse)?.statusCode == 200,
-                  let decoded = try? JSONDecoder().decode(ModelListResponse.self, from: data)
-            else { return [] }
-            return decoded.data?.map(\.id) ?? []
+            let data = try await get(request, provider: provider, session: session)
+            return deduplicatedProfiles(try compatibleModelProfiles(from: data, provider: provider))
+        }
+    }
+
+    /// OpenAI-compatible gateways are not consistent about the envelope:
+    /// most use `data`, while several hosted/local servers use `models`,
+    /// `results`, or return the array directly. Accept all of those shapes so
+    /// a working key is not mistaken for an empty catalog.
+    static func compatibleModelProfiles(
+        from data: Data,
+        provider: LLMProvider
+    ) throws -> [RemoteModelProfile] {
+        let json = try JSONSerialization.jsonObject(with: data)
+        let entries: [[String: Any]]
+        if let array = json as? [[String: Any]] {
+            entries = array
+        } else if let object = json as? [String: Any] {
+            let keys = ["data", "models", "results"]
+            entries = keys.lazy.compactMap { object[$0] as? [[String: Any]] }.first ?? []
+        } else {
+            entries = []
+        }
+
+        return entries.compactMap { entry in
+            let id = (entry["id"] as? String)
+                ?? (entry["model"] as? String)
+                ?? (entry["name"] as? String)
+            guard let id, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            let displayName = (entry["name"] as? String) ?? (entry["display_name"] as? String)
+            return RemoteModelProfile(provider: provider, model: id, displayName: displayName)
+        }
+    }
+
+    private static func deduplicatedProfiles(_ profiles: [RemoteModelProfile]) -> [RemoteModelProfile] {
+        var byID: [String: RemoteModelProfile] = [:]
+        for profile in profiles { byID[profile.model] = profile }
+        return byID.values.sorted { $0.model.localizedStandardCompare($1.model) == .orderedAscending }
+    }
+
+    /// Models returned by Gemini include capability metadata. Filtering on
+    /// the name (the previous implementation required the literal word
+    /// "gemini") drops valid aliases and future model families; the API's
+    /// `supportedGenerationMethods` field is the contract we actually need.
+    static func geminiModelID(from entry: GeminiModelEntry) -> String? {
+        guard let name = entry.name else { return nil }
+        let short = normalizedGeminiModelID(name)
+        guard !short.isEmpty,
+              entry.supportedGenerationMethods.contains("generateContent")
+        else { return nil }
+        return short
+    }
+
+    /// The model catalog returns `models/foo`, while users often paste that
+    /// fully-qualified value into Settings. The REST path already supplies
+    /// the `models/` segment, so normalize both forms before sending.
+    static func normalizedGeminiModelID(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("models/")
+            ? String(trimmed.dropFirst("models/".count))
+            : trimmed
+    }
+
+    struct GeminiModelEntry: Codable, Sendable {
+        var name: String?
+        var displayName: String?
+        var description: String?
+        var inputTokenLimit: Int?
+        var outputTokenLimit: Int?
+        var supportedGenerationMethods: [String] = []
+        var supportsVision: Bool?
+    }
+
+    private struct GeminiModels: Codable, Sendable {
+        var models: [GeminiModelEntry] = []
+        var nextPageToken: String?
+    }
+
+    private struct AnthropicModels: Codable, Sendable {
+        struct Model: Codable, Sendable { var id: String? }
+        var data: [Model] = []
+    }
+
+    private static func get(
+        _ request: URLRequest,
+        provider: LLMProvider,
+        session: URLSession = .shared
+    ) async throws -> Data {
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw RemoteLLMError.transport("non-HTTP response from \(provider.displayName)")
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                let text = String(decoding: data, as: UTF8.self)
+                let detail = errorDetail(from: text) ?? String(text.prefix(300))
+                throw RemoteLLMError.badStatus(http.statusCode, detail)
+            }
+            return data
+        } catch is CancellationError {
+            throw RemoteLLMError.cancelled
+        } catch let error as RemoteLLMError {
+            throw error
+        } catch {
+            throw RemoteLLMError.transport("\(provider.displayName): \(error.localizedDescription)")
         }
     }
 
@@ -699,7 +893,14 @@ enum RemoteLLMClient {
         case none
         case done
         case text(String)
+        case textAndUsage(String, UsageInfo)
         case usage(UsageInfo)
+        case toolFragment(index: Int, name: String?, arguments: String?)
+        case textAndToolFragment(
+            text: String,
+            index: Int,
+            name: String?,
+            arguments: String?)
     }
 
     /// Token usage reported by the provider (OpenAI `usage` with
@@ -728,8 +929,21 @@ enum RemoteLLMClient {
         guard let data = Data(payload) as Data?,
               let extracted = extract(from: data)
         else { return .none }
+        if let fragment = extracted.tool {
+            if let text = extracted.text, !text.isEmpty {
+                return .textAndToolFragment(
+                    text: text,
+                    index: fragment.index,
+                    name: fragment.name,
+                    arguments: fragment.arguments)
+            }
+            return .toolFragment(index: fragment.index, name: fragment.name, arguments: fragment.arguments)
+        }
+        if let text = extracted.text, !text.isEmpty {
+            if let usage = extracted.usage { return .textAndUsage(text, usage) }
+            return .text(text)
+        }
         if let usage = extracted.usage { return .usage(usage) }
-        if let text = extracted.text, !text.isEmpty { return .text(text) }
         return .none
     }
 
@@ -750,6 +964,7 @@ enum RemoteLLMClient {
         var lastActivity = Date()
         var sinceCheck = 0
         var done = false
+        var toolAcc: [Int: (name: String, arguments: String)] = [:]
         for try await byte in bytes {
             lastActivity = Date()
             if byte == 0x0A || byte == 0x0D {
@@ -757,7 +972,27 @@ enum RemoteLLMClient {
                     switch processSSELine(line) {
                     case .done: done = true
                     case .text(let text): if !done { onText(text) }
+                    case .textAndUsage(let text, let usage):
+                        if !done {
+                            onText(text)
+                            onUsage?(usage)
+                        }
                     case .usage(let usage): if !done { onUsage?(usage) }
+                    case .toolFragment(let index, let name, let arguments):
+                        if !done {
+                            var current = toolAcc[index] ?? ("", "")
+                            if let name, !name.isEmpty { current.name = name }
+                            if let arguments { current.arguments += arguments }
+                            toolAcc[index] = current
+                        }
+                    case .textAndToolFragment(let text, let index, let name, let arguments):
+                        if !done {
+                            onText(text)
+                            var current = toolAcc[index] ?? ("", "")
+                            if let name, !name.isEmpty { current.name = name }
+                            if let arguments { current.arguments += arguments }
+                            toolAcc[index] = current
+                        }
                     case .none: break
                     }
                     line.removeAll(keepingCapacity: true)
@@ -779,9 +1014,37 @@ enum RemoteLLMClient {
             switch processSSELine(line) {
             case .done: break
             case .text(let text): onText(text)
+            case .textAndUsage(let text, let usage):
+                onText(text)
+                onUsage?(usage)
             case .usage(let usage): onUsage?(usage)
+            case .toolFragment(let index, let name, let arguments):
+                var current = toolAcc[index] ?? ("", "")
+                if let name, !name.isEmpty { current.name = name }
+                if let arguments { current.arguments += arguments }
+                toolAcc[index] = current
+            case .textAndToolFragment(let text, let index, let name, let arguments):
+                onText(text)
+                var current = toolAcc[index] ?? ("", "")
+                if let name, !name.isEmpty { current.name = name }
+                if let arguments { current.arguments += arguments }
+                toolAcc[index] = current
             case .none: break
             }
+        }
+        if let fence = NativeToolBridge.serializeAccumulated(toolAcc) {
+            onText(fence)
+        }
+    }
+
+    struct Extracted: Sendable {
+        var text: String?
+        var usage: UsageInfo?
+        var tool: ToolFragment?
+        struct ToolFragment: Sendable {
+            var index: Int
+            var name: String?
+            var arguments: String?
         }
     }
 
@@ -789,7 +1052,7 @@ enum RemoteLLMClient {
     /// Gemini, or Anthropic chunk. Each wire format is tried only when the
     /// JSON actually looks like it — an all-optional struct otherwise
     /// "matches" every payload and swallows the other providers' chunks.
-    static func extract(from data: Data) -> (text: String?, usage: UsageInfo?)? {
+    static func extract(from data: Data) -> Extracted? {
         // Cheap structural sniff: which provider's top-level keys are present?
         let topLevel: [String: Any] = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let looksOpenAI = topLevel["choices"] != nil || topLevel["usage"] != nil || topLevel["object"] != nil
@@ -803,15 +1066,30 @@ enum RemoteLLMClient {
                                   completionTokens: u.completion_tokens)
             }
             if let delta = chunk.choices?.first?.delta {
-                // Reasoning tokens are folded into think blocks so the loop's
-                // reasoning toggle handles every provider uniformly.
-                if let reasoning = delta.reasoning_content ?? delta.reasoning,
+                var textParts: [String] = []
+                if let reasoning = openAIReasoningText(in: topLevel)
+                    ?? delta.reasoning_content
+                    ?? delta.reasoning,
                    !reasoning.isEmpty {
-                    return ("<think>\(reasoning)</think>", usage)
+                    textParts.append("<think>\(reasoning)</think>")
                 }
-                if let content = delta.content { return (content, usage) }
+                if let content = delta.content, !content.isEmpty {
+                    textParts.append(content)
+                }
+                let tool = delta.tool_calls?.first.map { call in
+                    Extracted.ToolFragment(
+                        index: call.index ?? 0,
+                        name: call.function?.name,
+                        arguments: call.function?.arguments)
+                }
+                if !textParts.isEmpty || tool != nil {
+                    return Extracted(
+                        text: textParts.isEmpty ? nil : textParts.joined(),
+                        usage: usage,
+                        tool: tool)
+                }
             }
-            if usage != nil { return (nil, usage) }
+            if usage != nil { return Extracted(usage: usage) }
             return nil
         }
         if looksGemini, let gemini = try? JSONDecoder().decode(GeminiChunk.self, from: data) {
@@ -820,10 +1098,32 @@ enum RemoteLLMClient {
                 usage = UsageInfo(promptTokens: m.promptTokenCount,
                                   completionTokens: m.candidatesTokenCount)
             }
-            if let text = gemini.candidates?.first?.content?.parts?.compactMap(\.text).joined() {
-                return (text, usage)
+            let parts = gemini.candidates?.first?.content?.parts ?? []
+            var textParts: [String] = []
+            var tool: Extracted.ToolFragment?
+            for (index, part) in parts.enumerated() {
+                if tool == nil, let functionCall = part.functionCall,
+                   let name = functionCall.name, !name.isEmpty {
+                    let arguments: String
+                    if let args = functionCall.args,
+                       let encoded = try? JSONEncoder().encode(args) {
+                        arguments = String(decoding: encoded, as: UTF8.self)
+                    } else {
+                        arguments = "{}"
+                    }
+                    tool = .init(index: index, name: name, arguments: arguments)
+                }
+                guard let text = part.text, !text.isEmpty else { continue }
+                textParts.append(part.thought == true ? "<think>\(text)</think>" : text)
             }
-            if usage != nil { return (nil, usage) }
+            let text = textParts.joined()
+            if !text.isEmpty || tool != nil {
+                return Extracted(
+                    text: text.isEmpty ? nil : text,
+                    usage: usage,
+                    tool: tool)
+            }
+            if usage != nil { return Extracted(usage: usage) }
             return nil
         }
         if looksAnthropic, let anthropic = try? JSONDecoder().decode(AnthropicChunk.self, from: data) {
@@ -834,16 +1134,79 @@ enum RemoteLLMClient {
             if let m = anthropic.message?.usage {
                 usage = UsageInfo(promptTokens: m.input_tokens, completionTokens: m.output_tokens)
             }
-            if anthropic.type == "content_block_delta", let delta = anthropic.delta {
-                if delta.type == "thinking_delta", let t = delta.thinking, !t.isEmpty {
-                    return ("<think>\(t)</think>", usage)
-                }
-                if delta.type == "text_delta", let t = delta.text { return (t, usage) }
+            if anthropic.type == "content_block_start",
+               anthropic.content_block?.type == "tool_use" {
+                return Extracted(
+                    usage: usage,
+                    tool: .init(
+                        index: anthropic.index ?? 0,
+                        name: anthropic.content_block?.name,
+                        arguments: nil))
             }
-            if usage != nil { return (nil, usage) }
+            if anthropic.type == "content_block_start",
+               anthropic.content_block?.type == "thinking",
+               let thinking = anthropic.content_block?.thinking,
+               !thinking.isEmpty {
+                return Extracted(text: "<think>\(thinking)</think>", usage: usage)
+            }
+            if anthropic.type == "content_block_delta", let delta = anthropic.delta {
+                if delta.type == "input_json_delta", let json = delta.partial_json {
+                    return Extracted(
+                        usage: usage,
+                        tool: .init(index: anthropic.index ?? 0, name: nil, arguments: json))
+                }
+                if delta.type == "thinking_delta", let t = delta.thinking, !t.isEmpty {
+                    return Extracted(text: "<think>\(t)</think>", usage: usage)
+                }
+                if delta.type == "text_delta", let t = delta.text {
+                    return Extracted(text: t, usage: usage)
+                }
+            }
+            if usage != nil { return Extracted(usage: usage) }
             return nil
         }
         return nil
+    }
+
+    /// OpenAI-compatible reasoning is not standardized. OpenRouter and
+    /// several local gateways expose `reasoning_details` while DeepSeek and
+    /// llama.cpp commonly use `reasoning_content`. Read the loose JSON keys
+    /// in addition to the typed fields above so a new provider shape cannot
+    /// make the entire chunk fail decoding and silently erase the reasoning
+    /// channel.
+    private static func openAIReasoningText(in topLevel: [String: Any]) -> String? {
+        var values: [String] = []
+
+        func append(_ value: Any?) {
+            guard let text = value as? String,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return }
+            values.append(text)
+        }
+
+        if let choices = topLevel["choices"] as? [[String: Any]],
+           let delta = choices.first?["delta"] as? [String: Any]
+        {
+            for key in ["reasoning_content", "reasoning", "thinking", "analysis", "thought"] {
+                append(delta[key])
+            }
+            if let details = delta["reasoning_details"] as? [Any] {
+                for detail in details {
+                    guard let object = detail as? [String: Any] else { continue }
+                    append(object["text"])
+                    append(object["summary"])
+                    append(object["content"])
+                }
+            }
+        }
+
+        // A few proxy gateways lift reasoning to the chunk root.
+        for key in ["reasoning_content", "reasoning", "thinking", "analysis", "thought"] {
+            append(topLevel[key])
+        }
+
+        guard !values.isEmpty else { return nil }
+        return values.joined()
     }
 
     /// Backwards-compatible text-only shim (existing tests + callers).

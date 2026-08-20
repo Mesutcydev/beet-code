@@ -37,10 +37,13 @@ final class HFTokenStore: ObservableObject {
     /// after the first read so repeated downloads never re-prompt the
     /// keychain.
     nonisolated static let tokenCacheLock = NSLock()
+    nonisolated static let tokenReadLock = NSLock()
     nonisolated(unsafe) private static var cachedToken: String?
     nonisolated(unsafe) private static var tokenWasRead = false
 
     nonisolated static func currentToken() -> String? {
+        tokenReadLock.lock()
+        defer { tokenReadLock.unlock() }
         tokenCacheLock.lock()
         if tokenWasRead {
             let cached = cachedToken
@@ -71,10 +74,10 @@ final class HFTokenStore: ObservableObject {
     private let service = "com.beetcode.huggingface"
     private let account = "default-token"
 
-    var hasToken: Bool { Keychain.read(service: service, account: account) != nil }
+    var hasToken: Bool { Self.currentToken() != nil }
 
     func token() -> String? {
-        Keychain.read(service: service, account: account)
+        Self.currentToken()
     }
 
     func saveToken(_ token: String) {
@@ -187,12 +190,13 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ value: String, service: String, account: String) {
+    @discardableResult
+    static func write(_ value: String, service: String, account: String) -> Bool {
         if Self.runningUnderXCTest {
             testLock.lock()
             defer { testLock.unlock() }
             testStore[testKey(service, account)] = value
-            return
+            return true
         }
         let data = Data(value.utf8)
         let base: [String: Any] = [
@@ -207,7 +211,9 @@ enum Keychain {
         let status = SecItemAdd(attributes as CFDictionary, nil)
         if status != errSecSuccess {
             Log.app.error("Keychain write failed: \(String(describing: status), privacy: .public)")
+            return false
         }
+        return true
     }
 
     static func delete(service: String, account: String) {

@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 
 /// Computer use: lets the agent observe and drive ANY macOS app, Claude-style.
 ///

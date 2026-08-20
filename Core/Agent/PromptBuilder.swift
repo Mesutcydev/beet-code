@@ -12,7 +12,10 @@ enum PromptBuilder {
         memorySection: String? = nil,
         projectInstructions: String? = nil,
         workspaceHistory: String? = nil,
-        planMode: Bool = false
+        planMode: Bool = false,
+        goalMode: Bool = false,
+        contextWindowTokens: Int? = nil,
+        responseReserveTokens: Int = 4096
     ) -> String {
         var sections: [String] = []
         sections.append("""
@@ -32,6 +35,18 @@ enum PromptBuilder {
             what you will do — reading, edits, and commands you intend to run.
             Do NOT call any tool yet. Wait for the user to approve the plan.
             Once approved, execute the plan step by step with tools.
+            """)
+        }
+
+        if goalMode {
+            sections.append("""
+            # Goal mode
+
+            Stay focused on the user's complete goal. After the plan is
+            approved, keep inspecting, editing, verifying, and correcting until
+            the requested outcome is actually complete. Do not stop after a
+            partial change; use attempt_completion only when the goal is done
+            or a concrete blocker needs the user's input.
             """)
         }
 
@@ -71,14 +86,14 @@ enum PromptBuilder {
         // compaction because they live in the system prompt.
         if let repoIndex, !repoIndex.entries.isEmpty {
             sections.append(
-                "# Workspace structure (bounded index)\n\n\(repoIndex.render)")
+                "# Workspace structure (bounded index)\n\n\(bounded(repoIndex.render, characters: 8_000))")
         }
 
         // Long-term memory: durable facts and earlier-session summaries. Like
         // the repo index, memory lives in the system prompt so compaction
         // never evicts it.
         if let memorySection {
-            sections.append("# Memory\n\n\(memorySection)")
+            sections.append("# Memory\n\n\(bounded(memorySection, characters: 6_000))")
         }
 
         // Project conventions (AGENTS.md / CLAUDE.md): the project's own
@@ -86,14 +101,14 @@ enum PromptBuilder {
         // paths. Loaded verbatim, bounded; lives in the prompt so compaction
         // never evicts it.
         if let projectInstructions, !projectInstructions.isEmpty {
-            sections.append("# Project instructions (AGENTS.md / CLAUDE.md)\n\n\(projectInstructions)")
+            sections.append("# Project instructions (AGENTS.md / CLAUDE.md)\n\n\(bounded(projectInstructions, characters: 8_000))")
         }
 
         // Workspace history: what earlier sessions in THIS folder were about
         // — BeetCode's own and chats imported from Claude / Codex / Cursor.
         // Bounded digest; like memory it survives compaction in the prompt.
         if let workspaceHistory, !workspaceHistory.isEmpty {
-            sections.append("# Earlier work in this workspace\n\n\(workspaceHistory)")
+            sections.append("# Earlier work in this workspace\n\n\(bounded(workspaceHistory, characters: 4_000))")
         }
 
         sections.append("""
@@ -106,7 +121,49 @@ enum PromptBuilder {
         must read a file before editing it.
         """)
 
-        return sections.joined(separator: "\n\n")
+        let prompt = sections.joined(separator: "\n\n")
+        guard let contextWindowTokens else { return prompt }
+
+        // A model's context contains both this system prompt and the next
+        // reply. Keep a response reserve so a large repository index cannot
+        // make the first request fail before a tool or plan is produced.
+        let promptBudget = max(
+            8_000,
+            (contextWindowTokens - max(1_024, responseReserveTokens) - 512) * 3)
+        return fitPrompt(sections, maxCharacters: promptBudget)
+    }
+
+    /// Keeps supplementary context useful without allowing one generated
+    /// section (especially a repository index) to crowd out the protocol.
+    private static func bounded(_ text: String, characters: Int) -> String {
+        guard text.count > characters else { return text }
+        return String(text.prefix(characters))
+            + "\n…[section shortened to preserve the model context budget]"
+    }
+
+    /// Trims only at section boundaries whenever possible. The required
+    /// system/tool sections are built first, while later workspace details
+    /// are the first content sacrificed under a small local context window.
+    private static func fitPrompt(_ sections: [String], maxCharacters: Int) -> String {
+        var kept: [String] = []
+        var used = 0
+        for section in sections {
+            let separator = kept.isEmpty ? 0 : 2
+            let remaining = maxCharacters - used - separator
+            guard remaining > 0 else { break }
+            if section.count <= remaining {
+                kept.append(section)
+                used += separator + section.count
+            } else {
+                let marker = "\n…[remaining workspace context omitted to preserve the reply budget]"
+                let prefixLength = max(0, remaining - marker.count)
+                if prefixLength > 0 {
+                    kept.append(String(section.prefix(prefixLength)) + marker)
+                }
+                break
+            }
+        }
+        return kept.joined(separator: "\n\n")
     }
 
     /// Teaches the model when to use the in-app browser and the built-in
@@ -204,38 +261,90 @@ enum PromptBuilder {
             """)
         }
 
+        if names.contains("create_macos_app") || names.contains("build_diagnostics") {
+            blocks.append("""
+            ## Building a native Mac / iOS app
+
+            When the user asks you to create or ship an app, do not invent an \
+            Xcode project by hand:
+            - Empty folder / new Mac app: call `create_macos_app` first \
+            (XcodeGen `project.yml` + SwiftUI skeleton). Then edit files.
+            - After adding or removing Swift files: `run_command` \
+            `xcodegen generate` if `project.yml` exists.
+            - Verify with `build_diagnostics` (no command argument). It picks \
+            `xcodebuild -destination 'platform=macOS'` for .xcodeproj / \
+            project.yml trees and `swift build` for SPM. Do not default to \
+            `swift build` on an Xcode app — it will fail.
+            - iOS UI: prefer `sim_build_run` after the Mac compile is green.
+            - Stay in the workspace. Prefer `apply_patch` for edits. Read \
+            before write. Fix compiler errors from `build_diagnostics` \
+            before claiming done.
+            """)
+        }
+
         guard !blocks.isEmpty else { return nil }
         return "# Built-in browser, simulator & computer control\n\n" + blocks.joined(separator: "\n\n")
     }
 
-    /// Extracts the concatenated reasoning blocks (e.g. Qwen3
-    /// <think>…</think>) from raw generation, if any.
+    /// Extracts the concatenated reasoning blocks from raw generation. Local
+    /// chat templates and remote providers use several equivalent markers;
+    /// normalizing them here keeps the UI and the agent loop on one contract.
     static func extractingThinking(_ text: String) -> String? {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"<think>\s*([\s\S]*?)\s*</think>"#)
-        else { return nil }
-        let range = NSRange(text.startIndex..., in: text)
-        let blocks = regex.matches(in: text, range: range).compactMap { match -> String? in
-            guard match.numberOfRanges > 1,
-                  let blockRange = Range(match.range(at: 1), in: text)
-            else { return nil }
-            return String(text[blockRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        let blocks = thinkingBlocks(in: text, includeUnterminated: false)
         guard !blocks.isEmpty else { return nil }
         return blocks.joined(separator: "\n\n")
     }
-    /// Strips reasoning blocks (e.g. Qwen3 `<think>…</think>`) before the text
-    /// is parsed for tool calls or shown as a final answer.
+
+    /// Streaming counterpart of `extractingThinking`: it also returns the
+    /// currently open block so the live reasoning surface can update before a
+    /// provider closes its thought section.
+    static func extractingThinkingIncludingOpen(_ text: String) -> String {
+        thinkingBlocks(in: text, includeUnterminated: true).joined(separator: "\n\n")
+    }
+
+    /// True when generation is currently inside a reasoning delimiter. A
+    /// complete block is not considered open, so an answer can stream without
+    /// leaving the “working” state permanently lit.
+    static func hasOpenThinkingBlock(_ text: String) -> Bool {
+        for pair in reasoningTagPairs {
+            var cursor = text.startIndex
+            while let open = text.range(
+                of: pair.open,
+                options: [.caseInsensitive],
+                range: cursor..<text.endIndex)
+            {
+                let search = open.upperBound..<text.endIndex
+                guard let close = text.range(
+                    of: pair.close,
+                    options: [.caseInsensitive],
+                    range: search)
+                else { return true }
+                cursor = close.upperBound
+            }
+        }
+        if hasOpenChannelThinkingBlock(text) { return true }
+        let markerCount = text.components(separatedBy: "思考").count - 1
+        return markerCount % 2 == 1
+    }
+
+    /// Strips reasoning blocks before the text is parsed for tool calls or
+    /// shown as a final answer. This also removes an unterminated block when a
+    /// model hits its output ceiling halfway through its private channel.
     static func strippingThinking(_ text: String) -> String {
         var result = text
-        // Complete blocks.
-        result = result.replacingOccurrences(
-            of: #"<think>[\s\S]*?</think>"#,
-            with: "",
-            options: .regularExpression)
-        // Unterminated block (generation cut mid-think).
-        if let range = result.range(of: #"<think>[\s\S]*$"#, options: .regularExpression) {
-            result.removeSubrange(range)
+        result = strippingChannelThinking(result)
+        for pair in reasoningTagPairs {
+            let open = NSRegularExpression.escapedPattern(for: pair.open)
+            let close = NSRegularExpression.escapedPattern(for: pair.close)
+            result = result.replacingOccurrences(
+                of: "(?is)\(open)[\\s\\S]*?\(close)",
+                with: "",
+                options: .regularExpression)
+            if let range = result.range(
+                of: "(?is)\(open)[\\s\\S]*$",
+                options: .regularExpression) {
+                result.removeSubrange(range)
+            }
         }
         // Qwen-style Chinese reasoning marker (思考): some uncensored/Chinese
         // finetunes delimit the reasoning preamble with 思考 … 思考 instead of
@@ -254,5 +363,189 @@ enum PromptBuilder {
             }
         }
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static let reasoningTagPairs: [(open: String, close: String)] = [
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+        ("<reasoning>", "</reasoning>"),
+        ("<analysis>", "</analysis>"),
+        ("<|thinking|>", "<|/thinking|>"),
+        ("<|assistant_thought|>", "<|/assistant_thought|>"),
+        ("[thinking]", "[/thinking]"),
+    ]
+
+    private static func thinkingBlocks(in text: String, includeUnterminated: Bool) -> [String] {
+        var located: [(offset: Int, text: String)] = []
+        for pair in reasoningTagPairs {
+            var cursor = text.startIndex
+            while let open = text.range(
+                of: pair.open,
+                options: [.caseInsensitive],
+                range: cursor..<text.endIndex)
+            {
+                let search = open.upperBound..<text.endIndex
+                if let close = text.range(
+                    of: pair.close,
+                    options: [.caseInsensitive],
+                    range: search)
+                {
+                    let value = String(text[open.upperBound..<close.lowerBound])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty {
+                        located.append((text.distance(from: text.startIndex, to: open.lowerBound), value))
+                    }
+                    cursor = close.upperBound
+                } else {
+                    if includeUnterminated {
+                        let value = String(text[open.upperBound...])
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !value.isEmpty {
+                            located.append((text.distance(from: text.startIndex, to: open.lowerBound), value))
+                        }
+                    }
+                    break
+                }
+            }
+        }
+
+        located.append(contentsOf: channelThinkingBlocks(in: text, includeUnterminated: includeUnterminated))
+
+        // Chinese models use a paired 思考 delimiter. Keep it in the same
+        // ordered channel as XML-style markers.
+        var markerRanges: [Range<String.Index>] = []
+        var markerCursor = text.startIndex
+        while let range = text.range(of: "思考", range: markerCursor..<text.endIndex) {
+            markerRanges.append(range)
+            markerCursor = range.upperBound
+        }
+        var markerIndex = 0
+        while markerIndex + 1 < markerRanges.count {
+            let start = markerRanges[markerIndex].upperBound
+            let end = markerRanges[markerIndex + 1].lowerBound
+            let value = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                located.append((text.distance(from: text.startIndex, to: markerRanges[markerIndex].lowerBound), value))
+            }
+            markerIndex += 2
+        }
+        if includeUnterminated, markerIndex < markerRanges.count {
+            let value = String(text[markerRanges[markerIndex].upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                located.append((text.distance(from: text.startIndex, to: markerRanges[markerIndex].lowerBound), value))
+            }
+        }
+
+        return located.sorted { $0.offset < $1.offset }.map(\.text)
+    }
+
+    /// Some OpenAI-compatible gateways preserve the model's internal
+    /// channel protocol instead of translating it to `<think>` tags. The
+    /// analysis channel is private model work; the final channel is the
+    /// answer. Keep the markers out of both surfaces while retaining the
+    /// analysis text for the reasoning card.
+    private static let analysisChannel = "<|channel|>analysis<|message|>"
+    private static let finalChannel = "<|channel|>final<|message|>"
+    private static let channelEnd = "<|end|>"
+
+    private static func channelThinkingBlocks(
+        in text: String,
+        includeUnterminated: Bool
+    ) -> [(offset: Int, text: String)] {
+        var result: [(offset: Int, text: String)] = []
+        var cursor = text.startIndex
+        while let open = text.range(
+            of: analysisChannel,
+            options: [.caseInsensitive],
+            range: cursor..<text.endIndex)
+        {
+            let search = open.upperBound..<text.endIndex
+            let final = text.range(of: finalChannel, options: [.caseInsensitive], range: search)
+            let end = text.range(of: channelEnd, options: [.caseInsensitive], range: search)
+            let boundary: Range<String.Index>? = [final, end]
+                .compactMap { $0 }
+                .min { $0.lowerBound < $1.lowerBound }
+
+            if let boundary {
+                let value = String(text[open.upperBound..<boundary.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty {
+                    result.append((
+                        text.distance(from: text.startIndex, to: open.lowerBound),
+                        value))
+                }
+                cursor = boundary.upperBound
+            } else {
+                if includeUnterminated {
+                    let value = String(text[open.upperBound...])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty {
+                        result.append((
+                            text.distance(from: text.startIndex, to: open.lowerBound),
+                            value))
+                    }
+                }
+                break
+            }
+        }
+        return result
+    }
+
+    private static func hasOpenChannelThinkingBlock(_ text: String) -> Bool {
+        guard let open = text.range(
+            of: analysisChannel,
+            options: [.caseInsensitive],
+            range: text.startIndex..<text.endIndex)
+        else { return false }
+        let search = open.upperBound..<text.endIndex
+        let final = text.range(of: finalChannel, options: [.caseInsensitive], range: search)
+        let end = text.range(of: channelEnd, options: [.caseInsensitive], range: search)
+        guard let boundary = [final, end].compactMap({ $0 }).min(by: { $0.lowerBound < $1.lowerBound })
+        else { return true }
+        // A later analysis channel can reopen the state after a completed
+        // channel; recurse on the suffix rather than treating the first one
+        // as authoritative.
+        let suffix = String(text[boundary.upperBound...])
+        return hasOpenChannelThinkingBlock(suffix)
+    }
+
+    private static func strippingChannelThinking(_ text: String) -> String {
+        var result = text
+        var cursor = result.startIndex
+        while let open = result.range(
+            of: analysisChannel,
+            options: [.caseInsensitive],
+            range: cursor..<result.endIndex)
+        {
+            let search = open.upperBound..<result.endIndex
+            let final = result.range(of: finalChannel, options: [.caseInsensitive], range: search)
+            let end = result.range(of: channelEnd, options: [.caseInsensitive], range: search)
+            let boundary: Range<String.Index>? = [final, end]
+                .compactMap { $0 }
+                .min { $0.lowerBound < $1.lowerBound }
+            guard let boundary else {
+                result.removeSubrange(open.lowerBound..<result.endIndex)
+                break
+            }
+            if boundary == final {
+                // Keep the final channel's answer, then remove its marker in
+                // the cleanup pass below.
+                result.removeSubrange(open.lowerBound..<boundary.lowerBound)
+                cursor = open.lowerBound
+            } else {
+                result.removeSubrange(open.lowerBound..<boundary.upperBound)
+                cursor = open.lowerBound
+            }
+        }
+        result = result.replacingOccurrences(
+            of: finalChannel,
+            with: "",
+            options: [.caseInsensitive])
+        result = result.replacingOccurrences(
+            of: channelEnd,
+            with: "",
+            options: [.caseInsensitive])
+        return result
     }
 }

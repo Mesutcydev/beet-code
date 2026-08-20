@@ -3,7 +3,7 @@ import Foundation
 /// LLMEngine implementation backed by a BYOK remote provider. History is
 /// replayed per call (no KV cache server-side), so reset is a no-op and
 /// stream(adding:) sends the full conversation.
-final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
+final class RemoteLLMEngine: LLMEngine, NativeToolConfigurable, @unchecked Sendable {
 
     let endpoint: RemoteEndpoint
     private let apiKey: String
@@ -15,6 +15,7 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
     /// conversation on each call. `reset()` clears the accumulation (the loop
     /// calls it at task start and after compaction rebuilds history).
     private var accumulated: [ChatTurn] = []
+    private var nativeTools: [NativeToolSpec] = []
 
     init?(endpoint: RemoteEndpoint) {
         // Custom/local servers may run without auth; every other provider
@@ -36,6 +37,10 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
     func load(directory: URL, modelID: String, diskBytes: Int64) async throws {
         // Remote engines have nothing to load; presence of key+endpoint was
         // validated at init.
+    }
+
+    func configureNativeTools(_ tools: [NativeToolSpec]) {
+        withLock { nativeTools = tools }
     }
 
     func unload() async {}
@@ -64,16 +69,28 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
             self?.noteUsage(usage, startedAt: usageBox.started)
         }
 
+        // Provider/model metadata is non-secret and cached independently from
+        // the Keychain key. Respect explicit capability overrides at the
+        // request boundary so a model that advertises no tools or temperature
+        // support does not receive parameters it will reject.
+        let profile = AppPreferencesStore.shared
+            .remoteModelProfile(provider: endpoint.provider, model: endpoint.model)
+            .map { $0.applying(AppPreferencesStore.shared.remoteModelOverride(
+                provider: endpoint.provider, model: endpoint.model)) }
+        let tools = withLock { nativeTools }
+        let effectiveTools = profile?.supportsTools == false ? [] : tools
+        let effectiveTemperature = profile?.supportsTemperature == false ? nil : temperature
         let stream: AsyncThrowingStream<String, Error>
         if endpoint.provider == .anthropic,
            let base = endpoint.provider.anthropicBaseURL {
             stream = RemoteLLMClient.streamAnthropic(
                 baseURL: base,
-                apiKey: self.apiKey,
+                apiKey: apiKey,
                 model: endpoint.model,
                 turns: allTurns,
-                temperature: temperature,
+                temperature: effectiveTemperature,
                 maxTokens: maxTokens,
+                tools: effectiveTools,
                 onUsage: onUsage)
         } else if endpoint.provider == .gemini,
                   let base = endpoint.provider.geminiBaseURL {
@@ -82,18 +99,20 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
                 apiKey: self.apiKey,
                 model: endpoint.model,
                 turns: allTurns,
-                temperature: temperature,
+                temperature: effectiveTemperature,
                 maxTokens: maxTokens,
+                tools: effectiveTools,
                 onUsage: onUsage)
         } else if let base = endpoint.provider.openAICompatibleBaseURL {
             stream = RemoteLLMClient.streamOpenAICompatible(
                 provider: endpoint.provider,
                 baseURL: base,
-                apiKey: self.apiKey,
+                apiKey: apiKey,
                 model: endpoint.model,
                 turns: allTurns,
-                temperature: temperature,
+                temperature: effectiveTemperature,
                 maxTokens: maxTokens,
+                tools: effectiveTools,
                 onUsage: onUsage)
         } else {
             return AsyncThrowingStream { continuation in
@@ -220,7 +239,7 @@ final class RemoteLLMEngine: LLMEngine, @unchecked Sendable {
 /// Routes engine requests to either the local MLX engine or the active BYOK
 /// remote endpoint. AppState holds one router; switching providers swaps the
 /// delegate without touching the agent or UI layers.
-final class EngineRouter: LLMEngine, @unchecked Sendable {
+final class EngineRouter: LLMEngine, NativeToolConfigurable, @unchecked Sendable {
 
     enum Source: Equatable {
         case localMLX
@@ -237,6 +256,7 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
     private var currentRemote: RemoteLLMEngine?
     private(set) var source: Source = .localMLX
     private var activeLocalID: String?
+    private var nativeTools: [NativeToolSpec] = []
 
     init(local: any LLMEngine = MLXEngine(), pool: EnginePool? = nil) {
         self.local = local
@@ -257,8 +277,16 @@ final class EngineRouter: LLMEngine, @unchecked Sendable {
         withLock {
             currentRemote = remote
             source = .remote(endpoint)
+            remote.configureNativeTools(nativeTools)
         }
         return true
+    }
+
+    func configureNativeTools(_ tools: [NativeToolSpec]) {
+        withLock {
+            nativeTools = tools
+            currentRemote?.configureNativeTools(tools)
+        }
     }
 
     func useLocal() {

@@ -1,9 +1,10 @@
+import Darwin
 import Foundation
 
 /// Minimal HTTP/1.1 server over POSIX sockets — zero dependencies, matching
 /// BeetCode's zero-dependency ethos (posix_spawn for shells, LFJSONValue
-/// for JSON). Loopback-only by construction: binds 127.0.0.1 (or ::1 with
-/// `bindIPv6`), so nothing outside this Mac can ever reach it.
+/// for JSON). Loopback by default; network-facing callers must explicitly
+/// choose a non-loopback bind address and route surface.
 ///
 /// Architecture: the actor owns lifecycle (config, sockets, running state).
 /// All blocking syscalls (accept/read/write) run inside detached utility
@@ -17,22 +18,53 @@ public actor LocalAPIServer {
         /// 0 lets the OS choose a free port (read back via `actualPort`).
         public var port: Int
         public var bindIPv6: Bool
+        /// IPv4 address to bind. The default is loopback; remote session
+        /// hosts explicitly use `0.0.0.0` so a Tailscale interface can reach
+        /// the listener without changing the existing local API posture.
+        public var bindHost: String
         public var modelIDOverride: String?
+        /// When false, only the injected route resolver is exposed. This is
+        /// used by the remote session host so it never becomes an accidental
+        /// network-facing OpenAI-compatible inference endpoint.
+        public var exposeStandardRoutes: Bool
         /// When set, every API request must carry a matching
         /// `Authorization: Bearer <token>` header (LM Studio-style). nil =
         /// open access, which is still loopback-only.
         public var bearerToken: String?
+        /// Maximum request body accepted by this listener. The local model
+        /// API keeps a generous limit for image/tool payloads; the remote
+        /// session listener uses a much smaller limit because it only accepts
+        /// pairing and prompt JSON.
+        public var maxBodyBytes: Int
+        /// Whether to emit the local API's permissive browser CORS headers.
+        /// The remote session page is same-origin and deliberately disables
+        /// cross-origin access.
+        public var allowCORS: Bool
         /// Optional idle TTL: when no request arrives for this many seconds,
         /// the engine is unloaded (model leaves RAM/Metal). nil = keep
         /// resident. Mirrors LM Studio's "unload after idle".
         public var idleTTLSeconds: Int?
 
-        public init(port: Int = 1234, bindIPv6: Bool = false, modelIDOverride: String? = nil, bearerToken: String? = nil, idleTTLSeconds: Int? = nil) {
+        public init(
+            port: Int = 1234,
+            bindIPv6: Bool = false,
+            bindHost: String = "127.0.0.1",
+            modelIDOverride: String? = nil,
+            bearerToken: String? = nil,
+            idleTTLSeconds: Int? = nil,
+            exposeStandardRoutes: Bool = true,
+            maxBodyBytes: Int = 32 * 1024 * 1024,
+            allowCORS: Bool = true
+        ) {
             self.port = port
             self.bindIPv6 = bindIPv6
+            self.bindHost = bindHost
             self.modelIDOverride = modelIDOverride
             self.bearerToken = bearerToken
             self.idleTTLSeconds = idleTTLSeconds
+            self.exposeStandardRoutes = exposeStandardRoutes
+            self.maxBodyBytes = max(0, maxBodyBytes)
+            self.allowCORS = allowCORS
         }
     }
 
@@ -42,6 +74,26 @@ public actor LocalAPIServer {
         public let query: [String: String]
         public let headers: [String: String]
         public let body: Data
+        /// Numeric peer address captured at accept time. It is intentionally
+        /// exposed so a network-facing feature can apply per-client limits
+        /// without trusting a forwarded header.
+        public let remoteAddress: String
+
+        public init(
+            method: String,
+            path: String,
+            query: [String: String] = [:],
+            headers: [String: String] = [:],
+            body: Data = Data(),
+            remoteAddress: String = "unknown"
+        ) {
+            self.method = method
+            self.path = path
+            self.query = query
+            self.headers = headers
+            self.body = body
+            self.remoteAddress = remoteAddress
+        }
 
         public var bodyJSON: LFJSONValue? {
             guard !body.isEmpty else { return nil }
@@ -58,11 +110,18 @@ public actor LocalAPIServer {
         public var status: Int
         public var contentType: String
         public var body: Data
+        public var headers: [(String, String)]
 
-        public init(status: Int = 200, contentType: String = "application/json", body: Data = Data()) {
+        public init(
+            status: Int = 200,
+            contentType: String = "application/json",
+            body: Data = Data(),
+            headers: [(String, String)] = []
+        ) {
             self.status = status
             self.contentType = contentType
             self.body = body
+            self.headers = headers
         }
 
         public static func json(_ value: LFJSONValue, status: Int = 200) -> Response {
@@ -71,6 +130,10 @@ public actor LocalAPIServer {
 
         public static func text(_ text: String, status: Int = 200) -> Response {
             Response(status: status, contentType: "text/plain; charset=utf-8", body: Data(text.utf8))
+        }
+
+        public static func html(_ html: String, status: Int = 200) -> Response {
+            Response(status: status, contentType: "text/html; charset=utf-8", body: Data(html.utf8))
         }
     }
 
@@ -105,7 +168,13 @@ public actor LocalAPIServer {
     private var listeningFD: Int32 = -1
     private var acceptTask: Task<Void, Never>?
     private var idleMonitorTask: Task<Void, Never>?
-    private var connectionTasks: [Task<Void, Never>] = []
+    /// Retain live connection tasks so `stop()` can cancel blocked reads, and
+    /// remove each task as soon as its socket closes. A long-lived browser
+    /// client can poll for hours; completed tasks must not accumulate here.
+    private var connectionTasks: [UUID: Task<Void, Never>] = [:]
+    /// `shutdown` wakes a connection blocked in `read()` during `stop()`;
+    /// `serveConnection` remains responsible for the final `close()`.
+    private var connectionFDs: [UUID: Int32] = [:]
     private(set) public var isRunning = false
     /// The real bound port — differs from config.port when it was 0.
     private(set) public var actualPort: Int = 0
@@ -136,7 +205,10 @@ public actor LocalAPIServer {
 
     // MARK: Lifecycle
 
-    public func start(_ newConfig: Config) async throws {
+    public func start(
+        _ newConfig: Config,
+        routeResolver customResolver: RouteResolver? = nil
+    ) async throws {
         guard !isRunning else { throw ServerError.alreadyRunning }
         config = newConfig
 
@@ -161,7 +233,13 @@ public actor LocalAPIServer {
             var addr = sockaddr_in()
             addr.sin_family = sa_family_t(AF_INET)
             addr.sin_port = in_port_t(UInt16(config.port).bigEndian)
-            addr.sin_addr = in_addr(s_addr: UInt32(0x7f000001).bigEndian)  // 127.0.0.1
+            let addressResult = config.bindHost.withCString { value in
+                inet_pton(AF_INET, value, &addr.sin_addr)
+            }
+            guard addressResult == 1 else {
+                close(fd)
+                throw ServerError.bindFailed(EINVAL)
+            }
             bindResult = withUnsafePointer(to: &addr) { ptr in
                 ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                     bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
@@ -196,7 +274,7 @@ public actor LocalAPIServer {
         let engine = self.engine
         let bearerToken = config.bearerToken
         let activityBox = activity
-        let weakResolver: RouteResolver = { [weak self] request in
+        let resolver = customResolver ?? { [weak self] request in
             guard let self else { return nil }
             return await self.defaultRoute(for: request)
         }
@@ -205,9 +283,18 @@ public actor LocalAPIServer {
         // listener socket in stop() ends the loop.
         acceptTask = Task.detached(priority: .userInitiated) { [weak self] in
             while true {
-                let clientFD = accept(fd, nil, nil)
+                let (clientFD, remoteAddress) = Self.acceptClient(fd)
                 guard clientFD >= 0 else { return }  // listener closed or fatal errno
-                await self?.handleAccepted(clientFD, engine: engine, resolver: weakResolver, bearerToken: bearerToken, activity: activityBox)
+                await self?.handleAccepted(
+                    clientFD,
+                    remoteAddress: remoteAddress,
+                    engine: engine,
+                    resolver: resolver,
+                    bearerToken: bearerToken,
+                    exposeStandardRoutes: newConfig.exposeStandardRoutes,
+                    maxBodyBytes: newConfig.maxBodyBytes,
+                    allowCORS: newConfig.allowCORS,
+                    activity: activityBox)
             }
         }
 
@@ -241,20 +328,79 @@ public actor LocalAPIServer {
         acceptTask = nil
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
-        for task in connectionTasks { task.cancel() }
+        for fd in connectionFDs.values { _ = shutdown(fd, SHUT_RDWR) }
+        for task in connectionTasks.values { task.cancel() }
         connectionTasks.removeAll()
+        connectionFDs.removeAll()
         Log.app.info("[api] Local API server stopped")
     }
 
-    private func handleAccepted(_ fd: Int32, engine: any LLMEngine, resolver: @escaping RouteResolver, bearerToken: String?, activity: ActivityBox) {
-        let task = Task.detached(priority: .utility) {
-            await Self.serveConnection(fd, engine: engine, resolver: resolver, bearerToken: bearerToken, activity: activity)
+    private func handleAccepted(
+        _ fd: Int32,
+        remoteAddress: String,
+        engine: any LLMEngine,
+        resolver: @escaping RouteResolver,
+        bearerToken: String?,
+        exposeStandardRoutes: Bool,
+        maxBodyBytes: Int,
+        allowCORS: Bool,
+        activity: ActivityBox
+    ) {
+        let connectionID = UUID()
+        let task = Task.detached(priority: .utility) { [weak self] in
+            await Self.serveConnection(
+                fd,
+                remoteAddress: remoteAddress,
+                engine: engine,
+                resolver: resolver,
+                bearerToken: bearerToken,
+                exposeStandardRoutes: exposeStandardRoutes,
+                maxBodyBytes: maxBodyBytes,
+                allowCORS: allowCORS,
+                activity: activity)
+            await self?.connectionFinished(connectionID)
         }
-        connectionTasks.append(task)
-        // Bound the bookkeeping list: drop finished tasks occasionally.
-        if connectionTasks.count > 64 {
-            connectionTasks.removeAll { $0.isCancelled }
+        connectionTasks[connectionID] = task
+        connectionFDs[connectionID] = fd
+    }
+
+    private func connectionFinished(_ id: UUID) {
+        connectionTasks.removeValue(forKey: id)
+        connectionFDs.removeValue(forKey: id)
+    }
+
+    private nonisolated static func acceptClient(_ fd: Int32) -> (Int32, String) {
+        var storage = sockaddr_storage()
+        var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let clientFD = withUnsafeMutablePointer(to: &storage) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { address in
+                accept(fd, address, &length)
+            }
         }
+        guard clientFD >= 0 else { return (clientFD, "unknown") }
+        return (clientFD, numericAddress(storage, length: length))
+    }
+
+    private nonisolated static func numericAddress(
+        _ storage: sockaddr_storage,
+        length: socklen_t
+    ) -> String {
+        var copy = storage
+        var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let result = withUnsafePointer(to: &copy) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { address in
+                getnameinfo(
+                    address,
+                    length,
+                    &buffer,
+                    socklen_t(buffer.count),
+                    nil,
+                    0,
+                    NI_NUMERICHOST)
+            }
+        }
+        guard result == 0 else { return "unknown" }
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
     // MARK: Default routing (OpenAI-compatible surface)
@@ -268,16 +414,18 @@ public actor LocalAPIServer {
     // MARK: Connection handling (off-actor)
 
     private static func serveConnection(
-        _ fd: Int32, engine: any LLMEngine, resolver: @escaping RouteResolver,
-        bearerToken: String?, activity: ActivityBox
+        _ fd: Int32, remoteAddress: String, engine: any LLMEngine,
+        resolver: @escaping RouteResolver, bearerToken: String?,
+        exposeStandardRoutes: Bool, maxBodyBytes: Int, allowCORS: Bool,
+        activity: ActivityBox
     ) async {
         defer { close(fd) }
         while !Task.isCancelled {
-            guard let request = await readRequest(fd) else { return }
+            guard let request = await readRequest(fd, remoteAddress: remoteAddress, maxBodyBytes: maxBodyBytes) else { return }
             activity.lastActivity = Date()
             // CORS: browser-based clients (e.g. lattice-composer) need these
             // on every response, errors included.
-            let extra = corsHeaders(for: request)
+            let extra = allowCORS ? corsHeaders(for: request) : []
 
             // Bearer auth (when configured). Health checks are exempt so
             // monitoring stays trivial; everything else must authenticate.
@@ -288,15 +436,19 @@ public actor LocalAPIServer {
                     let status = header.isEmpty ? 401 : 403
                     await writeResponse(fd, .json(
                         OpenAIRoutes.errorJSON(message: "Invalid or missing bearer token.", type: "authentication_error"),
-                        status: status), extraHeaders: extra)
+                        status: status), extraHeaders: extra, keepAlive: request.isKeepAlive)
                     return
                 }
             }
 
-            let result = await OpenAIRoutes.route(request, engine: engine, resolver: resolver)
+            let result = await OpenAIRoutes.route(
+                request,
+                engine: engine,
+                resolver: resolver,
+                includeStandardRoutes: exposeStandardRoutes)
             switch result {
             case .response(let response):
-                await writeResponse(fd, response, extraHeaders: extra)
+                await writeResponse(fd, response, extraHeaders: extra, keepAlive: request.isKeepAlive)
             case .stream(let response, let lines):
                 // SSE responses carry "Connection: close" — end the
                 // connection after the stream instead of expecting more
@@ -309,19 +461,21 @@ public actor LocalAPIServer {
     }
 
     private static func corsHeaders(for request: Request) -> [(String, String)] {
-        let origin = request.headers["origin"] ?? "*"
+        let rawOrigin = request.headers["origin"] ?? "*"
+        let origin = rawOrigin.contains(where: { $0 == "\r" || $0 == "\n" }) ? "*" : rawOrigin
         return [
             ("Access-Control-Allow-Origin", origin),
             ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
             ("Access-Control-Allow-Headers", "Content-Type, Authorization"),
+            ("Vary", "Origin"),
         ]
     }
 
     // MARK: Request parsing
 
-    static let maxBodyBytes = 32 * 1024 * 1024  // 32 MiB request cap
+    static let maxBodyBytes = 32 * 1024 * 1024  // default 32 MiB request cap
 
-    private static func readRequest(_ fd: Int32) async -> Request? {
+    private static func readRequest(_ fd: Int32, remoteAddress: String, maxBodyBytes: Int) async -> Request? {
         var buffer = Data()
         var headerEnd: Int?
         while headerEnd == nil {
@@ -355,8 +509,14 @@ public actor LocalAPIServer {
             _ = await writeAll(fd, Data("HTTP/1.1 100 Continue\r\n\r\n".utf8))
         }
 
-        let contentLength = headers["content-length"].flatMap(Int.init) ?? 0
-        guard contentLength <= maxBodyBytes else { return nil }
+        guard headers["transfer-encoding"] == nil else { return nil }
+        let contentLength: Int
+        if let rawContentLength = headers["content-length"] {
+            guard let parsed = Int(rawContentLength), parsed >= 0, parsed <= maxBodyBytes else { return nil }
+            contentLength = parsed
+        } else {
+            contentLength = 0
+        }
         while body.count < contentLength {
             guard let chunk = await readChunk(fd, limit: min(65_536, contentLength - body.count)) else { return nil }
             if chunk.isEmpty { return nil }
@@ -366,7 +526,13 @@ public actor LocalAPIServer {
             body = Data(body.prefix(contentLength))
         }
         let (path, query) = splitTarget(target)
-        return Request(method: method, path: path, query: query, headers: headers, body: body)
+        return Request(
+            method: method,
+            path: path,
+            query: query,
+            headers: headers,
+            body: body,
+            remoteAddress: remoteAddress)
     }
 
     private static func splitTarget(_ target: String) -> (String, [String: String]) {
@@ -415,15 +581,18 @@ public actor LocalAPIServer {
     // MARK: Response writing
 
     private static func writeResponse(
-        _ fd: Int32, _ response: Response, extraHeaders: [(String, String)]
+        _ fd: Int32, _ response: Response, extraHeaders: [(String, String)], keepAlive: Bool
     ) async {
         var head = "HTTP/1.1 \(response.status) \(reason(for: response.status))\r\n"
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
+        for (name, value) in response.headers {
+            head += "\(name): \(value)\r\n"
+        }
         for (name, value) in extraHeaders {
             head += "\(name): \(value)\r\n"
         }
-        head += "Connection: keep-alive\r\n\r\n"
+        head += "Connection: \(keepAlive ? "keep-alive" : "close")\r\n\r\n"
         guard await writeAll(fd, Data(head.utf8)) else { return }
         if !response.body.isEmpty {
             _ = await writeAll(fd, response.body)
@@ -438,6 +607,9 @@ public actor LocalAPIServer {
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Transfer-Encoding: chunked\r\n"
         head += "Cache-Control: no-cache\r\n"
+        for (name, value) in response.headers {
+            head += "\(name): \(value)\r\n"
+        }
         for (name, value) in extraHeaders {
             head += "\(name): \(value)\r\n"
         }
@@ -485,8 +657,13 @@ public actor LocalAPIServer {
         case 200: "OK"
         case 204: "No Content"
         case 400: "Bad Request"
+        case 401: "Unauthorized"
+        case 403: "Forbidden"
+        case 409: "Conflict"
         case 404: "Not Found"
         case 405: "Method Not Allowed"
+        case 413: "Payload Too Large"
+        case 429: "Too Many Requests"
         case 500: "Internal Server Error"
         case 503: "Service Unavailable"
         default: "Unknown"

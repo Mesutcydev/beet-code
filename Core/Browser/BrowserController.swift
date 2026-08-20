@@ -246,15 +246,16 @@ final class BrowserController: ObservableObject {
     func snapshot(to fileURL: URL) async throws -> URL {
         let config = WKSnapshotConfiguration()
         config.snapshotWidth = NSNumber(value: 1280)
-        let image: NSImage = try await withCheckedThrowingContinuation { continuation in
+        let captured: SnapshotImage = try await withCheckedThrowingContinuation { continuation in
             webView.takeSnapshot(with: config) { snapshot, error in
                 if let snapshot {
-                    continuation.resume(returning: snapshot)
+                    continuation.resume(returning: SnapshotImage(image: snapshot))
                 } else {
                     continuation.resume(throwing: BrowserError.snapshotFailed)
                 }
             }
         }
+        let image = captured.image
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:])
@@ -263,6 +264,14 @@ final class BrowserController: ObservableObject {
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try png.write(to: fileURL)
         return fileURL
+    }
+
+    /// AppKit images are main-actor objects, but Swift 6 models continuation
+    /// results as crossing an actor boundary. The wrapper documents that the
+    /// value never leaves this MainActor controller while satisfying the
+    /// Xcode 16.4 compiler used by CI.
+    private struct SnapshotImage: @unchecked Sendable {
+        let image: NSImage
     }
 
     // MARK: JS string safety

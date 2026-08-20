@@ -116,6 +116,9 @@ struct ChatView: View {
                 topBarMenuButton("Git status", "circle.dashed", .gitStatus)
                 topBarMenuButton("Git diff", "square.split.2x1", .gitDiff)
                 topBarMenuButton("Undo last checkpoint", "arrow.uturn.backward", .undoCheckpoint)
+                Divider()
+                topBarMenuButton("Export as Markdown…", "doc.text", .exportChatMarkdown)
+                topBarMenuButton("Export as JSON…", "curlybraces.square", .exportChatJSON)
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 13, weight: .semibold))

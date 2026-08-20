@@ -104,6 +104,8 @@ extension Notification.Name {
     static let gitStatus = Notification.Name("com.beetcode.gitStatus")
     static let gitDiff = Notification.Name("com.beetcode.gitDiff")
     static let undoCheckpoint = Notification.Name("com.beetcode.undoCheckpoint")
+    static let exportChatMarkdown = Notification.Name("com.beetcode.exportChatMarkdown")
+    static let exportChatJSON = Notification.Name("com.beetcode.exportChatJSON")
     static let newChat = Notification.Name("com.beetcode.newChat")
     static let stopAgent = Notification.Name("com.beetcode.stopAgent")
 }

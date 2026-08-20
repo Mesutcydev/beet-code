@@ -87,12 +87,59 @@ struct MainWindowView: View {
             .onReceive(NotificationCenter.default.publisher(for: .undoCheckpoint)) { _ in
                 sessions.undoLastCheckpoint()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .exportChatMarkdown)) { _ in
+                exportCurrentChat(format: .markdown)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .exportChatJSON)) { _ in
+                exportCurrentChat(format: .json)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .newChat)) { _ in
                 sessions.newSession()
             }
             .onReceive(NotificationCenter.default.publisher(for: .stopAgent)) { _ in
                 sessions.stop()
             }
+    }
+
+    /// Export the active conversation even when the sidebar is collapsed. The
+    /// sidebar rows still offer the same actions for older chats; these
+    /// notifications make the current chat reachable from the top bar too.
+    private func exportCurrentChat(format: SessionExporter.Format) {
+        let id = sessions.activeSessionID ?? SessionStore.shared.currentSessionID
+        guard let id, let record = SessionStore.shared.load(id: id) else {
+            let alert = NSAlert()
+            alert.messageText = "Nothing to export yet"
+            alert.informativeText = "Run a task first — the conversation is exported once it has been saved."
+            alert.alertStyle = .informational
+            alert.runModal()
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Export Chat"
+        panel.prompt = "Export"
+        panel.nameFieldStringValue = SessionExporter.suggestedName(for: record, format: format)
+        panel.allowedContentTypes = [format == .markdown ? .plainText : .json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            switch format {
+            case .markdown:
+                try SessionExporter.markdown(for: record)
+                    .write(to: url, atomically: true, encoding: .utf8)
+            case .json:
+                guard let data = SessionExporter.json(for: record) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try data.write(to: url, options: .atomic)
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Export failed"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
     }
 
     private var responsiveLayout: some View {

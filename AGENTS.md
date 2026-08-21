@@ -50,3 +50,30 @@ This is a native macOS coding agent (Swift 6 / SwiftUI / MLX + BYOK).
 - Gaps: `docs/COMPARISON.md`
 - Composer design: `docs/COMPOSER-DESIGN.md`
 - Acceptance: `docs/ACCEPTANCE-v0.2.md`
+
+## Cursor Cloud specific instructions
+
+Cursor Cloud Agents run on **Linux x86_64** VMs. Beet Code is a **macOS 15+ /
+Apple-Silicon-only** Xcode app, so it **cannot be built, tested, or run in the
+Cloud Agent environment**. Treat the cloud VM as read/edit/review only; do all
+build/test/run verification on a macOS host or in CI.
+
+Why it can't run here (verified, not assumed):
+
+- Build system is `xcodegen` + `xcodebuild` (macOS-only). There is no
+  `Package.swift`, so SwiftPM can't build it either.
+- `project.yml` pins `ARCHS: arm64`, `EXCLUDED_ARCHS: x86_64`, `macOS 15.0`,
+  `CODE_SIGN_IDENTITY: "Apple Development"`. The cloud VM is x86_64 Linux.
+- `Core` + `App` import Apple-only frameworks throughout (`SwiftUI`, `AppKit`,
+  `WebKit`, `Security`/Keychain, `MLX`/`MLXLLM`/`MLXVLM`/`MLXLMCommon` (Metal),
+  `CoreServices`, `CoreGraphics`, `ApplicationServices`). A Linux Swift
+  toolchain typechecks pure-`Foundation` files but fails these with
+  `error: no such module 'AppKit'` (also `Security`, `MLX`, …).
+- CI is macOS-only: `.github/workflows/macos.yml` runs on `runs-on: macos-15`.
+
+Do NOT try to install a Swift-for-Linux toolchain to build the project — it
+cannot resolve the Apple frameworks and there is no SwiftPM manifest, so it
+produces nothing runnable. The startup update script is intentionally a no-op.
+
+Canonical build/test commands (run on macOS only) live in the top of this file
+and in `.github/workflows/macos.yml`; don't duplicate them.

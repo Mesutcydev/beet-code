@@ -6,14 +6,14 @@ rendering, model metadata/import handling, and the public download links.
 
 ## Verdict
 
-The source and Release app passed the final desktop smoke check and are ready
-for publication. The app is signed with the existing Apple Development identity;
+The source and Release app passed the final desktop smoke check and v0.9.1 is
+published. The app is signed with the existing Apple Development identity;
 Developer ID, hardened runtime, notarization, and Gatekeeper-clean delivery
 remain intentionally out of scope for this release.
 
 Release source commit: `9b8f5ba` (`release: BeetCode 0.9.1 local model reliability`).
-The source commit is immutable; this audit entry records the packaged app
-artifacts built from it.
+Published tag commit: `d8f8b74` (`v0.9.1`). The source commit is immutable;
+this audit entry records the packaged app artifacts built from it.
 
 ## 1. Release identity
 
@@ -58,6 +58,8 @@ when no tool call is produced; ordinary prose is left untouched.
 | 16 GB admission | PASS | The 27B 2-bit model is visibly disabled when it cannot fit the current machine |
 | `git diff --check` | PASS | Clean before staging |
 | Public links | PASS | README, release page, and GitHub Pages buttons target `BeetCode-0.9.1.zip` |
+| GitHub release | PASS | [v0.9.1 release](https://github.com/Mesutcydev/beet-code/releases/tag/v0.9.1) is public with ZIP, DMG, and both checksum sidecars |
+| GitHub Pages | PASS | [Pages workflow 32470039365](https://github.com/Mesutcydev/beet-code/actions/runs/32470039365) completed successfully from `main` |
 
 ### Packaged artifacts
 
@@ -70,11 +72,13 @@ when no tool call is produced; ordinary prose is left untouched.
 
 1. **PASS** — Commit the intended source, tests, and release documentation;
    keep derived build directories out of git.
-2. Push `release/v0.9.1`, fast-forward `main`, and create tag `v0.9.1`.
+2. **PASS** — Push `release/v0.9.1`, fast-forward `main`, and create tag
+   `v0.9.1`.
 3. **PASS** — Package the signed Release app as ZIP/DMG and write SHA-256
    sidecars.
-4. Publish the assets to the GitHub release and wait for the Pages workflow.
-5. Record the release URL and workflow result after publication.
+4. **PASS** — Publish the assets to the GitHub release and wait for the Pages
+   workflow.
+5. **PASS** — Release URL and workflow result recorded above.
 
 ## 5. Distribution signing
 

@@ -81,12 +81,19 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(names.contains("create_macos_app"))
         XCTAssertTrue(names.contains("create_ios_app"))
         XCTAssertTrue(names.contains("macos_build_run"))
+        XCTAssertTrue(names.contains("apple_ship"))
     }
 
     func testAppBuildGuidanceAppearsWithScaffoldTools() {
-        let text = prompt(tools: [StubTool(name: "create_macos_app"), StubTool(name: "build_diagnostics")])
+        let text = prompt(tools: [
+            StubTool(name: "create_macos_app"),
+            StubTool(name: "build_diagnostics"),
+            StubTool(name: "apple_ship"),
+        ])
         XCTAssertTrue(text.contains("Delivering a native iOS or macOS app"))
         XCTAssertTrue(text.contains("create_macos_app"))
+        XCTAssertTrue(text.contains("Release archive"))
+        XCTAssertTrue(text.contains("Ship Report"))
     }
 
     func testWebFetchAndTaskGuidanceAppearWhenRegistered() {

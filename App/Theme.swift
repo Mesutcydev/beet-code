@@ -141,13 +141,11 @@ enum ContentColumn {
     static let maxWidth: CGFloat = 1100
 }
 
-/// App typography. Prose stays in proportional SF; anything the user TYPES
-/// as a coding task uses SF Mono — the same monospaced voice as the diff,
-/// command and diagnostics surfaces, so input and output read as one
-/// coding environment.
+/// App typography. The composer is human language first, so it uses the
+/// native proportional face; code, diffs, and diagnostics keep monospaced
+/// typography in their dedicated surfaces.
 enum AppFont {
-    /// The composer editor (and any future code-forward input).
-    static let editor = Font.system(size: 14, design: .monospaced)
+    static let editor = Font.system(size: 15, weight: .regular, design: .default)
 }
 
 /// Spacing — 4pt grid. Use these instead of ad-hoc padding literals.
@@ -297,13 +295,92 @@ private struct HoverLiftModifier: ViewModifier {
     }
 }
 
-/// Plain chrome with a 120 ms press scale. Use instead of `.buttonStyle(.plain)`
-/// on primary and chip actions.
+/// Plain chrome with instant press confirmation. Small actions that draw
+/// their own chrome use this style so feedback stays consistent.
 struct LFPlainPressButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12),
+                       value: configuration.isPressed)
+    }
+}
+
+/// A small semantic vocabulary for actions. Text actions use a capsule and
+/// icon-only actions use a circle; neither falls back to generic rectangular
+/// AppKit buttons, so hierarchy remains clear without adding visual weight.
+enum LFButtonTone {
+    case secondary
+    case primary
+    case destructive
+
+    var foreground: Color {
+        switch self {
+        case .secondary: Theme.textSecondary
+        case .primary, .destructive: .white
+        }
+    }
+
+    var fill: Color {
+        switch self {
+        case .secondary: Theme.surfaceInset
+        case .primary: Theme.accent
+        case .destructive: Theme.danger
+        }
+    }
+
+    var border: Color {
+        switch self {
+        case .secondary: Theme.hairline
+        case .primary: Theme.accentBright.opacity(0.45)
+        case .destructive: Color.white.opacity(0.16)
+        }
+    }
+}
+
+struct LFCapsuleButtonStyle: ButtonStyle {
+    var tone: LFButtonTone = .secondary
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(isEnabled ? tone.foreground : Theme.textTertiary)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 30)
+            .background(isEnabled ? tone.fill : Theme.surfaceInset.opacity(0.55), in: Capsule())
+            .overlay(Capsule().strokeBorder(tone.border, lineWidth: 1))
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .brightness(configuration.isPressed ? -0.035 : 0)
+            .opacity(isEnabled ? 1 : 0.72)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12),
+                       value: configuration.isPressed)
+    }
+}
+
+struct LFIconButtonStyle: ButtonStyle {
+    var tone: LFButtonTone = .secondary
+    var size: CGFloat = 28
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(isEnabled ? tone.foreground : Theme.textTertiary)
+            .frame(width: size, height: size)
+            .background(isEnabled ? tone.fill : Theme.surfaceInset.opacity(0.55), in: Circle())
+            .overlay(Circle().strokeBorder(tone.border, lineWidth: 1))
+            .contentShape(Circle())
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .brightness(configuration.isPressed ? -0.04 : 0)
+            .opacity(isEnabled ? 1 : 0.72)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12),
+                       value: configuration.isPressed)
     }
 }
 
@@ -315,11 +392,9 @@ struct PanelCloseButton: View {
         Button(action: action) {
             Image(systemName: "xmark")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LFIconButtonStyle(size: 26))
+        .lfHoverLift()
         .help("Close panel")
         .accessibilityLabel("Close panel")
     }

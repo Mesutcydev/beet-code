@@ -54,6 +54,10 @@ enum ExternalHistoryImporter {
 
     /// Safety caps so a giant history folder can't stall the import.
     static let maxFilesPerSource = 50
+    /// Cursor's current global database indexes individual conversations,
+    /// so it can be traversed cheaply without scanning the multi-gigabyte
+    /// key/value table. Keep a generous ceiling while bounding launch work.
+    static let maxCursorConversations = 500
     static let maxMessagesPerConversation = 500
     /// Per-file read budget. Codex rollouts grow past 3 GB (every tool
     /// output is logged) — reading one whole with String(contentsOf:)
@@ -134,10 +138,34 @@ enum ExternalHistoryImporter {
             conversations.append(conversation)
         }
 
-        let cursorRoot = home.appendingPathComponent(
-            "Library/Application Support/Cursor/User/workspaceStorage", isDirectory: true)
+        let cursorUserRoot = home.appendingPathComponent(
+            "Library/Application Support/Cursor/User", isDirectory: true)
+        let cursorRoot = cursorUserRoot.appendingPathComponent(
+            "workspaceStorage", isDirectory: true)
+        let cursorGlobal = cursorUserRoot.appendingPathComponent(
+            "globalStorage/state.vscdb")
         progress?(ImportProgress(source: .cursor, phase: .scanning))
-        let cursorWorkspaces = directories(under: cursorRoot)
+
+        // Cursor 1.x keeps one record per conversation in the global store.
+        // Prefer it when available: the older workspace tables collapse all
+        // chats for a project into one stream and would duplicate them.
+        let globalConversations = parseCursorGlobal(
+            database: cursorGlobal,
+            workspaceStorage: cursorRoot)
+        if !globalConversations.isEmpty {
+            for (index, conversation) in globalConversations.enumerated() {
+                progress?(ImportProgress(
+                    source: .cursor, phase: .parsing, detail: conversation.title,
+                    completed: index, total: globalConversations.count))
+                conversations.append(conversation)
+            }
+            return conversations
+        }
+
+        // Legacy Cursor fallback: workspace-local prompts and bubbles.
+        let legacyCursorRoot = home.appendingPathComponent(
+            "Library/Application Support/Cursor/User/workspaceStorage", isDirectory: true)
+        let cursorWorkspaces = directories(under: legacyCursorRoot)
         for (index, workspace) in cursorWorkspaces.enumerated() {
             progress?(ImportProgress(
                 source: .cursor, phase: .parsing, detail: workspace.lastPathComponent,
@@ -405,7 +433,78 @@ enum ExternalHistoryImporter {
 
     // MARK: - Cursor
 
-    /// Cursor keeps per-workspace chat state in a SQLite `state.vscdb`:
+    private struct CursorComposerHeader {
+        let id: String
+        let workspaceID: String
+        let title: String?
+        let createdAt: Date
+        let updatedAt: Date
+    }
+
+    /// Current Cursor keeps conversation headers in the global database and
+    /// the ordered bubble ids in `cursorDiskKV[composerData:<id>]`. Each
+    /// bubble lives at `bubbleId:<composer>:<bubble>`. Exact-key reads use
+    /// Cursor's unique index, so the importer never scans the enormous KV
+    /// table and remains responsive even when it is several gigabytes.
+    static func parseCursorGlobal(database dbURL: URL, workspaceStorage: URL) -> [ImportedConversation] {
+        guard FileManager.default.fileExists(atPath: dbURL.path) else { return [] }
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 1_000)
+
+        let headers = queryCursorComposerHeaders(db)
+        guard !headers.isEmpty else { return [] }
+        var conversations: [ImportedConversation] = []
+        for header in headers {
+            guard let rawComposer = queryCursorDiskValue(db, key: "composerData:\(header.id)"),
+                  let data = rawComposer.data(using: .utf8),
+                  let composer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let bubbleHeaders = composer["fullConversationHeadersOnly"] as? [[String: Any]]
+            else { continue }
+
+            var messages: [SessionMessage] = []
+            for bubbleHeader in bubbleHeaders {
+                guard let bubbleID = bubbleHeader["bubbleId"] as? String,
+                      let rawBubble = queryCursorDiskValue(
+                        db, key: "bubbleId:\(header.id):\(bubbleID)"),
+                      let bubbleData = rawBubble.data(using: .utf8),
+                      let bubble = try? JSONSerialization.jsonObject(with: bubbleData) as? [String: Any]
+                else { continue }
+
+                let type = (bubble["type"] as? NSNumber)?.intValue
+                    ?? (bubbleHeader["type"] as? NSNumber)?.intValue
+                guard type == 1 || type == 2,
+                      let text = cursorBubbleText(bubble),
+                      !isInjectedContext(text)
+                else { continue }
+                let timestamp = parseISO8601(bubble["createdAt"] as? String)
+                    ?? header.updatedAt
+                messages.append(SessionMessage(
+                    role: type == 1 ? .user : .assistant,
+                    content: text,
+                    toolName: nil,
+                    timestamp: timestamp))
+                if messages.count >= maxMessagesPerConversation { break }
+            }
+
+            guard !messages.isEmpty else { continue }
+            let workspace = cursorWorkspacePath(
+                workspaceID: header.workspaceID,
+                workspaceStorage: workspaceStorage)
+            conversations.append(ImportedConversation(
+                externalID: header.id,
+                source: .cursor,
+                title: header.title ?? makeTitle(from: messages),
+                createdAt: header.createdAt,
+                updatedAt: header.updatedAt,
+                workspacePath: workspace,
+                messages: messages))
+        }
+        return conversations
+    }
+
+    /// Older Cursor versions keep per-workspace chat state in SQLite:
     /// user prompts in `ItemTable["aiService.prompts"]`, assistant bubbles
     /// in `cursorDiskKV` under `bubbleId:` keys (newer versions may store
     /// nothing locally — then only the prompts are recoverable). There are
@@ -459,6 +558,88 @@ enum ExternalHistoryImporter {
               let raw = sqlite3_column_text(statement, 0)
         else { return nil }
         return String(cString: raw)
+    }
+
+    private static func queryCursorComposerHeaders(_ db: OpaquePointer?) -> [CursorComposerHeader] {
+        var statement: OpaquePointer?
+        let sql = """
+        SELECT composerId, workspaceId, createdAt, lastUpdatedAt, value
+        FROM composerHeaders
+        WHERE COALESCE(isSubagent, 0) = 0
+        ORDER BY lastUpdatedAt DESC
+        LIMIT ?
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int(statement, 1, Int32(maxCursorConversations))
+
+        var headers: [CursorComposerHeader] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idText = sqlite3_column_text(statement, 0) else { continue }
+            let id = String(cString: idText)
+            let workspaceID = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
+            let createdMilliseconds = sqlite3_column_int64(statement, 2)
+            let updatedMilliseconds = sqlite3_column_int64(statement, 3)
+            let metadata = sqlite3_column_text(statement, 4)
+                .flatMap { String(cString: $0).data(using: .utf8) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let rawTitle = (metadata?["name"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            headers.append(CursorComposerHeader(
+                id: id,
+                workspaceID: workspaceID,
+                title: rawTitle?.isEmpty == false ? rawTitle : nil,
+                createdAt: cursorDate(milliseconds: createdMilliseconds),
+                updatedAt: cursorDate(milliseconds: updatedMilliseconds)))
+        }
+        return headers
+    }
+
+    private static func queryCursorDiskValue(_ db: OpaquePointer?, key: String) -> String? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db, "SELECT value FROM cursorDiskKV WHERE key = ?", -1, &statement, nil) == SQLITE_OK
+        else { return nil }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, key, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let raw = sqlite3_column_text(statement, 0)
+        else { return nil }
+        return String(cString: raw)
+    }
+
+    private static func cursorBubbleText(_ bubble: [String: Any]) -> String? {
+        for key in ["text", "content"] {
+            if let text = (bubble[key] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+
+    private static func cursorWorkspacePath(workspaceID: String, workspaceStorage: URL) -> String {
+        guard !workspaceID.isEmpty, workspaceID != "empty-window" else { return NSHomeDirectory() }
+        let manifest = workspaceStorage
+            .appendingPathComponent(workspaceID, isDirectory: true)
+            .appendingPathComponent("workspace.json")
+        guard let data = try? Data(contentsOf: manifest),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return NSHomeDirectory() }
+        for key in ["folder", "workspace"] {
+            guard let raw = json[key] as? String else { continue }
+            if let url = URL(string: raw), url.isFileURL {
+                return url.path
+            }
+            if raw.hasPrefix("/") { return raw }
+        }
+        return NSHomeDirectory()
+    }
+
+    private static func cursorDate(milliseconds: Int64) -> Date {
+        guard milliseconds > 0 else { return Date() }
+        return Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
     }
 
     private static func queryBubbleTexts(_ db: OpaquePointer?) -> [String] {

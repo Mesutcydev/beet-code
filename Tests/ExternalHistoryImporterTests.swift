@@ -117,6 +117,42 @@ final class ExternalHistoryImporterTests: XCTestCase {
         XCTAssertEqual(conversation?.title, "make a repo")
     }
 
+    func testCursorReadsCurrentGlobalComposerSchema() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cursor-global-import-\(UUID().uuidString)")
+        let workspaceStorage = temp.appendingPathComponent("workspaceStorage", isDirectory: true)
+        let workspace = workspaceStorage.appendingPathComponent("workspace-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try #"{"folder":"file:///tmp/current-project"}"#.write(
+            to: workspace.appendingPathComponent("workspace.json"),
+            atomically: true,
+            encoding: .utf8)
+
+        let dbURL = temp.appendingPathComponent("state.vscdb")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TABLE cursorDiskKV (key TEXT UNIQUE, value BLOB)", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, workspaceId TEXT, createdAt INTEGER, lastUpdatedAt INTEGER, isArchived INTEGER, isSubagent INTEGER, recency INTEGER, checkpointAt INTEGER, value TEXT)", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, #"INSERT INTO composerHeaders VALUES ('composer-1','workspace-1',1787000000000,1787000005000,0,0,0,0,'{"name":"Polish onboarding"}')"#, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, #"INSERT INTO cursorDiskKV VALUES ('composerData:composer-1','{"fullConversationHeadersOnly":[{"bubbleId":"u1","type":1},{"bubbleId":"a1","type":2}]}')"#, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, #"INSERT INTO cursorDiskKV VALUES ('bubbleId:composer-1:u1','{"type":1,"text":"make onboarding native","createdAt":"2026-08-20T10:00:00.000Z"}')"#, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, #"INSERT INTO cursorDiskKV VALUES ('bubbleId:composer-1:a1','{"type":2,"text":"Onboarding is polished.","createdAt":"2026-08-20T10:00:05.000Z"}')"#, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db); db = nil
+
+        let conversations = ExternalHistoryImporter.parseCursorGlobal(
+            database: dbURL,
+            workspaceStorage: workspaceStorage)
+
+        XCTAssertEqual(conversations.count, 1)
+        XCTAssertEqual(conversations.first?.externalID, "composer-1")
+        XCTAssertEqual(conversations.first?.workspacePath, "/tmp/current-project")
+        XCTAssertEqual(conversations.first?.title, "Polish onboarding")
+        XCTAssertEqual(conversations.first?.messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(conversations.first?.messages.last?.content, "Onboarding is polished.")
+    }
+
     // MARK: Deterministic identity
 
     func testDeterministicUUIDIsStableAndDistinct() {

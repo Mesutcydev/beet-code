@@ -119,8 +119,8 @@ struct AttemptCompletionTool: AgentTool {
     }
 }
 
-/// Spawns a bounded read-only child loop. The parent loop intercepts this
-/// before execution — `execute` is never reached.
+/// Spawns a bounded specialist loop. Implementation children use an isolated
+/// linked Git worktree by default; the parent loop merges their final tree.
 struct TaskTool: AgentTool {
     let name = "task"
     let summary = "Delegate a focused research, implementation, verification, or review subtask"
@@ -130,7 +130,8 @@ struct TaskTool: AgentTool {
         {"type":"object","properties":{
           "prompt":{"type":"string","description":"The subtask for the nested agent — be specific"},
           "role":{"type":"string","enum":["research","implement","verify","review"],"description":"Delegated capability profile; defaults to implement for compatibility"},
-          "agent":{"type":"string","description":"Optional OpenCode-compatible role alias (for example reviewer or tester)"}
+          "agent":{"type":"string","description":"Optional OpenCode-compatible role alias (for example reviewer or tester)"},
+          "isolation":{"type":"string","enum":["worktree","shared"],"description":"Implementation workspace. Defaults to worktree for implement and shared for read-only roles."}
         },"required":["prompt"]}
         """
 

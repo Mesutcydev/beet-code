@@ -125,6 +125,9 @@ final class SettingsStoreTests: XCTestCase {
 final class AppPreferencesTests: XCTestCase {
 
     func testPreferencesRoundTripAndValidation() throws {
+        let store = AppPreferencesStore.shared
+        let previous = store.current
+        defer { store.save(previous) }
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("lf-prefs-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -133,13 +136,14 @@ final class AppPreferencesTests: XCTestCase {
         preferences.lastWorkspacePath = temp.path
         preferences.lastModelID = "qwen-3-4b"
         preferences.autoResumeDownloads = true
+        preferences.hasCompletedWelcome = true
 
-        let store = AppPreferencesStore.shared
         store.save(preferences)
         let reloaded = store.current
         XCTAssertEqual(reloaded.lastWorkspacePath, temp.path)
         XCTAssertEqual(reloaded.lastModelID, "qwen-3-4b")
         XCTAssertTrue(reloaded.autoResumeDownloads)
+        XCTAssertTrue(reloaded.hasCompletedWelcome)
 
         // Validation: an existing directory validates; a missing one fails
         // without deleting stored state.

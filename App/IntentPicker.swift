@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The Intent picker: the lattice's replacement. Two short chip rows —
-/// Roles (what the agent does) and Focus (what context it gets) — plus
+/// Turn context in plain language. Two short chip rows — how Beet Code helps
+/// and which workspace context it receives — plus
 /// preset curations. Everything selected here is injected as a plain,
 /// auditable preface to the next message; the chips above the composer
 /// mirror the selection.
@@ -24,7 +24,7 @@ struct IntentPicker: View {
 
     private var header: some View {
         HStack {
-            Text("Intent for this turn")
+            Text("Context for this turn")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
             Spacer()
@@ -60,12 +60,11 @@ struct IntentPicker: View {
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 9)
-                        .padding(.vertical, 7)
-                        .frame(maxWidth: .infinity)
-                        .background(Theme.surfaceInset.opacity(0.6), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .background(Theme.surfaceInset.opacity(0.48), in: Capsule())
+                        .overlay(Capsule()
                             .strokeBorder(Theme.hairline, lineWidth: 1))
-                        .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .lfHoverLift()
@@ -79,7 +78,7 @@ struct IntentPicker: View {
 
     private var rolesSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("Roles — what the agent does")
+            sectionLabel("How Beet Code should help")
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(IntentRole.allCases) { role in
                     let selected = store.selection.roles.contains(role)
@@ -103,7 +102,7 @@ struct IntentPicker: View {
 
     private var focusSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("Focus — extra context")
+            sectionLabel("Include workspace context")
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(FocusSource.allCases) { source in
                     let selected = store.selection.focus.contains(source)
@@ -136,7 +135,7 @@ struct IntentPicker: View {
     // MARK: Footer
 
     private var footer: some View {
-        Text("Sent as a structured preface with your next message. Empty sources are marked “(nothing found)” — never fabricated.")
+        Text("Applied to your next message only. Unavailable sources stay disabled.")
             .font(.caption2)
             .foregroundStyle(Theme.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -160,12 +159,11 @@ struct IntentPicker: View {
         }
         .foregroundStyle(selected ? tint : Theme.textSecondary)
         .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity)
-        .background(selected ? tint.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-            .strokeBorder(selected ? tint.opacity(0.5) : Theme.hairline, lineWidth: 1))
-        .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 32)
+        .background(selected ? Theme.washStrong(tint) : Theme.surfaceInset.opacity(0.34), in: Capsule())
+        .overlay(Capsule()
+            .strokeBorder(selected ? Theme.washBorder(tint) : Theme.hairline.opacity(0.8), lineWidth: 1))
+        .contentShape(Capsule())
     }
 
     private func sectionLabel(_ text: String) -> some View {

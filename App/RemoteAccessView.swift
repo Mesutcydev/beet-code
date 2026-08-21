@@ -73,8 +73,7 @@ struct RemoteAccessView: View {
             } label: {
                 Label("Done", systemImage: "xmark")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(LFCapsuleButtonStyle())
             .keyboardShortcut(.cancelAction)
             .help("Close remote sessions")
             .accessibilityLabel("Close remote sessions")
@@ -95,8 +94,7 @@ struct RemoteAccessView: View {
             } label: {
                 Label("Enable remote access", systemImage: "power")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
+            .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
         }
         .padding(18)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
@@ -165,17 +163,17 @@ struct RemoteAccessView: View {
                 } label: {
                     Label(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "link")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LFCapsuleButtonStyle())
                 .disabled(appState.remotePairingURL == nil)
                 Button("New code", systemImage: "arrow.clockwise") {
                     appState.rotateRemotePairingCode()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LFCapsuleButtonStyle())
                 Spacer()
                 Button("Revoke all browsers", role: .destructive) {
                     appState.revokeRemoteClients()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LFCapsuleButtonStyle(tone: .destructive))
             }
             Text("\(appState.remotePairedClientCount) paired \(browserLabel)")
                 .font(.caption2)

@@ -277,12 +277,12 @@ private struct ManagerHeaderView: View {
                         .help("Importing model…")
                 } else {
                     Button("Import…", action: onImport)
+                        .buttonStyle(LFCapsuleButtonStyle())
                         .help("Import a local model — an MLX folder (config.json + .safetensors) or a .gguf file")
                 }
                 Button("Done", action: onDone)
                     .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
+                    .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
             }
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
@@ -569,13 +569,12 @@ private struct ModelActions: View {
                 Button("Unload") {
                     Task { await appState.deactivate() }
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LFCapsuleButtonStyle())
             } else {
                 Button("Load") {
                     Task { await appState.activate(model: model) }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
                 .disabled(budget.verdict.fitsLoad == false)
             }
         } else {
@@ -584,19 +583,17 @@ private struct ModelActions: View {
                 Button("Pause") {
                     appState.pauseDownload(of: model)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LFCapsuleButtonStyle())
             case .paused:
                 Button("Resume") {
                     appState.startDownload(of: model)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
             case .failed:
                 Button("Retry") {
                     appState.startDownload(of: model)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
             case .completed:
                 ProgressView().controlSize(.small)
             case .idle:
@@ -605,8 +602,7 @@ private struct ModelActions: View {
                 Button("Download") {
                     appState.startDownload(of: model)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
                 .help("Resumable download with integrity checks")
             }
         }
@@ -750,7 +746,7 @@ private struct RemoteSection: View {
                 Button("Use local") {
                     appState.deactivateRemote()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LFCapsuleButtonStyle())
             } else {
                 // Same rule as the model cards: the forward action is the
                 // single prominent button, tinted with the accent.
@@ -762,8 +758,7 @@ private struct RemoteSection: View {
                         _ = await appState.activateRemote(endpoint: endpoint)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
             }
         }
         .font(.caption.weight(.medium))

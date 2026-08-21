@@ -107,47 +107,55 @@ struct ChatView: View {
             Button("Trust workspace") {
                 controller.trustCurrentWorkspace()
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Theme.wash(Theme.warning))
     }
 
-    /// Workspace tools used to live in the sidebar footer. Keeping them next
-    /// to the conversation title makes them reachable in both wide and
-    /// portrait layouts, where the sidebar may be collapsed.
+    /// The common review action stays visible. Everything else remains one
+    /// level away in a familiar overflow menu, keeping the document bar calm.
     private var topBarActions: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 3) {
-                topBarButton("safari", "Browser", .toggleBrowserPanel)
-                topBarButton("iphone", "Simulator", .toggleSimulatorPanel)
-                topBarButton("stethoscope", "Diagnostics", .toggleDiagnosticsPanel)
-                topBarButton("circle.dashed", "Git status", .gitStatus)
-                topBarButton("square.split.2x1", "Git diff", .gitDiff)
-                topBarButton("arrow.uturn.backward", "Undo last checkpoint", .undoCheckpoint)
+        HStack(spacing: 7) {
+            Button {
+                NotificationCenter.default.post(name: .gitDiff, object: nil)
+            } label: {
+                Label("Review", systemImage: "doc.text.magnifyingglass")
             }
+            .buttonStyle(LFCapsuleButtonStyle())
+            .lfHoverLift()
+            .help("Review changed files")
+            .disabled(controller.workspaceURL == nil)
+
             Menu {
                 topBarMenuButton("Browser", "safari", .toggleBrowserPanel)
                 topBarMenuButton("Simulator", "iphone", .toggleSimulatorPanel)
                 topBarMenuButton("Diagnostics", "stethoscope", .toggleDiagnosticsPanel)
                 Divider()
-                topBarMenuButton("Git status", "circle.dashed", .gitStatus)
-                topBarMenuButton("Git diff", "square.split.2x1", .gitDiff)
-                topBarMenuButton("Undo last checkpoint", "arrow.uturn.backward", .undoCheckpoint)
+                Group {
+                    topBarMenuButton("Git status", "circle.dashed", .gitStatus)
+                    topBarMenuButton("Review changes", "doc.text.magnifyingglass", .gitDiff)
+                    topBarMenuButton("Undo last checkpoint", "arrow.uturn.backward", .undoCheckpoint)
+                }
+                .disabled(controller.workspaceURL == nil)
                 Divider()
                 topBarMenuButton("Export as Markdown…", "doc.text", .exportChatMarkdown)
                 topBarMenuButton("Export as JSON…", "curlybraces.square", .exportChatJSON)
                 topBarMenuButton("Export task bundle…", "shippingbox", .exportTaskBundle)
             } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 13, weight: .semibold))
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(Theme.textSecondary)
-                    .frame(width: 26, height: 26)
+                    .frame(width: 28, height: 28)
+                    .background(Theme.surfaceInset, in: Circle())
+                    .overlay(Circle().strokeBorder(Theme.hairline, lineWidth: 1))
             }
             .menuStyle(.borderlessButton)
-            .help("Workspace tools")
+            .fixedSize()
+            .lfHoverLift()
+            .help("More workspace actions")
+            .accessibilityLabel("More workspace actions")
         }
     }
 
@@ -157,22 +165,6 @@ struct ChatView: View {
         } label: {
             Label(title, systemImage: icon)
         }
-    }
-
-    private func topBarButton(_ icon: String, _ label: String, _ notification: Notification.Name) -> some View {
-        Button {
-            NotificationCenter.default.post(name: notification, object: nil)
-        } label: {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 25, height: 25)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(LFPlainPressButtonStyle())
-        .lfHoverLift()
-        .help(label)
-        .accessibilityLabel(label)
     }
 
     private var phaseLabel: String {
@@ -225,7 +217,10 @@ struct ChatView: View {
                         ReasoningIndicator()
                     }
                     if let finish = controller.finishReason {
-                        FinishBanner(reason: finish)
+                        FinishBanner(
+                            reason: finish,
+                            summary: CompletionSnapshot.make(
+                                transcript: controller.transcript))
                     }
                     Color.clear.frame(height: 8).id("bottom")
                 }
@@ -328,6 +323,30 @@ struct ChatView: View {
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 560)
+
+            if controller.workspaceURL == nil {
+                HStack(spacing: 10) {
+                    Button {
+                        NotificationCenter.default.post(name: .openWorkspace, object: nil)
+                    } label: {
+                        Label("Open Project Folder", systemImage: "folder.badge.plus")
+                    }
+                    .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+                    Button {
+                        NotificationCenter.default.post(name: .openSystemReadiness, object: nil)
+                    } label: {
+                        Label("Check Readiness", systemImage: "checklist")
+                    }
+                    .buttonStyle(LFCapsuleButtonStyle())
+                }
+            } else if !hasRunnableModel {
+                Button {
+                    NotificationCenter.default.post(name: .openModelManager, object: nil)
+                } label: {
+                    Label("Choose a Coding Model", systemImage: "cpu")
+                }
+                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+            }
 
             // ChatGPT-style quick prompts: one tap drops a ready-made task
             // into the composer. Only offered when a workspace and a model
@@ -500,7 +519,7 @@ struct ChatView: View {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     if let url {
                         DispatchQueue.main.async {
-                            composerStore.attachments.append(ComposerAttachment(url: url))
+                            composerStore.addAttachments([url])
                         }
                     }
                 }
@@ -516,7 +535,7 @@ struct ChatView: View {
                            let png = bitmap.representation(using: .png, properties: [:]) {
                             try? png.write(to: url)
                             DispatchQueue.main.async {
-                                composerStore.attachments.append(ComposerAttachment(url: url, isImage: true))
+                                composerStore.addAttachments([url])
                             }
                         }
                     }
@@ -528,21 +547,21 @@ struct ChatView: View {
 }
 // MARK: - Rows
 
-/// One rendered transcript row. Tool activity stays grouped, while reasoning
-/// remains its own row so it is discoverable without opening the steps card.
+/// One rendered transcript row. The agent's private work stream (reasoning,
+/// tool calls, and tool results) is one calm activity surface; user and final
+/// assistant messages remain the primary reading hierarchy.
 private enum TranscriptRowModel: Identifiable {
     case user(AgentSessionController.TranscriptItem)
     case assistant(AgentSessionController.TranscriptItem)
-    case toolSteps([AgentSessionController.TranscriptItem])
-    case reasoning(AgentSessionController.TranscriptItem)
+    case activity([AgentSessionController.TranscriptItem])
     case meta(AgentSessionController.TranscriptItem)
 
     var id: String {
         switch self {
-        case .user(let item), .assistant(let item), .reasoning(let item), .meta(let item):
+        case .user(let item), .assistant(let item), .meta(let item):
             return item.id.uuidString
-        case .toolSteps(let items):
-            return "steps-" + (items.first?.id.uuidString ?? "empty")
+        case .activity(let items):
+            return "activity-" + (items.first?.id.uuidString ?? "empty")
         }
     }
 }
@@ -554,7 +573,7 @@ private extension ChatView {
         var buffer: [AgentSessionController.TranscriptItem] = []
         func flush() {
             if !buffer.isEmpty {
-                rows.append(.toolSteps(buffer))
+                rows.append(.activity(buffer))
                 buffer = []
             }
         }
@@ -564,10 +583,8 @@ private extension ChatView {
                 flush(); rows.append(.user(item))
             case .assistant:
                 flush(); rows.append(.assistant(item))
-            case .toolCall, .toolResult:
+            case .toolCall, .toolResult, .reasoning:
                 buffer.append(item)
-            case .reasoning:
-                flush(); rows.append(.reasoning(item))
             case .checkpoint, .notice:
                 flush(); rows.append(.meta(item))
             }
@@ -583,10 +600,8 @@ private extension ChatView {
             UserBubble(item: item)
         case .assistant(let item):
             AssistantMessage(item: item)
-        case .toolSteps(let items):
-            ToolStepsCard(items: items)
-        case .reasoning(let item):
-            ReasoningCard(item: item)
+        case .activity(let items):
+            AgentActivityCard(items: items)
         case .meta(let item):
             MetaRow(item: item)
         }
@@ -720,10 +735,10 @@ private struct MetaRow: View {
     }
 }
 
-/// Grouped tool activity: one collapsible card per consecutive run of
-/// calls/results/reasoning. Header shows the step count + outcome; the
-/// expanded body lists each step with status and inline output.
-private struct ToolStepsCard: View {
+/// One compact work log for a consecutive agent run. Cursor/Codex-style
+/// activity grouping keeps reasoning and tool plumbing available for trust
+/// and debugging without letting it compete with the final answer.
+private struct AgentActivityCard: View {
     let items: [AgentSessionController.TranscriptItem]
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -734,6 +749,9 @@ private struct ToolStepsCard: View {
     private var hasFailure: Bool {
         items.contains { if case .toolResult(_, _, let failed, _) = $0.kind { return failed }; return false }
     }
+    private var reasoningCount: Int {
+        items.filter { if case .reasoning = $0.kind { return true }; return false }.count
+    }
     private var toolNames: [String] {
         var names: [String] = []
         for item in items {
@@ -742,6 +760,39 @@ private struct ToolStepsCard: View {
             }
         }
         return names
+    }
+    private var title: String {
+        if callCount == 0 { return "Thought through the task" }
+        return "\(callCount) action\(callCount == 1 ? "" : "s")"
+    }
+    private var summary: String {
+        if !toolNames.isEmpty {
+            return toolNames.map(Self.friendlyToolName).joined(separator: " · ")
+        }
+        return reasoningCount == 1 ? "Reasoning summary" : "Reasoning summaries"
+    }
+
+    private static func friendlyToolName(_ name: String) -> String {
+        switch name {
+        case "read_file", "list_directory", "search", "find_files", "glob":
+            "Explored code"
+        case "write_file", "move_file", "apply_patch":
+            "Edited files"
+        case "run_command":
+            "Ran command"
+        case "build_diagnostics":
+            "Checked build"
+        case "sim_build_run":
+            "Verified in Simulator"
+        case "macos_build_run":
+            "Built and launched"
+        case "apple_ship":
+            "Prepared release"
+        case "task":
+            "Specialist agent"
+        default:
+            name.replacingOccurrences(of: "_", with: " ").capitalized
+        }
     }
 
     var body: some View {
@@ -754,45 +805,42 @@ private struct ToolStepsCard: View {
                 }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "wrench.and.screwdriver.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.accent)
-                    Text("\(callCount) step\(callCount == 1 ? "" : "s")")
+                    Image(systemName: hasFailure ? "exclamationmark.circle.fill" : "sparkles")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(hasFailure ? Theme.danger : Theme.accent)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            Theme.washStrong(hasFailure ? Theme.danger : Theme.accent),
+                            in: Circle())
+                    Text(title)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Theme.textPrimary)
-                    if !toolNames.isEmpty {
-                        Text(toolNames.joined(separator: " · "))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(Theme.textTertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     Spacer()
-                    if hasFailure {
-                        Label("failed", systemImage: "xmark.circle.fill")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(Theme.danger)
-                    } else {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(Theme.success)
-                    }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    Text(expanded ? "Hide" : "Details")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.textTertiary)
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.textTertiary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 9)
+                .padding(.vertical, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(expanded ? "Hide tool steps" : "Show tool steps")
+            .help(expanded ? "Hide agent activity" : "Show reasoning and tool activity")
 
             if expanded {
                 Divider().padding(.horizontal, 12)
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(items) { item in
-                        StepRow(item: item)
+                        ActivityRow(item: item)
                     }
                 }
                 .padding(12)
@@ -804,9 +852,9 @@ private struct ToolStepsCard: View {
     }
 }
 
-/// One line inside the steps card: call, result (with inline output), or
-/// reasoning.
-private struct StepRow: View {
+/// One event inside the activity disclosure. Prose uses the system face;
+/// only commands and raw output use SF Mono.
+private struct ActivityRow: View {
     let item: AgentSessionController.TranscriptItem
     @State private var outputExpanded = false
 
@@ -834,7 +882,10 @@ private struct StepRow: View {
                     HStack(spacing: 4) {
                         Image(systemName: failed ? "xmark.circle.fill" : "checkmark.circle.fill")
                             .foregroundStyle(failed ? Theme.danger : Theme.success)
-                        Text(outputExpanded ? "Hide output" : "Show output")
+                        Text(resultButtonTitle(
+                            expanded: outputExpanded,
+                            failed: failed,
+                            toolName: toolName))
                             .font(.caption)
                             .foregroundStyle(Theme.textSecondary)
                     }
@@ -844,6 +895,8 @@ private struct StepRow: View {
                 if outputExpanded {
                     if toolName == "build_diagnostics" {
                         DiagnosticsCard(rawOutput: output)
+                    } else if toolName == "apple_ship" {
+                        ShipResultCard(output: output, failed: failed)
                     } else {
                         ScrollView {
                             Text(output)
@@ -857,76 +910,111 @@ private struct StepRow: View {
                     }
                 }
             }
+        case .reasoning(let text):
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 14, height: 18)
+                Text(text)
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineSpacing(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .padding(.vertical, 2)
         default:
             EmptyView()
         }
     }
+
+    private func resultButtonTitle(
+        expanded: Bool,
+        failed: Bool,
+        toolName: String?
+    ) -> LocalizedStringKey {
+        if expanded { return "Hide output" }
+        if failed { return "Show failure" }
+        switch toolName {
+        case "apple_ship": return "Release prepared"
+        case "task" where outputContainsIsolatedMerge: return "Isolated result merged"
+        default: return "Show output"
+        }
+    }
+
+    private var outputContainsIsolatedMerge: Bool {
+        if case .toolResult(_, let output, _, _) = item.kind {
+            return output.contains("Isolated worktree:")
+        }
+        return false
+    }
 }
 
-/// Reasoning is a transcript event in its own right, not another tool step.
-/// The card is expanded by default so the feature is discoverable; the
-/// disclosure keeps long traces from taking over the conversation.
-private struct ReasoningCard: View {
-    let item: AgentSessionController.TranscriptItem
-    @State private var expanded = true
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+private struct ShipResultCard: View {
+    let output: String
+    let failed: Bool
 
-    private var text: String {
-        guard case .reasoning(let value) = item.kind else { return "" }
-        return value
-    }
+    private var artifact: String? { value(after: "Artifact:") }
+    private var report: String? { value(after: "Report:") }
+    private var installedDevice: String? { value(after: "Installed:") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
-            Button {
-                if reduceMotion {
-                    expanded.toggle()
-                } else {
-                    withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.18)) {
-                        expanded.toggle()
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: failed ? "shippingbox.and.arrow.backward.fill" : "shippingbox.fill")
+                    .foregroundStyle(failed ? Theme.danger : Theme.success)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(failed ? "Release needs attention" : "Release artifact ready")
+                        .font(.callout.weight(.semibold))
+                    if let artifact {
+                        Text(URL(fileURLWithPath: artifact).lastPathComponent)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    if let installedDevice {
+                        Label("Installed on \(installedDevice)", systemImage: "iphone.gen3.circle.fill")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.success)
                     }
                 }
-            } label: {
-                HStack(spacing: Spacing.sm) {
-                    Image(systemName: expanded ? "brain.head.profile" : "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
-                        .frame(width: 24, height: 24)
-                        .background(Theme.washStrong(Theme.accent), in: Circle())
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Reasoning")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(Theme.textPrimary)
-                        Text(expanded ? "Visible model work" : "Tap to reveal the model's work")
-                            .font(.caption2)
-                            .foregroundStyle(Theme.textTertiary)
+                Spacer()
+            }
+            HStack(spacing: Spacing.sm) {
+                if let artifact {
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([
+                            URL(fileURLWithPath: artifact),
+                        ])
+                    } label: {
+                        Label("Reveal artifact", systemImage: "folder")
                     }
-                    Spacer()
-                    Text("\(text.count.formatted()) chars")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(Theme.textTertiary)
+                    .buttonStyle(LFCapsuleButtonStyle())
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if expanded {
-                ScrollView {
-                    Text(text)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                if let report {
+                    Button {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: report))
+                    } label: {
+                        Label("Open Ship Report", systemImage: "doc.text")
+                    }
+                    .buttonStyle(LFCapsuleButtonStyle())
                 }
-                .frame(maxHeight: 190)
-                .padding(Spacing.sm)
-                .background(Theme.wash(Theme.accent), in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
             }
+            Text(output)
+                .font(.caption.monospaced())
+                .foregroundStyle(Theme.textSecondary)
+                .textSelection(.enabled)
         }
-        .padding(Spacing.md)
-        .lfTranscriptCard(Theme.accent)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Reasoning")
+        .padding(Spacing.sm)
+        .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+    }
+
+    private func value(after prefix: String) -> String? {
+        output.split(separator: "\n")
+            .map(String.init)
+            .first(where: { $0.hasPrefix(prefix) })
+            .map { String($0.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
@@ -1092,7 +1180,9 @@ private struct ApprovalCard: View {
     /// edits widen different policy lanes, so the button says exactly what
     /// it will enable. Reads never ask, so they never appear here.
     private var isCommand: Bool {
-        request.invocation.name == "run_command" || request.invocation.name == "build_diagnostics"
+        request.invocation.name == "run_command"
+            || request.invocation.name == "build_diagnostics"
+            || request.invocation.name == "apple_ship"
     }
 
     var body: some View {
@@ -1182,8 +1272,7 @@ private struct ApprovalCard: View {
             Label("Approve", systemImage: "checkmark")
         }
         .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
-        .buttonStyle(.borderedProminent)
-        .tint(Theme.accent)
+        .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
     }
 
     private var alwaysAllowButton: some View {
@@ -1193,7 +1282,7 @@ private struct ApprovalCard: View {
             Label(isCommand ? "Always allow safe commands" : "Always allow edits",
                   systemImage: "checkmark.seal")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(LFCapsuleButtonStyle())
         .help(isCommand
             ? "Approve this and auto-approve policy-safe commands for this run and future runs"
             : "Approve this and auto-approve file edits for this run and future runs")
@@ -1202,12 +1291,11 @@ private struct ApprovalCard: View {
     private var declineButton: some View {
         // Destructive stays separated from the approval cluster.
         Button("Decline", role: .destructive) { onDecision(false, false) }
-            .buttonStyle(.borderless)
-            .foregroundStyle(Theme.danger)
+            .buttonStyle(LFCapsuleButtonStyle(tone: .destructive))
     }
 }
 
-private struct DiffPreview: View {
+struct DiffPreview: View {
     let diff: DiffEngine.Result
     @State private var split = true
 
@@ -1319,8 +1407,7 @@ private struct QuestionCard: View {
                     onAnswer(answer)
                     answer = ""
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
                 .disabled(answer.isEmpty)
             }
         }
@@ -1330,8 +1417,83 @@ private struct QuestionCard: View {
     }
 }
 
+private struct CompletionSnapshot: Equatable {
+    let actionCount: Int
+    let changedFileCount: Int
+    let checksPassed: Int
+    let checksFailed: Int
+    let artifact: String?
+    let report: String?
+
+    static func make(
+        transcript: [AgentSessionController.TranscriptItem]
+    ) -> CompletionSnapshot {
+        let start = transcript.lastIndex { item in
+            if case .user = item.kind { return true }
+            return false
+        }.map { transcript.index(after: $0) } ?? transcript.startIndex
+        let items = transcript[start...]
+        var actions = 0
+        var files = Set<String>()
+        var passed = 0
+        var failed = 0
+        var artifact: String?
+        var report: String?
+
+        for item in items {
+            switch item.kind {
+            case .toolCall(let invocation):
+                actions += 1
+                let arguments = TolerantJSON.value(from: invocation.argumentsJSON)?.objectValue
+                switch invocation.name {
+                case "write_file", "apply_patch":
+                    if let path = arguments?["path"]?.stringValue { files.insert(path) }
+                case "move_file":
+                    if let path = arguments?["from"]?.stringValue { files.insert(path) }
+                    if let path = arguments?["to"]?.stringValue { files.insert(path) }
+                default:
+                    break
+                }
+            case .toolResult(_, let output, let didFail, let toolName):
+                guard let toolName else { continue }
+                if Self.isCheckTool(toolName) {
+                    if didFail { failed += 1 } else { passed += 1 }
+                }
+                if toolName == "apple_ship" {
+                    artifact = Self.value(after: "Artifact:", in: output) ?? artifact
+                    report = Self.value(after: "Report:", in: output) ?? report
+                }
+            default:
+                break
+            }
+        }
+
+        return CompletionSnapshot(
+            actionCount: actions,
+            changedFileCount: files.count,
+            checksPassed: passed,
+            checksFailed: failed,
+            artifact: artifact,
+            report: report)
+    }
+
+    private static func isCheckTool(_ name: String) -> Bool {
+        ["build_diagnostics", "sim_build_run", "macos_build_run", "apple_ship"]
+            .contains(name)
+    }
+
+    private static func value(after prefix: String, in output: String) -> String? {
+        output.split(separator: "\n")
+            .map(String.init)
+            .first(where: { $0.hasPrefix(prefix) })
+            .map { String($0.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+    }
+}
+
 private struct FinishBanner: View {
     let reason: AgentFinish
+    let summary: CompletionSnapshot
 
     var body: some View {
         HStack {
@@ -1347,7 +1509,7 @@ private struct FinishBanner: View {
     private var content: some View {
         switch reason {
         case .completed:
-            pill("Task complete", systemImage: "checkmark.seal.fill", tint: Theme.success)
+            completionCard
         case .maxTurnsReached:
             pill("Reached the turn limit", systemImage: "exclamationmark.triangle.fill", tint: Theme.warning)
         case .declined:
@@ -1375,6 +1537,117 @@ private struct FinishBanner: View {
             .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                 .strokeBorder(Theme.washBorder(Theme.danger), lineWidth: 1))
         }
+    }
+
+    private var completionCard: some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            Image(systemName: summary.artifact == nil ? "checkmark.seal.fill" : "shippingbox.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Theme.success)
+                .frame(width: 38, height: 38)
+                .background(Theme.washStrong(Theme.success), in: Circle())
+
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                Text(completionTitle)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Theme.textPrimary)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Spacing.md) { completionMetrics }
+                    VStack(alignment: .leading, spacing: Spacing.xs) { completionMetrics }
+                }
+
+                if summary.artifact != nil || summary.report != nil {
+                    HStack(spacing: Spacing.sm) {
+                        if let artifact = summary.artifact {
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([
+                                    URL(fileURLWithPath: artifact),
+                                ])
+                            } label: {
+                                Label("Reveal artifact", systemImage: "folder")
+                            }
+                            .buttonStyle(LFCapsuleButtonStyle())
+                        }
+                        if let report = summary.report {
+                            Button {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: report))
+                            } label: {
+                                Label("Open Ship Report", systemImage: "doc.text")
+                            }
+                            .buttonStyle(LFCapsuleButtonStyle())
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(Spacing.md)
+        .frame(maxWidth: 680, alignment: .leading)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(Theme.success)
+                .frame(width: 3)
+                .padding(.vertical, 10)
+                .padding(.leading, 6)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var completionMetrics: some View {
+        if summary.actionCount > 0 {
+            metric(
+                "\(summary.actionCount) action\(summary.actionCount == 1 ? "" : "s")",
+                icon: "bolt")
+        }
+        if summary.changedFileCount > 0 {
+            metric(
+                "\(summary.changedFileCount) file\(summary.changedFileCount == 1 ? "" : "s") changed",
+                icon: "doc.badge.ellipsis")
+        }
+        if summary.checksPassed > 0 {
+            metric(
+                "\(summary.checksPassed) check\(summary.checksPassed == 1 ? "" : "s") passed",
+                icon: "checkmark.circle",
+                tint: Theme.success)
+        }
+        if summary.checksFailed > 0 {
+            metric(
+                "\(summary.checksFailed) check\(summary.checksFailed == 1 ? "" : "s") failed",
+                icon: "xmark.circle",
+                tint: Theme.danger)
+        }
+        if summary.artifact != nil {
+            metric("Release packaged", icon: "shippingbox", tint: Theme.success)
+        }
+        if summary.actionCount == 0,
+           summary.changedFileCount == 0,
+           summary.checksPassed == 0,
+           summary.checksFailed == 0,
+           summary.artifact == nil {
+            metric("Completed", icon: "checkmark")
+        }
+    }
+
+    private var completionTitle: LocalizedStringKey {
+        if summary.artifact != nil { return "Release ready" }
+        if summary.changedFileCount > 0 { return "Changes ready for review" }
+        return "Task complete"
+    }
+
+    private func metric(
+        _ title: LocalizedStringKey,
+        icon: String,
+        tint: Color = Theme.textSecondary
+    ) -> some View {
+        Label(title, systemImage: icon)
+            .font(.caption)
+            .foregroundStyle(tint)
     }
 
     private func pill(_ title: String, systemImage: String, tint: Color) -> some View {
@@ -1442,38 +1715,54 @@ private struct ReasoningIndicator: View {
     }
 }
 
-/// Live reasoning card shown before or alongside the answer. It is compact by
-/// design: useful progress is visible without continuously reflowing a full
-/// height trace while tokens arrive.
+/// Live activity is a slim native status capsule, not a second answer card.
+/// The complete trace remains available in the finished activity disclosure.
 private struct LiveReasoningCard: View {
     let text: String
     let phase: AgentPhase
 
+    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        HStack(alignment: .top, spacing: Spacing.sm) {
-            AssistantAvatar(size: 24)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Image(systemName: "brain.head.profile")
-                        .foregroundStyle(Theme.accent)
-                    Text(phaseLabel)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Theme.textPrimary)
-                    Spacer()
-                    Text("live")
-                        .font(.caption2.monospaced().weight(.semibold))
-                        .foregroundStyle(Theme.accent)
-                }
-                Text(text)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle()
+                .fill(Theme.accent)
+                .frame(width: 6, height: 6)
+                .opacity(pulse ? 0.45 : 1)
+            Text(phaseLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text(progressExcerpt)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 30)
+        .background(Theme.surface.opacity(0.82), in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.hairline.opacity(0.75), lineWidth: 1))
+        .frame(maxWidth: 620, alignment: .leading)
+        .task {
+            guard !reduceMotion else { return }
+            while !Task.isCancelled {
+                withAnimation(.easeInOut(duration: 0.7)) { pulse.toggle() }
+                try? await Task.sleep(for: .milliseconds(700))
             }
         }
-        .padding(Spacing.md)
-        .lfTranscriptCard(Theme.accent)
-        .accessibilityLabel("Live reasoning: \(text)")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(phaseLabel): \(progressExcerpt)")
+    }
+
+    private var progressExcerpt: String {
+        let normalized = text
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .last ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > 260 else { return normalized }
+        return "…" + String(normalized.suffix(259))
     }
 
     private var phaseLabel: String {
@@ -1510,8 +1799,7 @@ private struct PlanCard: View {
                 // never accidentally approve and execute.
                 Button("Approve & Execute ⌘↩") { onDecision(nil) }
                     .keyboardShortcut(KeyEquivalent.return, modifiers: .command)
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
+                    .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
                 TextField("Revise: feedback…", text: $feedback)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit {
@@ -1522,7 +1810,7 @@ private struct PlanCard: View {
                     guard !feedback.isEmpty else { return }
                     onDecision(feedback)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LFCapsuleButtonStyle())
                 .disabled(feedback.isEmpty)
             }
         }

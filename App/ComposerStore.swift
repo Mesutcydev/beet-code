@@ -240,6 +240,28 @@ final class ComposerStore {
         selection = IntentSelection()
     }
 
+    /// One attachment entry point for the picker, pasteboard, and Finder
+    /// drops. It ignores folders and duplicates and keeps each turn bounded
+    /// to eight files so every input path behaves the same way.
+    @discardableResult
+    func addAttachments(_ urls: [URL], limit: Int = 8) -> Int {
+        guard attachments.count < limit else { return 0 }
+
+        var knownPaths = Set(attachments.map { $0.url.standardizedFileURL.path })
+        var accepted = 0
+        for url in urls where attachments.count < limit {
+            let standardized = url.standardizedFileURL
+            guard standardized.isFileURL,
+                  (try? standardized.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true,
+                  knownPaths.insert(standardized.path).inserted
+            else { continue }
+
+            attachments.append(ComposerAttachment(url: standardized))
+            accepted += 1
+        }
+        return accepted
+    }
+
     // MARK: Resolved focus content
 
     /// Fresh resolution — used at send time so the injected content reflects

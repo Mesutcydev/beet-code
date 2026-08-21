@@ -270,6 +270,24 @@ final class ComposerStoreTests: XCTestCase {
                       "attaching a file grants @files")
     }
 
+    func testAttachmentEntryPointDeduplicatesSkipsFoldersAndCapsTurn() {
+        let store = ComposerStore()
+        let first = workspace.write("one", to: "one.txt")
+        workspace.makeDirectory("Folder")
+        let folder = workspace.url(for: "Folder")
+        let remaining = (2...10).map { index in
+            workspace.write("\(index)", to: "\(index).txt")
+        }
+
+        let accepted = store.addAttachments([first, first, folder] + remaining)
+
+        XCTAssertEqual(accepted, 8)
+        XCTAssertEqual(store.attachments.count, 8)
+        XCTAssertEqual(Set(store.attachments.map(\.url.path)).count, 8)
+        XCTAssertFalse(store.attachments.contains { $0.url.path == folder.path })
+        XCTAssertEqual(store.addAttachments([remaining.last!]), 0)
+    }
+
     func testNonGitWorkspaceMakesGitUnavailable() async {
         let plain = TempWorkspace()
         let (appState, store, _) = makeStack()

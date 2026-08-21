@@ -659,5 +659,6 @@ final class CommandPolicyTests: XCTestCase {
         XCTAssertNil(env["GIT_WORK_TREE"])
         XCTAssertNil(env["GIT_INDEX_FILE"])
         XCTAssertNotNil(env["PATH"])
+        XCTAssertFalse(env["USER", default: ""].isEmpty)
     }
 }

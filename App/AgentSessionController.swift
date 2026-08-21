@@ -1314,7 +1314,10 @@ final class AgentSessionController: ObservableObject {
             let name = parts.first.map { String($0).lowercased() } ?? ""
             let args = parts.count > 1 ? String(parts[1]) : ""
             let home = FileManager.default.homeDirectoryForCurrentUser
-            guard let command = ExternalCommands.command(named: name, home: home, workspace: workspaceURL) else {
+            let extraRoots = AppPreferencesStore.shared.current.externalResourceURLs
+            guard let command = ExternalCommands.command(
+                named: name, home: home, workspace: workspaceURL,
+                additionalRoots: extraRoots) else {
                 notice("Unknown command '\(name)'. Try /help.")
                 return true
             }
@@ -1342,7 +1345,10 @@ final class AgentSessionController: ObservableObject {
     /// /help output: the built-in catalog plus any external commands
     /// discovered in the workspace and home convention directories.
     static func helpText(home: URL, workspace: URL?) -> String {
-        let external = ExternalCommands.discover(home: home, workspace: workspace)
+        let external = ExternalCommands.discover(
+            home: home,
+            workspace: workspace,
+            additionalRoots: AppPreferencesStore.shared.current.externalResourceURLs)
         guard !external.isEmpty else { return SlashCommand.helpText }
         let lines = external.map { "  /\($0.name)  (\($0.origin.rawValue) \($0.kind.label))" }
         return SlashCommand.helpText
@@ -1688,6 +1694,7 @@ final class AgentSessionController: ObservableObject {
         CreateMacAppTool(),
         CreateIOSAppTool(),
         MacBuildRunTool(),
+        AppleShipTool(),
         SimListDevicesTool(),
         SimBootDeviceTool(),
         SimLaunchAppTool(),

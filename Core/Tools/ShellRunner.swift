@@ -45,6 +45,11 @@ enum ShellRunner {
             "HOME": inherited["HOME"] ?? NSHomeDirectory(),
             "TMPDIR": inherited["TMPDIR"] ?? NSTemporaryDirectory(),
             "LANG": inherited["LANG"] ?? "en_US.UTF-8",
+            // XcodeGen uses the account name when it writes project metadata.
+            // Keeping these identity-only values avoids a false
+            // "Couldn't find current username" failure in app-launched tools.
+            "USER": inherited["USER"] ?? NSUserName(),
+            "LOGNAME": inherited["LOGNAME"] ?? NSUserName(),
         ].filter { key, _ in !gitOverrides.contains(key) }
     }
 

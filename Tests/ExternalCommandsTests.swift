@@ -51,6 +51,40 @@ final class ExternalCommandsTests: XCTestCase {
         XCTAssertEqual(prompt.kind, .prompt)
     }
 
+    func testDiscoversCodexCursorCopilotAndWindsurfCapabilities() throws {
+        try write("Ship the app.", ".codex/skills/ship/SKILL.md", in: tempHome)
+        try write("Review this change.", ".cursor/commands/review.md", in: tempWorkspace)
+        try write("Write release notes.", ".github/prompts/release.prompt.md", in: tempWorkspace)
+        try write("Deploy the release.", ".windsurf/workflows/deploy.md", in: tempHome)
+
+        let commands = ExternalCommands.discover(home: tempHome, workspace: tempWorkspace)
+
+        XCTAssertEqual(commands.first { $0.name == "ship" }?.origin, .codex)
+        XCTAssertEqual(commands.first { $0.name == "ship" }?.kind, .skill)
+        XCTAssertEqual(commands.first { $0.name == "review" }?.origin, .cursor)
+        XCTAssertEqual(commands.first { $0.name == "release" }?.origin, .copilot)
+        XCTAssertEqual(commands.first { $0.name == "deploy" }?.origin, .windsurf)
+    }
+
+    func testDiscoversPluginSkillsAndUserAddedIDEFolders() throws {
+        try write(
+            "Audit accessibility.",
+            ".codex/plugins/cache/example/skills/accessibility/SKILL.md",
+            in: tempHome)
+        let addedRoot = tempHome.appendingPathComponent("third-party-ide", isDirectory: true)
+        try write("Prepare screenshots.", "plugin/skills/screenshots/SKILL.md", in: addedRoot)
+        try write("Triage the issue.", "plugin/workflows/triage.md", in: addedRoot)
+
+        let commands = ExternalCommands.discover(
+            home: tempHome,
+            workspace: tempWorkspace,
+            additionalRoots: [addedRoot])
+
+        XCTAssertEqual(commands.first { $0.name == "accessibility" }?.origin, .codex)
+        XCTAssertEqual(commands.first { $0.name == "screenshots" }?.origin, .external)
+        XCTAssertEqual(commands.first { $0.name == "triage" }?.kind, .command)
+    }
+
     func testDiscoversBeetCodeOwnCommands() throws {
         try write("Ship it.", ".beetcode/commands/ship.md", in: tempWorkspace)
 

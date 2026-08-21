@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Composer
 
@@ -13,8 +14,7 @@ import SwiftUI
 /// - Enter sends, Shift+Enter inserts a newline, ⌘↩ sends too, Esc stops a
 ///   running agent (the only `.cancelAction` owner in the window).
 /// - Send morphs into Stop while the agent runs.
-/// - The signature gradient border traces the card's full perimeter and
-///   tracks idle → focused → streaming.
+/// - A restrained state border tracks idle → focused → streaming.
 struct ComposerView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var controller: AgentSessionController
@@ -24,6 +24,7 @@ struct ComposerView: View {
     var store: ComposerStore
 
     @FocusState private var editorFocused: Bool
+    @State private var isDropTargeted = false
 
     private var phase: ComposerPhase {
         if controller.pendingApproval != nil
@@ -37,12 +38,6 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
-            if !store.selection.isEmpty {
-                intentStrip
-            }
-            if !store.attachments.isEmpty {
-                attachmentStrip
-            }
             card
             if let hint = blockingHint {
                 hintRow(hint)
@@ -64,59 +59,77 @@ struct ComposerView: View {
     // MARK: Card
 
     private var card: some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                ComposerHeader(
-                    phase: phase,
-                    store: store,
-                    focusEditor: { editorFocused = true },
-                    editor: editor)
+        VStack(alignment: .leading, spacing: 0) {
+            ComposerHeader(
+                store: store,
+                focusEditor: { editorFocused = true },
+                editor: editor)
+
+            if !store.selection.isEmpty || !store.attachments.isEmpty {
+                ComposerDraftContext(store: store)
+                    .padding(.bottom, Spacing.md)
+            }
+
+            HStack(alignment: .center, spacing: Spacing.sm) {
                 AccessoryRow(store: store)
                     .environmentObject(appState)
                     .environmentObject(controller)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            ComposerCommitRail(store: store)
+                Spacer(minLength: Spacing.sm)
+
+                ContextMeter(
+                    estimate: store.estimate,
+                    canCompact: store.canCompactHistory,
+                    compact: { controller.compactNow() })
+
+                SendStopButton(store: store)
+            }
         }
-        .padding(.leading, 16)
-        .padding(.vertical, 14)
-        .padding(.trailing, 10)
+        .padding(14)
         .modifier(ComposerBorder(
             flow: settings.composerFlow,
             phase: phase,
             animated: settings.composerBorderAnimation && !reduceMotion))
+        .overlay {
+            if isDropTargeted {
+                ComposerDropOverlay()
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
+            acceptDroppedFiles(from: providers)
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: isDropTargeted)
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// The editor is the primary surface. The small status rail is deliberately
-    /// typographic rather than an app icon, so the composer feels like a task
-    /// instrument instead of another rounded card full of badges.
+    /// The editor is the primary surface; status already lives in the chat
+    /// header, so the composer does not repeat it.
     private struct ComposerHeader<Editor: View>: View {
-        let phase: ComposerPhase
         let store: ComposerStore
         let focusEditor: () -> Void
         let editor: Editor
 
         var body: some View {
-            HStack(alignment: .top, spacing: 12) {
-                ComposerSignal(phase: phase)
+            HStack(alignment: .top, spacing: 10) {
                 editor
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 ComposerCommandMenu(store: store) {
                     focusEditor()
                 }
             }
-            .padding(.bottom, 12)
+            .padding(.bottom, Spacing.md)
         }
     }
 
     private var editor: some View {
-        TextField("Describe a coding task…", text: Bindable(store).prompt, axis: .vertical)
+        TextField("Ask Beet Code to build, fix, or explain…", text: Bindable(store).prompt, axis: .vertical)
             .textFieldStyle(.plain)
             .font(AppFont.editor)
             .foregroundStyle(Theme.textPrimary)
             .lineLimit(1...8)
+            .frame(minHeight: 38, alignment: .topLeading)
             .focused($editorFocused)
             .padding(.horizontal, 1)
             .padding(.vertical, 1)
@@ -124,16 +137,16 @@ struct ComposerView: View {
             // inserts a newline.
             .onKeyPress(phases: .down) { press in
                 if ShortcutBinding(rawValue: SettingsStore.shared.sendShortcut).matches(press) {
-                    store.send()
-                    return .handled
+                    return store.send() ? .handled : .ignored
                 }
                 if press.key == .return && press.modifiers.contains(.command) {
-                    store.send()
-                    return .handled
+                    return store.send() ? .handled : .ignored
                 }
-                if press.key == .return && settings.enterSends && !press.modifiers.contains(.shift) {
-                    store.send()
-                    return .handled
+                let newlineModifiers: EventModifiers = [.shift, .option, .control]
+                if press.key == .return,
+                   settings.enterSends,
+                   press.modifiers.intersection(newlineModifiers).isEmpty {
+                    return store.send() ? .handled : .ignored
                 }
                 return .ignored
             }
@@ -149,77 +162,21 @@ struct ComposerView: View {
             .accessibilityLabel("Task description")
     }
 
-    // MARK: Strips
+    private func acceptDroppedFiles(from providers: [NSItemProvider]) -> Bool {
+        let candidates = providers
+            .filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+            .prefix(max(0, 8 - store.attachments.count))
+        guard !candidates.isEmpty else { return false }
 
-    /// The selected intent as removable chips — visible proof of what will
-    /// be injected, without opening the picker.
-    private var intentStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.sm) {
-                ForEach(store.selection.orderedRoles) { role in
-                    intentChip(
-                        label: role.label, glyph: role.glyph, tint: Theme.accent,
-                        help: role.instruction) {
-                        store.toggleRole(role)
-                    }
-                }
-                ForEach(store.selection.orderedFocus) { source in
-                    intentChip(
-                        label: source.label, glyph: source.glyph, tint: Theme.info,
-                        help: source.summary) {
-                        store.toggleFocus(source)
-                    }
-                }
-                Button {
-                    store.clearIntent()
-                } label: {
-                    Text("Clear")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Theme.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .help("Remove all roles and focus sources")
-            }
-            .padding(.horizontal, 2)
-        }
-    }
-
-    private func intentChip(
-        label: String, glyph: String, tint: Color,
-        help: String, onRemove: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: glyph)
-                .font(.system(size: 10, weight: .medium))
-            Text(label)
-                .font(.caption.weight(.medium))
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(tint)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(label)")
-        }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(Theme.wash(tint), in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.washBorder(tint), lineWidth: 1))
-        .help(help)
-    }
-
-    private var attachmentStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.sm) {
-                ForEach(store.attachments) { attachment in
-                    AttachmentChip(attachment: attachment) {
-                        store.attachments.removeAll { $0.id == attachment.id }
-                    }
+        for provider in candidates {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in
+                    store.addAttachments([url])
                 }
             }
-            .padding(.horizontal, 2)
         }
+        return true
     }
 
     // MARK: Blocking hint
@@ -255,60 +212,121 @@ struct ComposerView: View {
     }
 }
 
-// MARK: - Composer header
+// MARK: - Draft context
 
-/// A compact state line. It gives the input a place in the product's
-/// vocabulary without wasting the user's attention on a decorative logo.
-private struct ComposerSignal: View {
-    let phase: ComposerPhase
-
-    private var tint: Color {
-        switch phase {
-        case .idle: Theme.textTertiary
-        case .focused: Theme.accent
-        case .streaming: Theme.info
-        case .awaitingApproval: Theme.warning
-        }
-    }
-
-    private var label: String {
-        switch phase {
-        case .idle: "READY"
-        case .focused: "EDITING"
-        case .streaming: "WORKING"
-        case .awaitingApproval: "REVIEW"
-        }
-    }
+/// Attachments and turn guidance stay inside the writing surface, where they
+/// read as part of the outgoing message instead of as a second toolbar.
+private struct ComposerDraftContext: View {
+    let store: ComposerStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 7, height: 7)
-                Text("TASK")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .tracking(0.9)
-                    .foregroundStyle(Theme.textSecondary)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Spacing.sm) {
+                ForEach(store.attachments) { attachment in
+                    AttachmentChip(attachment: attachment) {
+                        store.attachments.removeAll { $0.id == attachment.id }
+                    }
+                }
+
+                ForEach(store.selection.orderedRoles) { role in
+                    ComposerIntentChip(
+                        label: role.label,
+                        glyph: role.glyph,
+                        tint: Theme.accent,
+                        help: role.instruction) {
+                        store.toggleRole(role)
+                    }
+                }
+
+                ForEach(store.selection.orderedFocus) { source in
+                    ComposerIntentChip(
+                        label: source.label,
+                        glyph: source.glyph,
+                        tint: Theme.info,
+                        help: source.summary) {
+                        store.toggleFocus(source)
+                    }
+                }
+
+                if !store.selection.isEmpty {
+                    Button("Clear context") {
+                        store.clearIntent()
+                    }
+                    .font(.caption2.weight(.medium))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.textTertiary)
+                    .help("Remove all roles and context sources")
+                }
             }
-            Text(label)
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .tracking(0.5)
-                .foregroundStyle(tint)
+            .padding(.horizontal, 1)
         }
-        .frame(width: 48, alignment: .leading)
-        .padding(.top, 3)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Composer status")
-        .accessibilityValue(label.capitalized)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Attached files and turn context")
     }
 }
+
+private struct ComposerIntentChip: View {
+    let label: String
+    let glyph: String
+    let tint: Color
+    let help: String
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: glyph)
+                .font(.system(size: 10, weight: .medium))
+            Text(label)
+                .font(.caption.weight(.medium))
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(tint)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(label)")
+        }
+        .foregroundStyle(tint)
+        .padding(.leading, 9)
+        .padding(.trailing, 6)
+        .frame(minHeight: 26)
+        .background(Theme.wash(tint), in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.washBorder(tint), lineWidth: 1))
+        .help(help)
+    }
+}
+
+private struct ComposerDropOverlay: View {
+    var body: some View {
+        VStack(spacing: Spacing.sm) {
+            Image(systemName: "arrow.down.doc.fill")
+                .font(.system(size: 20, weight: .semibold))
+            Text("Drop files to attach")
+                .font(.system(size: 13, weight: .semibold))
+        }
+        .foregroundStyle(Theme.accent)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                .strokeBorder(Theme.accent, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Composer header
 
 /// A deliberate command-deck affordance for the actions that are useful
 /// before typing. It is a real Menu, not a visual flourish: presets, focus,
 /// and draft clearing all operate on the same ComposerStore as the visible
 /// controls below.
 private struct ComposerCommandMenu: View {
+    @ObservedObject private var settings = SettingsStore.shared
+    @State private var showsDeliverySetup = false
+
     let store: ComposerStore
     let focusEditor: () -> Void
 
@@ -320,7 +338,7 @@ private struct ComposerCommandMenu: View {
                 Label("Focus prompt", systemImage: "text.cursor")
             }
 
-            Menu("Use an intent preset") {
+            Menu("Use a guidance preset") {
                 ForEach(IntentPresets.all) { preset in
                     Button {
                         store.applyPreset(preset)
@@ -328,6 +346,41 @@ private struct ComposerCommandMenu: View {
                         Label(preset.name, systemImage: preset.glyph)
                     }
                 }
+            }
+
+            Menu("Start an Apple app") {
+                Button {
+                    prepareAppleAppPrompt(platform: "iPhone and iPad")
+                } label: {
+                    Label("iPhone & iPad app", systemImage: "iphone.and.arrow.forward")
+                }
+
+                Button {
+                    prepareAppleAppPrompt(platform: "macOS")
+                } label: {
+                    Label("Mac app", systemImage: "macwindow")
+                }
+            }
+
+            Button {
+                prepareShipPrompt()
+            } label: {
+                Label("Ship current Apple app", systemImage: "shippingbox")
+            }
+
+            Button {
+                showsDeliverySetup = true
+            } label: {
+                Label("Sign & install on device…", systemImage: "checkmark.shield")
+            }
+
+            Divider()
+
+            Toggle(isOn: Binding(
+                get: { settings.showReasoning },
+                set: { settings.showReasoning = $0 }
+            )) {
+                Label("Show reasoning details", systemImage: "brain.head.profile")
             }
 
             Divider()
@@ -347,25 +400,389 @@ private struct ComposerCommandMenu: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(Theme.textSecondary)
                 .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+                .background(Theme.surfaceInset.opacity(0.44), in: Circle())
+                .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .lfHoverLift()
-        .help("Open composer commands and intent presets")
+        .help("Open composer commands and guidance presets")
         .accessibilityLabel("Composer commands")
+        .sheet(isPresented: $showsDeliverySetup) {
+            AppleDeliverySetupView { prompt in
+                settings.agentMode = .goal
+                if let preset = IntentPresets.preset(id: "full-pipeline") {
+                    store.applyPreset(preset)
+                }
+                store.prompt = prompt
+                showsDeliverySetup = false
+                focusEditor()
+            }
+        }
+    }
+
+    private func prepareAppleAppPrompt(platform: String) {
+        settings.agentMode = .goal
+        if let preset = IntentPresets.preset(id: "full-pipeline") {
+            store.applyPreset(preset)
+        }
+        store.prompt = """
+        Build and deliver a polished native \(platform) app from this workspace. Start by clarifying only decisions that materially affect the product, then implement it in SwiftUI, build it, run it, inspect the result, fix issues, and verify the finished app end to end.
+        """
+        focusEditor()
+    }
+
+    private func prepareShipPrompt() {
+        settings.agentMode = .goal
+        if let preset = IntentPresets.preset(id: "full-pipeline") {
+            store.applyPreset(preset)
+        }
+        store.prompt = """
+        Prepare the current Apple app for delivery. Inspect the project and its changes, run the relevant end-to-end checks, launch and visually verify the app, repair any issues, then use apple_ship to create a Release artifact, checksum, logs, and Ship Report. Do not enable signing unless I explicitly request it.
+        """
+        focusEditor()
+    }
+}
+
+// MARK: - Signing & device delivery
+
+/// A focused setup sheet for the one Apple workflow that should never require
+/// users to remember Xcode flags. Private keys stay in Keychain; the composer
+/// receives only the selected certificate fingerprint and delivery choices.
+private struct AppleDeliverySetupView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let onPrepare: (String) -> Void
+
+    @State private var identities: [AppleSigningIdentity] = []
+    @State private var devices: [AppleConnectedDevice] = []
+    @State private var selectedIdentity = ""
+    @State private var selectedDevice = ""
+    @State private var exportMethod = "debugging"
+    @State private var teamID = ""
+    @State private var profile = ""
+    @State private var letsXcodeManageProfiles = true
+    @State private var installsAfterSigning = true
+    @State private var uploadsToAppStoreConnect = false
+    @State private var isLoading = true
+    @State private var importHint: String?
+
+    private var currentIdentity: AppleSigningIdentity? {
+        identities.first { $0.fingerprint == selectedIdentity }
+    }
+
+    private var connectedDevices: [AppleConnectedDevice] {
+        devices.filter { $0.isPhysical && $0.isConnected }
+    }
+
+    private var canPrepare: Bool {
+        !selectedIdentity.isEmpty
+            && (!installsAfterSigning || !selectedDevice.isEmpty)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: Spacing.lg) {
+                    identitySection
+                    deliverySection
+                    advancedSection
+                }
+                .padding(.horizontal, Spacing.xl)
+                .padding(.vertical, Spacing.lg)
+            }
+
+            footer
+        }
+        .frame(width: 580, height: 570)
+        .background(Theme.bg)
+        .task { await reload() }
+        .onChange(of: exportMethod) { _, method in
+            if method == "app-store-connect" {
+                installsAfterSigning = false
+                uploadsToAppStoreConnect = true
+            } else {
+                uploadsToAppStoreConnect = false
+            }
+        }
+        .onChange(of: installsAfterSigning) { _, enabled in
+            if enabled, selectedDevice.isEmpty {
+                selectedDevice = connectedDevices.first?.id ?? ""
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Spacing.md) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 44, height: 44)
+                .background(Theme.washStrong(Theme.accent), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Signing & Device Delivery")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Text("Build a signed iPhone or iPad app with credentials already on this Mac.")
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.xl)
+        .padding(.vertical, Spacing.lg)
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+    }
+
+    private var identitySection: some View {
+        setupCard(title: "Signing certificate", icon: "person.badge.key") {
+            if isLoading {
+                HStack(spacing: Spacing.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking Keychain…")
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            } else if identities.isEmpty {
+                Label("No valid Apple signing certificate was found.", systemImage: "exclamationmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(Theme.warning)
+            } else {
+                Picker("Certificate", selection: $selectedIdentity) {
+                    ForEach(identities) { identity in
+                        Text(identity.name).tag(identity.fingerprint)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let identity = currentIdentity {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Theme.success)
+                        Text(identity.teamID.map { "Valid · Team \($0)" } ?? "Valid in macOS Keychain")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                }
+            }
+
+            HStack(spacing: Spacing.sm) {
+                Button("Import certificate…", systemImage: "square.and.arrow.down") {
+                    importCertificate()
+                }
+                .buttonStyle(LFCapsuleButtonStyle())
+
+                Button("Rescan", systemImage: "arrow.clockwise") {
+                    Task { await reload() }
+                }
+                .buttonStyle(LFCapsuleButtonStyle())
+                .disabled(isLoading)
+            }
+
+            if let importHint {
+                Text(importHint)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            Label("Beet Code never reads, copies, or stores your private key or certificate password.", systemImage: "lock.fill")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+        }
+    }
+
+    private var deliverySection: some View {
+        setupCard(title: "Delivery", icon: "iphone.and.arrow.forward") {
+            Picker("Build for", selection: $exportMethod) {
+                Text("Development").tag("debugging")
+                Text("Ad Hoc testing").tag("release-testing")
+                Text("App Store Connect").tag("app-store-connect")
+                Text("Enterprise").tag("enterprise")
+            }
+            .pickerStyle(.segmented)
+
+            Toggle("Let Xcode manage provisioning profiles", isOn: $letsXcodeManageProfiles)
+                .toggleStyle(.switch)
+
+            Toggle("Install after signing", isOn: $installsAfterSigning)
+                .toggleStyle(.switch)
+                .disabled(exportMethod == "app-store-connect")
+
+            if exportMethod == "app-store-connect" {
+                Toggle("Upload to App Store Connect after validation", isOn: $uploadsToAppStoreConnect)
+                    .toggleStyle(.switch)
+                Text("Xcode uses the developer account already configured on this Mac and records the upload result in the Ship Report.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+
+            if installsAfterSigning {
+                if connectedDevices.isEmpty {
+                    Label {
+                        Text("Connect and unlock an iPhone or iPad, trust this Mac, and enable Developer Mode.")
+                    } icon: {
+                        Image(systemName: "cable.connector")
+                    }
+                    .font(.callout)
+                    .foregroundStyle(Theme.warning)
+                } else {
+                    Picker("Device", selection: $selectedDevice) {
+                        ForEach(connectedDevices) { device in
+                            Text("\(device.name) · \(device.model)").tag(device.id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var advancedSection: some View {
+        DisclosureGroup("Advanced") {
+            VStack(alignment: .leading, spacing: Spacing.md) {
+                TextField("Developer Team ID (optional)", text: $teamID)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Provisioning profile name or UUID (optional)", text: $profile)
+                    .textFieldStyle(.roundedBorder)
+                Text("Leave these blank to use the team embedded in the selected certificate and the project’s signing settings.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .padding(.top, Spacing.sm)
+        }
+        .font(.callout.weight(.medium))
+        .foregroundStyle(Theme.textSecondary)
+    }
+
+    private var footer: some View {
+        HStack(spacing: Spacing.sm) {
+            Button("Cancel") { dismiss() }
+                .buttonStyle(LFCapsuleButtonStyle())
+                .keyboardShortcut(.cancelAction)
+
+            Spacer()
+
+            Button("Add to composer", systemImage: "arrow.right") {
+                onPrepare(preparedPrompt)
+            }
+            .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+            .keyboardShortcut(.defaultAction)
+            .disabled(!canPrepare)
+            .help(canPrepare ? "Prepare the signed delivery task" : prepareBlocker)
+        }
+        .padding(.horizontal, Spacing.xl)
+        .padding(.vertical, Spacing.md)
+        .background(Theme.surface)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+        }
+    }
+
+    private func setupCard<Content: View>(
+        title: String,
+        icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .foregroundStyle(Theme.textPrimary)
+            content()
+        }
+        .padding(Spacing.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
+        }
+    }
+
+    private var prepareBlocker: String {
+        if selectedIdentity.isEmpty { return "Import or select a valid signing certificate" }
+        return "Connect and select a physical device, or turn off Install after signing"
+    }
+
+    private var preparedPrompt: String {
+        let identity = currentIdentity
+        let trimmedTeam = teamID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedProfile = profile.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTeam = trimmedTeam.isEmpty ? identity?.teamID : trimmedTeam
+        let resolvedProfile: String? = trimmedProfile.isEmpty ? nil : trimmedProfile
+        var options = [
+            "platform: ios",
+            "allowSigning: true",
+            "signingIdentity: \(selectedIdentity)",
+            "exportMethod: \(exportMethod)",
+            "allowProvisioningUpdates: \(letsXcodeManageProfiles)"
+        ]
+        if let resolvedTeam { options.append("developmentTeam: \(resolvedTeam)") }
+        if let resolvedProfile { options.append("provisioningProfile: \(resolvedProfile)") }
+        if installsAfterSigning { options.append("installDevice: \(selectedDevice)") }
+        if uploadsToAppStoreConnect { options.append("uploadToAppStoreConnect: true") }
+
+        return """
+        Prepare the current iPhone or iPad app for delivery. Inspect and test the project, fix any blocking issues, then use apple_ship with these settings:
+
+        \(options.map { "- \($0)" }.joined(separator: "\n"))
+
+        Build a Release archive, complete the selected delivery path, verify the result, and report the artifact, checksum, signing status, App Store upload, and device installation result as applicable. Keep all credentials in macOS Keychain and never request or print certificate passwords.
+        """
+    }
+
+    @MainActor
+    private func reload() async {
+        isLoading = true
+        let result = await Task.detached(priority: .utility) {
+            let identities = (try? AppleDeliverySupport.signingIdentities()) ?? []
+            let devices = (try? AppleDeliverySupport.connectedDevices()) ?? []
+            return (identities, devices)
+        }.value
+        identities = result.0
+        devices = result.1
+        if !identities.contains(where: { $0.fingerprint == selectedIdentity }) {
+            selectedIdentity = identities.first?.fingerprint ?? ""
+        }
+        if teamID.isEmpty {
+            teamID = identities.first(where: { $0.fingerprint == selectedIdentity })?.teamID ?? ""
+        }
+        if !connectedDevices.contains(where: { $0.id == selectedDevice }) {
+            selectedDevice = connectedDevices.first?.id ?? ""
+        }
+        isLoading = false
+    }
+
+    private func importCertificate() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Apple Signing Certificate"
+        panel.message = "Choose a .p12 or .pfx certificate. macOS Keychain Access will securely ask for its password."
+        panel.prompt = "Open in Keychain Access"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "p12") ?? .data,
+            UTType(filenameExtension: "pfx") ?? .data
+        ]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        NSWorkspace.shared.open(url)
+        importHint = "Finish the import in Keychain Access, then choose Rescan."
     }
 }
 
 // MARK: - Accessory row
 
-/// The composer's lower rail is a single command line. Controls are separated
-/// by hairlines, not nested boxes, so they read as one instrument and leave
-/// the editor as the visual focus.
+/// The lower rail exposes only the common choices. Mode, profile, and planning
+/// remain available in one setup menu instead of competing as separate chips.
 private struct AccessoryRow: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var controller: AgentSessionController
-    @ObservedObject private var settings = SettingsStore.shared
 
     let store: ComposerStore
 
@@ -373,69 +790,17 @@ private struct AccessoryRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Spacing.sm) {
                 AttachChip(store: store)
-
-                AccessoryDivider()
-
                 ModelSelectionPill()
                     .environmentObject(appState)
-
-                AccessoryDivider()
-
                 IntentChipButton(store: store)
-                AgentModeChip()
-                AgentProfileChip()
-                SettingsToggleChip(
-                    title: "Plan", glyph: "list.bullet.clipboard",
-                    isOn: Binding(get: { settings.planMode }, set: { settings.planMode = $0 }),
-                    help: "Plan mode — the agent proposes a plan before any tool runs")
-                SettingsToggleChip(
-                    title: "Reasoning", glyph: "brain.head.profile",
-                    isOn: Binding(get: { settings.showReasoning }, set: { settings.showReasoning = $0 }),
-                    help: "Show the model's reasoning blocks in the transcript")
-
-                Spacer(minLength: 8)
-
-                ContextMeter(
-                    estimate: store.estimate,
-                    canCompact: store.canCompactHistory,
-                    compact: { controller.compactNow() })
+                AgentSetupMenu()
+                    .environmentObject(appState)
+                    .environmentObject(controller)
             }
-            .padding(.trailing, 4)
+            .padding(.trailing, 2)
         }
         .frame(minHeight: 28)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// The commit action is intentionally separated into a vertical rail. It
-/// creates a clear final destination for the eye and gives the primary action
-/// more room than a tiny arrow hidden among secondary controls.
-private struct ComposerCommitRail: View {
-    @EnvironmentObject private var controller: AgentSessionController
-    let store: ComposerStore
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Rectangle()
-                .fill(Theme.hairline)
-                .frame(width: 1)
-                .padding(.vertical, 2)
-                .accessibilityHidden(true)
-
-            SendStopButton(store: store)
-        }
-        .padding(.leading, 12)
-        .frame(width: 106, alignment: .center)
-    }
-}
-
-/// Thin vertical divider between accessory-row clusters.
-private struct AccessoryDivider: View {
-    var body: some View {
-        Capsule()
-            .fill(Theme.hairline)
-            .frame(width: 1, height: 14)
-            .accessibilityHidden(true)
     }
 }
 
@@ -448,10 +813,13 @@ private struct AttachChip: View {
             attachFiles()
         } label: {
             Image(systemName: "paperclip")
-                .font(.system(size: 11, weight: .medium))
-                .lfComposerPill(active: false)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+                .background(Theme.surfaceInset.opacity(0.44), in: Circle())
         }
         .buttonStyle(LFPlainPressButtonStyle())
+        .lfHoverLift()
         .help("Attach files or images — files are quoted into the message, images are described by the vision provider")
         .accessibilityLabel("Attach files")
     }
@@ -464,9 +832,7 @@ private struct AttachChip: View {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
-            for url in panel.urls.prefix(8) {
-                store.attachments.append(ComposerAttachment(url: url))
-            }
+            store.addAttachments(panel.urls)
         }
     }
 }
@@ -488,7 +854,7 @@ private struct IntentChipButton: View {
             HStack(spacing: 5) {
                 Image(systemName: "target")
                     .font(.system(size: 11, weight: .medium))
-                Text("Intent")
+                Text("Context")
                 if count > 0 {
                     // A plain accent count — no badge-in-badge capsule.
                     Text("\(count)")
@@ -499,20 +865,27 @@ private struct IntentChipButton: View {
             .lfComposerPill(active: active)
         }
         .buttonStyle(LFPlainPressButtonStyle())
-        .help("Intent — pick the agent's roles and context sources for this turn")
+        .help("Choose roles and workspace context for this turn")
+        .accessibilityLabel("Turn context")
         .popover(isPresented: $showPicker, arrowEdge: .top) {
             IntentPicker(store: store)
         }
     }
 }
 
-/// Mutually-exclusive Auto/Goal selector. It keeps the common fast path one
-/// tap away without turning the accessory rail into two competing toggles.
-private struct AgentModeChip: View {
+/// One calm entry point for execution mode, agent profile, and plan mode.
+private struct AgentSetupMenu: View {
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var controller: AgentSessionController
     @ObservedObject private var settings = SettingsStore.shared
+
+    private var selected: OpenCodeCompatibility.AgentProfile? {
+        appState.openCodeCatalog.agent(named: controller.selectedOpenCodeAgentName)
+    }
 
     var body: some View {
         Menu {
+            Section("Run mode") {
             ForEach(AgentMode.allCases) { mode in
                 Button {
                     settings.agentMode = mode
@@ -525,87 +898,57 @@ private struct AgentModeChip: View {
                 }
                 .help(mode.help)
             }
+            }
+
+            Section("Agent") {
+                ForEach(appState.openCodeCatalog.agents.filter(\.visibleInPicker)) { agent in
+                    Button {
+                        controller.selectedOpenCodeAgentName = agent.name
+                        if agent.name.caseInsensitiveCompare("plan") == .orderedSame {
+                            settings.planMode = true
+                        }
+                    } label: {
+                        Label {
+                            Text(agent.name.capitalized)
+                        } icon: {
+                            Image(systemName: agent.name == controller.selectedOpenCodeAgentName
+                                ? "checkmark"
+                                : agent.name.caseInsensitiveCompare("plan") == .orderedSame
+                                    ? "list.bullet.clipboard"
+                                    : "hammer.fill")
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                settings.planMode.toggle()
+            } label: {
+                Label("Plan before running",
+                      systemImage: settings.planMode ? "checkmark.square.fill" : "square")
+            }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: settings.agentMode.icon)
                     .font(.system(size: 11, weight: .medium))
                 Text(settings.agentMode.label)
-            }
-            .lfComposerPill(active: true)
-        }
-        .menuStyle(.borderlessButton)
-        .help(settings.agentMode.help)
-        .accessibilityLabel("Agent mode")
-        .accessibilityValue(settings.agentMode.label)
-    }
-}
-
-/// OpenCode-compatible agent selector. Build and Plan are native profiles;
-/// workspace/global OpenCode agents are shown beside them when discovered.
-private struct AgentProfileChip: View {
-    @EnvironmentObject private var appState: AppState
-    @EnvironmentObject private var controller: AgentSessionController
-
-    private var selected: OpenCodeCompatibility.AgentProfile? {
-        appState.openCodeCatalog.agent(named: controller.selectedOpenCodeAgentName)
-    }
-
-    var body: some View {
-        Menu {
-            ForEach(appState.openCodeCatalog.agents.filter(\.visibleInPicker)) { agent in
-                Button {
-                    controller.selectedOpenCodeAgentName = agent.name
-                    if agent.name.caseInsensitiveCompare("plan") == .orderedSame {
-                        SettingsStore.shared.planMode = true
-                    }
-                } label: {
-                    Label {
-                        Text(agent.name.capitalized)
-                    } icon: {
-                        Image(systemName: agent.name.caseInsensitiveCompare("plan") == .orderedSame
-                            ? "list.bullet.clipboard"
-                            : "hammer.fill")
-                    }
+                if settings.planMode {
+                    Image(systemName: "list.bullet.clipboard")
+                        .font(.system(size: 9, weight: .semibold))
                 }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
             }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: selected?.name.caseInsensitiveCompare("plan") == .orderedSame
-                    ? "list.bullet.clipboard"
-                    : "hammer.fill")
-                    .font(.system(size: 11, weight: .medium))
-                Text(selected?.name.capitalized ?? "Build")
-            }
-            .lfComposerPill(active: selected != nil)
+            .lfComposerPill(active: settings.planMode)
         }
         .menuStyle(.borderlessButton)
-        .help(selected?.description ?? "Choose the active agent profile")
-        .accessibilityLabel("Agent profile")
-        .accessibilityValue(selected?.name.capitalized ?? "Build")
-    }
-}
-
-// MARK: - Settings toggle chip
-
-/// One per-turn toggle (Plan, Reasoning) in the shared pill language.
-private struct SettingsToggleChip: View {
-    let title: String
-    let glyph: String
-    @Binding var isOn: Bool
-    let help: String
-
-    var body: some View {
-        Button { isOn.toggle() } label: {
-            HStack(spacing: 5) {
-                Image(systemName: glyph)
-                    .font(.system(size: 11, weight: .medium))
-                Text(title)
-            }
-            .lfComposerPill(active: isOn)
-        }
-        .buttonStyle(LFPlainPressButtonStyle())
-        .help(help)
-        .accessibilityValue(isOn ? "On" : "Off")
+        .menuIndicator(.hidden)
+        .help(selected?.description ?? "Agent setup")
+        .accessibilityLabel("Agent setup")
+        .accessibilityValue("\(settings.agentMode.label), \(selected?.name.capitalized ?? "Build")\(settings.planMode ? ", plan on" : "")")
     }
 }
 
@@ -642,10 +985,7 @@ private struct ContextMeter: View {
             }
         }
         .font(.caption2.monospacedDigit())
-        // A reserved lane: monospaced digits + a fixed minimum width, so the
-        // send button never shifts as the estimate appears, disappears or
-        // grows.
-        .frame(minWidth: 88, alignment: .trailing)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var text: String {
@@ -706,24 +1046,18 @@ private struct SendStopButton: View {
                 sendButton
             }
         }
-        .frame(width: 76, height: 40)
+        .frame(width: 38, height: 38)
     }
 
     private var stopButton: some View {
         Button {
             controller.stop()
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 10, weight: .bold))
-                Text("Stop")
-                    .font(.caption.weight(.semibold))
-            }
-            .foregroundStyle(.white)
-            .frame(width: 76, height: 40)
-            .background(Theme.danger, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            Image(systemName: "stop.fill")
+                .font(.system(size: 10, weight: .bold))
         }
-        .buttonStyle(LFPlainPressButtonStyle())
+        .buttonStyle(LFIconButtonStyle(tone: .destructive, size: 38))
+        .lfHoverLift()
         .keyboardShortcut(.cancelAction)
         .help("Stop the agent (Esc)")
         .accessibilityLabel("Stop the agent")
@@ -733,19 +1067,11 @@ private struct SendStopButton: View {
         Button {
             store.send()
         } label: {
-            HStack(spacing: 7) {
-                Text("Run")
-                    .font(.caption.weight(.semibold))
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11, weight: .bold))
-            }
-            .foregroundStyle(store.canSend ? Color.white : Theme.textTertiary)
-            .frame(width: 76, height: 40)
-            .background(
-                store.canSend ? Theme.accent : Theme.surfaceInset,
-                in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            Image(systemName: "arrow.up")
+                .font(.system(size: 12, weight: .bold))
         }
-        .buttonStyle(LFPlainPressButtonStyle())
+        .buttonStyle(LFIconButtonStyle(tone: .primary, size: 38))
+        .lfHoverLift()
         .disabled(!store.canSend)
         .help(store.canSend
               ? "Send (\(ShortcutBinding(rawValue: settings.sendShortcut).displayValue))"
@@ -769,13 +1095,17 @@ struct AttachmentChip: View {
                 .font(.caption)
                 .lineLimit(1)
             Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 14, height: 14)
+                    .contentShape(Circle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(attachment.name)")
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
+        .padding(.leading, 9)
+        .padding(.trailing, 6)
+        .frame(minHeight: 26)
         .background(Theme.surfaceInset, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
         .lfHoverLift()

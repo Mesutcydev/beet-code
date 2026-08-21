@@ -615,6 +615,8 @@ actor AgentLoop {
                 if call.name == "task" {
                     let prompt = call.string("prompt") ?? ""
                     let role = SubagentRole.resolve(call.string("role") ?? call.string("agent"))
+                    let isolation = call.string("isolation")
+                        ?? (role.allowsWrites ? "worktree" : "shared")
                     let invocation = ToolInvocation(
                         call: call,
                         summary: "\(role.displayName) subagent: \(prompt.prefix(72))")
@@ -623,7 +625,10 @@ actor AgentLoop {
                     if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         observation = "error: task requires a prompt"
                     } else {
-                        observation = await runSubagent(prompt: prompt, role: role)
+                        observation = await runSubagent(
+                            prompt: prompt,
+                            role: role,
+                            isolation: isolation)
                     }
                     if cancelled { await finish(.cancelled); return }
                     eventContinuation?.yield(.toolCallFinished(
@@ -1181,7 +1186,30 @@ actor AgentLoop {
     /// through the same PermissionGate; approvals are forwarded to the
     /// parent UI. Role-specific tools keep read-only work read-only, while
     /// implementation children inherit the parent's verification setting.
-    private func runSubagent(prompt: String, role: SubagentRole) async -> String {
+    private func runSubagent(
+        prompt: String,
+        role: SubagentRole,
+        isolation: String
+    ) async -> String {
+        var worktree: AgentWorktree?
+        var childWorkspace = workspace
+        var isolationNote: String?
+        if role.allowsWrites, isolation != "shared" {
+            do {
+                let prepared = try AgentWorktree.prepare(parentWorkspace: workspace.root)
+                worktree = prepared
+                childWorkspace = Workspace(root: prepared.workspaceURL)
+                record.checkpoints.append(prepared.baseCheckpoint)
+                eventContinuation?.yield(.checkpointCreated(prepared.baseCheckpoint))
+            } catch AgentWorktree.WorktreeError.noRepository {
+                isolationNote = "Git is unavailable; implementation used the shared workspace."
+            } catch AgentWorktree.WorktreeError.workspaceIsNotRepositoryRoot {
+                isolationNote = "Open the repository root to isolate implementation; this run used the shared workspace."
+            } catch {
+                return "error: isolated implementation could not start — \(error.localizedDescription)"
+            }
+        }
+
         var childConfig = configuration
         childConfig.maxTurns = min(8, configuration.maxTurns)
         childConfig.planMode = false
@@ -1200,7 +1228,7 @@ actor AgentLoop {
             autoApproveEdits: permissionGate.autoApproveEdits,
             autoApproveCommands: permissionGate.autoApproveCommands,
             commandPolicy: commandPolicy,
-            workspace: workspace,
+            workspace: childWorkspace,
             overrides: permissionGate.overrides,
             openCodePermissions: role.allowsWrites
                 ? permissionGate.openCodePermissions
@@ -1245,7 +1273,7 @@ actor AgentLoop {
 
         let child = AgentLoop(
             engine: IsolatedReplayEngine(base: engine),
-            workspace: workspace,
+            workspace: childWorkspace,
             tools: childTools,
             permissions: childGate,
             configuration: childConfig,
@@ -1259,7 +1287,9 @@ actor AgentLoop {
         for await event in stream {
             if cancelled {
                 await child.cancel()
-                return "error: parent cancelled — subagent stopped"
+                return subagentFailure(
+                    "parent cancelled — subagent stopped",
+                    worktree: worktree)
             }
             switch event {
             case .awaitingApproval(let request):
@@ -1278,15 +1308,44 @@ actor AgentLoop {
             case .finished(.completed(let text)) where !text.isEmpty:
                 lastAnswer = text
             case .finished(.declined(let detail)):
-                return "error: subagent declined — \(detail)"
+                return subagentFailure("subagent declined — \(detail)", worktree: worktree)
             case .finished(.engineError(let message)):
-                return "error: subagent engine — \(message)"
+                return subagentFailure("subagent engine — \(message)", worktree: worktree)
             case .finished(.cancelled):
-                return "error: subagent cancelled"
+                return subagentFailure("subagent cancelled", worktree: worktree)
             default:
                 break
             }
         }
-        return "Subagent result:\n\(lastAnswer)"
+        var sections = ["Subagent result:\n\(lastAnswer)"]
+        if let worktree {
+            do {
+                let summary = try worktree.merge()
+                sections.append("Isolated worktree:\n\(summary.description)")
+                do {
+                    try worktree.remove()
+                } catch {
+                    sections.append("Cleanup warning: \(error.localizedDescription)")
+                }
+            } catch {
+                return subagentFailure(
+                    "isolated result was not merged — \(error.localizedDescription)",
+                    worktree: worktree)
+            }
+        } else if let isolationNote {
+            sections.append(isolationNote)
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
+    private func subagentFailure(
+        _ message: String,
+        worktree: AgentWorktree?
+    ) -> String {
+        guard let worktree else { return "error: \(message)" }
+        return """
+        error: \(message)
+        Isolated worktree retained for recovery: \(worktree.workspaceURL.path)
+        """
     }
 }

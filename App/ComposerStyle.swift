@@ -36,13 +36,8 @@ enum ComposerPhase: Equatable {
     }
 }
 
-/// Animated gradient border around the ENTIRE composer card. A rotating
-/// angular gradient is masked to the card's rounded-rectangle stroke, so the
-/// light travels the full perimeter — top, sides and bottom — instead of the
-/// old bottom-only underline. Intensity tracks the composer phase
-/// (idle → focused → streaming), and streaming/approval adds a soft outer
-/// glow. When `animated` is false (Settings → Composer), the border is a
-/// static gradient — same identity, zero motion.
+/// A restrained native-feeling composer surface. State is communicated by a
+/// quiet hairline and a small glow rather than a continuously rotating frame.
 struct ComposerBorder: ViewModifier {
     let flow: ComposerFlow
     let phase: ComposerPhase
@@ -52,111 +47,100 @@ struct ComposerBorder: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var cornerRadius: CGFloat { Radius.lg }
-    private var borderWidth: CGFloat { phase == .idle ? 1.5 : 2.5 }
-
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    /// Motion only while the composer is in use. Idle is a static hairline
-    /// plus a quiet accent stroke — never a 60 fps wallpaper.
-    private var shouldAnimate: Bool {
-        animated && !reduceMotion && phase != .idle
+    private var stateTint: Color {
+        switch phase {
+        case .idle: Theme.hairline
+        case .focused: Theme.accent
+        case .streaming: Theme.info
+        case .awaitingApproval: Theme.warning
+        }
     }
 
     func body(content: Content) -> some View {
         content
             .background(Theme.surface, in: shape)
-            .shadow(color: Theme.cardShadow, radius: 6, y: 2)
+            .shadow(color: Theme.cardShadow, radius: 10, y: 4)
             .contentShape(shape)
             .onHover { hovering in
-                withAnimation(.easeOut(duration: 0.18)) {
+                if reduceMotion {
                     isHovering = hovering
-                }
-            }
-            .background {
-                if shouldAnimate && (phase == .streaming || phase == .awaitingApproval) {
-                    TimelineView(.animation) { timeline in
-                        let t = timeline.date.timeIntervalSinceReferenceDate
-                        let progress = (t / flow.cycleSeconds).truncatingRemainder(dividingBy: 1)
-                        borderGradient(angle: .degrees(progress * 360))
-                            .blur(radius: 7)
-                            .opacity(isHovering ? 0.70 : 0.55)
-                    }
-                    .allowsHitTesting(false)
-                }
-            }
-            .overlay {
-                shape.strokeBorder(Theme.hairline, lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-            .overlay {
-                if shouldAnimate {
-                    TimelineView(.animation) { timeline in
-                        let t = timeline.date.timeIntervalSinceReferenceDate
-                        let progress = (t / flow.cycleSeconds).truncatingRemainder(dividingBy: 1)
-                        borderGradient(angle: .degrees(progress * 360))
-                    }
-                    .allowsHitTesting(false)
                 } else {
-                    shape.strokeBorder(
-                        Theme.accent.opacity((phase == .idle ? 0.35 : 0.75) + (isHovering ? 0.08 : 0)),
-                        lineWidth: 1.5)
-                        .allowsHitTesting(false)
+                    withAnimation(.easeOut(duration: 0.14)) {
+                        isHovering = hovering
+                    }
                 }
             }
-    }
-
-    /// The gradient stroke: an angular gradient rotating around the card's
-    /// center, masked to the rounded-rectangle border so it traces the whole
-    /// outline. The wrapped color palette keeps the sweep seamless.
-    private func borderGradient(angle: Angle) -> some View {
-        AngularGradient(colors: signatureColors, center: .center, angle: angle)
-            .opacity(min(1, phase.borderOpacity + (isHovering ? 0.10 : 0)))
-            .mask {
-                shape.strokeBorder(lineWidth: borderWidth)
+            .overlay {
+                shape.strokeBorder(
+                    borderColor,
+                    lineWidth: 1)
+                    .allowsHitTesting(false)
             }
+            .shadow(
+                color: phase == .idle ? .clear : stateTint.opacity(animated ? 0.055 : 0.035),
+                radius: phase == .idle ? 0 : 5)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: phase)
+            .accessibilityElement(children: .contain)
     }
 
-    /// The selected flow remains recognizable, but the accent is woven into
-    /// every palette so the light belongs to Beet Code's visual system rather
-    /// than looking like an unrelated rainbow effect.
-    private var signatureColors: [Color] {
-        let palette = flow.colors
-        return [
-            palette[0].opacity(0.06),
-            Theme.accent.opacity(0.40),
-            palette[1].opacity(0.75),
-            Theme.accentBright,
-            Color.white.opacity(0.90),
-            palette[2].opacity(0.40),
-            palette[0].opacity(0.06),
-        ]
+    private var borderColor: Color {
+        switch phase {
+        case .idle:
+            return isHovering ? Theme.textTertiary.opacity(0.5) : Theme.hairline
+        case .focused:
+            return stateTint.opacity(0.34 + (isHovering ? 0.05 : 0))
+        case .streaming:
+            return stateTint.opacity(0.42 + (isHovering ? 0.05 : 0))
+        case .awaitingApproval:
+            return stateTint.opacity(0.5 + (isHovering ? 0.05 : 0))
+        }
     }
 }
 
 extension View {
-    /// Shared control language for the accessory rail. These are deliberately
-    /// not pills: the composer is a command line, so active controls are
-    /// carried by a quiet wash and a short trace rather than a row of badges.
+    /// Quiet toolbar controls: chrome appears on hover or when the control is
+    /// carrying non-default state, keeping the editor visually dominant.
     func lfComposerPill(active: Bool) -> some View {
-        self
+        modifier(ComposerPillModifier(active: active))
+    }
+}
+
+private struct ComposerPillModifier: ViewModifier {
+    let active: Bool
+    @State private var isHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
             .font(.caption.weight(.medium))
             .foregroundStyle(active ? Theme.accent : Theme.textSecondary)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
-            .padding(.horizontal, 7)
-            .frame(minHeight: 26)
-            .background(active ? Theme.washStrong(Theme.accent) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(alignment: .bottom) {
-                if active {
-                    Capsule()
-                        .fill(Theme.accent)
-                        .frame(width: 20, height: 2)
-                        .padding(.bottom, 0)
+            .padding(.horizontal, 8)
+            .frame(minHeight: 28)
+            .background(background, in: Capsule())
+            .overlay(Capsule().strokeBorder(active ? Theme.washBorder(Theme.accent) : .clear,
+                                            lineWidth: 1))
+            .contentShape(Capsule())
+            .onHover { hovering in
+                if reduceMotion {
+                    isHovering = hovering
+                } else {
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        isHovering = hovering
+                    }
                 }
             }
-            .lfHoverLift()
+            .pointerStyle(isHovering ? .link : .default)
+    }
+
+    private var background: Color {
+        if active { return Theme.washStrong(Theme.accent) }
+        if isHovering { return Theme.surfaceInset.opacity(0.62) }
+        return .clear
     }
 }

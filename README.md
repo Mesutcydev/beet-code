@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.9.3](https://img.shields.io/badge/Download-Beet%20Code%200.9.3%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.3.zip)
+[![Download Beet Code 0.9.4](https://img.shields.io/badge/Download-Beet%20Code%200.9.4%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.4.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.3.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.4.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -302,6 +302,15 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   and `api_key=…` without storing the wrapper.
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
+
+## v0.9.4 — Native setup, delivery, and chat polish
+
+- A one-screen welcome and readiness assistant takes users directly from a project folder to a working local, Codex, or API-backed coding model.
+- The composer has a calmer native hierarchy, premium capsule actions, focused intent controls, and a dedicated Signing & Device Delivery setup.
+- Ship Center verifies and archives macOS or iOS projects, signs with valid identities already in Keychain, exports IPAs, installs on a connected iPhone or iPad, or uploads an App Store Connect archive through Xcode.
+- Chat history separates Beet Code tasks from imported tools, groups imported conversations by project, and imports current Claude, Codex, and Cursor histories.
+- Skills and declarative plugins can be discovered from Claude Code, Codex, Cursor, Copilot, Windsurf, OpenCode, Agent Skills, or a user-connected IDE folder without executing installers or hooks.
+- Model, remote-session, history, and empty-state actions now share one accessible native button language, with direct recovery actions instead of menu-only instructions.
 
 ## v0.9.3 — Structured API answers and reasoning
 

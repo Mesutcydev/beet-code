@@ -4,7 +4,10 @@ import Foundation
 /// Everything here is a *selection* (workspace, model, session) — the
 /// stores themselves remain the source of truth for the data.
 struct AppPreferences: Codable, Sendable, Equatable {
-    var schemaVersion: Int = 1
+    var schemaVersion: Int = 2
+    /// The lightweight launch guide has been acknowledged. It remains
+    /// available from Help, but should not interrupt returning users.
+    var hasCompletedWelcome: Bool = false
     var lastWorkspacePath: String?
     /// Security-scoped bookmark data for the workspace, where available.
     var workspaceBookmarkData: Data?
@@ -30,12 +33,15 @@ struct AppPreferences: Codable, Sendable, Equatable {
     /// Canonical workspace paths the user has trusted to run project-local
     /// MCP servers and hooks. User-global `~/.beetcode/` config is always on.
     var trustedWorkspacePaths: [String] = []
+    /// Extra IDE/plugin folders connected by the user. Only declarative
+    /// skills, commands, prompts and workflows are read from these roots.
+    var externalResourcePaths: [String] = []
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, lastWorkspacePath, workspaceBookmarkData, lastModelID,
+        case schemaVersion, hasCompletedWelcome, lastWorkspacePath, workspaceBookmarkData, lastModelID,
              lastSessionID, autoResumeDownloads, remoteModel, customBaseURL,
              remoteModelOverrides, remoteModelProfiles, pinnedSessionIDs,
-             trustedWorkspacePaths
+             trustedWorkspacePaths, externalResourcePaths
     }
 
     init() {}
@@ -43,6 +49,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        hasCompletedWelcome = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedWelcome) ?? false
         lastWorkspacePath = try container.decodeIfPresent(String.self, forKey: .lastWorkspacePath)
         workspaceBookmarkData = try container.decodeIfPresent(Data.self, forKey: .workspaceBookmarkData)
         lastModelID = try container.decodeIfPresent(String.self, forKey: .lastModelID)
@@ -56,6 +63,11 @@ struct AppPreferences: Codable, Sendable, Equatable {
             [String: RemoteModelProfile].self, forKey: .remoteModelProfiles) ?? [:]
         pinnedSessionIDs = try container.decodeIfPresent([UUID].self, forKey: .pinnedSessionIDs) ?? []
         trustedWorkspacePaths = try container.decodeIfPresent([String].self, forKey: .trustedWorkspacePaths) ?? []
+        externalResourcePaths = try container.decodeIfPresent([String].self, forKey: .externalResourcePaths) ?? []
+    }
+
+    var externalResourceURLs: [URL] {
+        externalResourcePaths.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 }
 

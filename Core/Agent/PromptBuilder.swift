@@ -328,6 +328,9 @@ enum PromptBuilder {
             - verify: read plus the detected build/test checker; never edits.
             - review: read/diff/checks; report regressions and missing coverage.
             The agent field accepts OpenCode aliases such as reviewer or tester.
+            Implementation children use an isolated linked Git worktree by \
+            default and merge their checked result back as one patch. Use \
+            isolation=shared only when the user explicitly wants direct edits.
             Do not nest task calls. Child writes and commands still ask unless
             auto-approve is on, and implementation checks use the same
             verification setting as the parent.
@@ -335,7 +338,8 @@ enum PromptBuilder {
         }
 
         if names.contains("create_macos_app") || names.contains("create_ios_app")
-            || names.contains("build_diagnostics") || names.contains("macos_build_run") {
+            || names.contains("build_diagnostics") || names.contains("macos_build_run")
+            || names.contains("apple_ship") {
             blocks.append("""
             ## Delivering a native iOS or macOS app
 
@@ -350,6 +354,8 @@ enum PromptBuilder {
             `build_diagnostics` is the compile-only check.
             - If the window looks wrong, use `computer_ui_tree` / \
             `computer_screenshot` then `describe_image`.
+            - When the app is verified, finish with `apple_ship` to produce a \
+            Release archive, packaged artifact, checksum, logs, and Ship Report.
 
             iOS:
             - Empty folder: `create_ios_app`.
@@ -359,9 +365,17 @@ enum PromptBuilder {
             and repeat until the screen is correct.
             - For finer control: `sim_list_devices` → `sim_boot_device` → \
             `sim_launch_app`, then `sim_tap` / `sim_describe`.
+            - When the simulator result is verified, finish with `apple_ship`. \
+            It creates an unsigned archive by default. When the user explicitly \
+            asks for a signed IPA, set `allowSigning`, choose a valid Keychain \
+            `signingIdentity`, and use a current `exportMethod`. Set \
+            `installDevice` to a connected physical device identifier (or `auto`) \
+            when they also want installation. Let macOS Keychain handle certificate \
+            imports and passwords; never ask for, store, or print a .p12 password.
 
             Do not invent a pbxproj by hand. Stay in the workspace. Prefer \
-            `apply_patch` for edits. Read before write.
+            `apply_patch` for edits. Read before write. Never claim an app is \
+            ready to ship unless `apple_ship` reports the artifact and report paths.
             """)
         }
 

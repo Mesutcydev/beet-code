@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A model entry the app knows how to download and run. The bundled list is
@@ -83,6 +84,12 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
 /// under `text_config`; using only the root-level fields makes that checkpoint
 /// look like a small, generic model and sends it through the wrong factory.
 enum MLXModelInspector {
+    /// Model configuration is metadata, not a weight file. Refuse special
+    /// files (for example a FIFO) and implausibly large inputs so catalog
+    /// repair can never block the app launch or page an arbitrary file into
+    /// memory.
+    static let maximumConfigBytes: UInt64 = 8 * 1_024 * 1_024
+
     struct Metadata: Equatable, Sendable {
         let family: String
         let parameters: String
@@ -93,8 +100,30 @@ enum MLXModelInspector {
 
     static func read(from directory: URL) -> Metadata? {
         let configURL = directory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: configURL) else { return nil }
+        guard let data = readConfigData(at: configURL) else { return nil }
         return metadata(from: data, directory: directory)
+    }
+
+    /// Foundation's file-attribute lookup asks for extended attributes and
+    /// can stall on unavailable volumes. A plain POSIX open/fstat is both
+    /// narrower and guarantees that pipes are opened non-blocking.
+    private static func readConfigData(at url: URL) -> Data? {
+        let descriptor = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else { return nil }
+        defer { Darwin.close(descriptor) }
+
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_size >= 0,
+              UInt64(status.st_size) <= maximumConfigBytes
+        else { return nil }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        return try? handle.readToEnd()
     }
 
     static func metadata(from data: Data, directory: URL) -> Metadata? {
@@ -402,21 +431,19 @@ enum ModelCatalog {
         }
     }
 
-    /// Repairs entries imported by older builds. Keep the legacy id and
-    /// directory in place so an existing multi-gigabyte import is reused;
-    /// only the display metadata is refreshed from config.json.
+    /// Repairs entries imported by older builds when their managed copy is
+    /// available. Never probe an arbitrary original import path here: catalog
+    /// loading happens on app startup, and a disconnected external/network
+    /// volume can block a synchronous `open` indefinitely.
     private static func repairUserModel(_ model: CatalogModel) -> CatalogModel {
         guard model.format == .mlx else { return model }
 
-        let candidates = [
-            URL(fileURLWithPath: model.repo, isDirectory: true),
-            userCatalogURL.deletingLastPathComponent()
-                .appendingPathComponent("Models", isDirectory: true)
-                .appendingPathComponent(model.id, isDirectory: true),
-        ]
-        guard let directory = candidates.first(where: {
-            FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path)
-        }), let metadata = MLXModelInspector.read(from: directory) else {
+        let directory = userCatalogURL.deletingLastPathComponent()
+            .appendingPathComponent("Models", isDirectory: true)
+            .appendingPathComponent(model.id, isDirectory: true)
+        guard FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("config.json").path),
+              let metadata = MLXModelInspector.read(from: directory) else {
             return model
         }
 

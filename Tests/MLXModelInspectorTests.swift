@@ -3,6 +3,32 @@ import XCTest
 
 final class MLXModelInspectorTests: XCTestCase {
 
+    func testReadRejectsNonRegularConfigFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beetcode-model-config-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("config.json"),
+            withIntermediateDirectories: false)
+
+        XCTAssertNil(MLXModelInspector.read(from: directory))
+    }
+
+    func testReadRejectsOversizedConfigFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beetcode-model-config-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = directory.appendingPathComponent("config.json")
+        XCTAssertTrue(FileManager.default.createFile(atPath: config.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: config)
+        try handle.truncate(atOffset: MLXModelInspector.maximumConfigBytes + 1)
+        try handle.close()
+
+        XCTAssertNil(MLXModelInspector.read(from: directory))
+    }
+
     func testQwen35MetadataUsesNestedTextConfigAndDetectsVLM() throws {
         let json: [String: Any] = [
             "architectures": ["Qwen3_5ForConditionalGeneration"],

@@ -16,6 +16,37 @@
 > `README.md` (v0.8) and `docs/MTP-FEASIBILITY.md`; sections below describing
 > the pre-v0.8 UI are historical.
 >
+> **Addendum (2026-08-21, interoperability):** Cursor chat import now reads
+> the current global `composerHeaders` + indexed composer/bubble records and
+> retains the legacy workspace-database fallback. The Skills/Plugins settings
+> surface discovers Claude Code, Codex, Cursor, Copilot, Windsurf, OpenCode,
+> and Agent Skills conventions, including declarative skills inside plugin
+> bundles. Users can connect any additional IDE/plugin folder; files stay in
+> place and executable installers or hooks are never run during import.
+>
+> **Addendum (2026-08-21, signing and device delivery):** Ship Center can use
+> a valid Apple code-signing identity already held by macOS Keychain, create a
+> signed iOS archive and IPA with current Xcode export methods, and install the
+> finished app on a connected physical iPhone or iPad through `devicectl`.
+> The composer provides a native setup sheet for certificate, provisioning,
+> export, and device choices. Certificate passwords and private-key material
+> never enter Beet Code; `.p12`/`.pfx` imports are handed to Keychain Access.
+>
+> **Addendum (2026-08-21, history UX):** the sidebar now presents a compact
+> `My chats` / `Other tools` switch with one shared search field. Imported
+> conversations are grouped by project instead of vendor, carry clear Claude,
+> Codex, Cursor, or bundle badges, and expose Import as the primary action only
+> in the relevant view. Existing imports no longer trigger an automatic rescan
+> every time the user revisits them.
+>
+> **Addendum (2026-08-21, v0.9.4 native readiness):** a compact first-run
+> assistant now connects the workspace and model, checks Apple Silicon,
+> macOS, Xcode, Keychain signing identities, and connected devices, and offers
+> direct recovery actions from empty states. Ship Center can additionally ask
+> Xcode to upload an eligible iOS archive to App Store Connect. The full
+> deterministic suite now executes 710 tests with 1 intentional skip and no
+> failures.
+>
 |> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
 |> (README v0.6) and the simulator tools were registered but the system prompt
 |> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now
@@ -57,7 +88,7 @@ xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -destination 'platform=macOS' -derivedDataPath .derived test
 ```
 
-Current suite: **142 tests, 0 failures** across 13 suites + TestSupport.
+Current suite: **710 tests executed, 1 skipped, 0 failures**.
 Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 
 ## 3. Directory map

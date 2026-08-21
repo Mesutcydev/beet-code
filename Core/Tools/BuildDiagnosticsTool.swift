@@ -194,7 +194,7 @@ struct BuildDiagnosticsTool: AgentTool, CommandExecuting {
     /// than inferred from the project name. This keeps generated apps without
     /// tests buildable while making SPM/Xcode test suites part of verification
     /// as soon as the user adds them.
-    private static func hasTestSources(in directory: URL) -> Bool {
+    static func hasTestSources(in directory: URL) -> Bool {
         let fm = FileManager.default
         let directTestDirectories = ["Tests", "Test", "BeetCodeTests"]
             .map { directory.appendingPathComponent($0) }

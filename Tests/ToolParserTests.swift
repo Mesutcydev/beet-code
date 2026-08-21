@@ -43,6 +43,22 @@ final class ToolParserTests: XCTestCase {
         XCTAssertEqual(call.name, "run_command")
     }
 
+    func testStrippingToolCallsRemovesTheWholeWrapper() {
+        let text = #"""
+        I'll check the build.
+        <tool_call>
+        {"name": "run_command", "arguments": {"command": "swift build"}}
+        </tool_call>
+        Done.
+        """#
+        XCTAssertEqual(ToolParser.strippingCalls(from: text), "I'll check the build.\n\nDone.")
+    }
+
+    func testStrippingEmptyToolCallWrapperRemovesProtocolNoise() {
+        let text = "The answer is ready.\n<tool_call>\n\n</tool_call>"
+        XCTAssertEqual(ToolParser.strippingCalls(from: text), "The answer is ready.")
+    }
+
     func testOpenAIEnvelope() {
         let text = #"""
         {"tool_calls": [{"function": {"name": "read_file", "arguments": "{\"path\": \"a.txt\"}"}}]}

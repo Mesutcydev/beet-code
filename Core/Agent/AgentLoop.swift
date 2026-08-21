@@ -425,7 +425,8 @@ actor AgentLoop {
                         SessionMessage(role: .reasoning, content: think, toolName: nil, timestamp: Date()))
                     eventContinuation?.yield(.reasoning(think))
                 }
-                var visible = PromptBuilder.cleaningGeneratedText(raw)
+                var visible = ToolParser.strippingEmptyCallWrappers(
+                    from: PromptBuilder.cleaningGeneratedText(raw))
 
                 // 2. Parse tool calls.
                 let calls = ToolParser.parse(visible)

@@ -375,14 +375,14 @@ enum PromptBuilder {
     static func extractingThinking(_ text: String) -> String? {
         let blocks = thinkingBlocks(in: text, includeUnterminated: false)
         guard !blocks.isEmpty else { return nil }
-        return blocks.joined(separator: "\n\n")
+        return joiningThinkingBlocks(blocks)
     }
 
     /// Streaming counterpart of `extractingThinking`: it also returns the
     /// currently open block so the live reasoning surface can update before a
     /// provider closes its thought section.
     static func extractingThinkingIncludingOpen(_ text: String) -> String {
-        thinkingBlocks(in: text, includeUnterminated: true).joined(separator: "\n\n")
+        joiningThinkingBlocks(thinkingBlocks(in: text, includeUnterminated: true))
     }
 
     /// True when generation is currently inside a reasoning delimiter. A
@@ -522,8 +522,14 @@ enum PromptBuilder {
         ("[thinking]", "[/thinking]"),
     ]
 
-    private static func thinkingBlocks(in text: String, includeUnterminated: Bool) -> [String] {
-        var located: [(offset: Int, text: String)] = []
+    private struct ThinkingBlock {
+        let offset: Int
+        let endOffset: Int
+        let text: String
+    }
+
+    private static func thinkingBlocks(in text: String, includeUnterminated: Bool) -> [ThinkingBlock] {
+        var located: [ThinkingBlock] = []
         for pair in reasoningTagPairs {
             var cursor = text.startIndex
             while let open = text.range(
@@ -537,18 +543,24 @@ enum PromptBuilder {
                     options: [.caseInsensitive],
                     range: search)
                 {
-                    let value = String(text[open.upperBound..<close.lowerBound])
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rawValue = String(text[open.upperBound..<close.lowerBound])
+                    let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !value.isEmpty {
-                        located.append((text.distance(from: text.startIndex, to: open.lowerBound), value))
+                        located.append(ThinkingBlock(
+                            offset: text.distance(from: text.startIndex, to: open.lowerBound),
+                            endOffset: text.distance(from: text.startIndex, to: close.upperBound),
+                            text: rawValue))
                     }
                     cursor = close.upperBound
                 } else {
                     if includeUnterminated {
-                        let value = String(text[open.upperBound...])
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let rawValue = String(text[open.upperBound...])
+                        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !value.isEmpty {
-                            located.append((text.distance(from: text.startIndex, to: open.lowerBound), value))
+                            located.append(ThinkingBlock(
+                                offset: text.distance(from: text.startIndex, to: open.lowerBound),
+                                endOffset: text.count,
+                                text: rawValue))
                         }
                     }
                     break
@@ -570,21 +582,68 @@ enum PromptBuilder {
         while markerIndex + 1 < markerRanges.count {
             let start = markerRanges[markerIndex].upperBound
             let end = markerRanges[markerIndex + 1].lowerBound
-            let value = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawValue = String(text[start..<end])
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if !value.isEmpty {
-                located.append((text.distance(from: text.startIndex, to: markerRanges[markerIndex].lowerBound), value))
+                located.append(ThinkingBlock(
+                    offset: text.distance(from: text.startIndex, to: markerRanges[markerIndex].lowerBound),
+                    endOffset: text.distance(from: text.startIndex, to: markerRanges[markerIndex + 1].upperBound),
+                    text: rawValue))
             }
             markerIndex += 2
         }
         if includeUnterminated, markerIndex < markerRanges.count {
-            let value = String(text[markerRanges[markerIndex].upperBound...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawValue = String(text[markerRanges[markerIndex].upperBound...])
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if !value.isEmpty {
-                located.append((text.distance(from: text.startIndex, to: markerRanges[markerIndex].lowerBound), value))
+                located.append(ThinkingBlock(
+                    offset: text.distance(from: text.startIndex, to: markerRanges[markerIndex].lowerBound),
+                    endOffset: text.count,
+                    text: rawValue))
             }
         }
 
-        return located.sorted { $0.offset < $1.offset }.map(\.text)
+        return located.sorted { $0.offset < $1.offset }
+    }
+
+    /// Provider streams often encode each reasoning delta as its own complete
+    /// `<think>…</think>` pair. Those pairs are adjacent in the accumulated
+    /// wire text, so treating them as separate paragraphs turns a thought into
+    /// one word per line. Keep real separated reasoning blocks readable, but
+    /// join adjacent provider fragments as one continuous trace.
+    private static func joiningThinkingBlocks(_ blocks: [ThinkingBlock]) -> String {
+        var result = ""
+        var previous: ThinkingBlock?
+
+        for block in blocks {
+            let trimmed = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            if result.isEmpty {
+                result = trimmed
+            } else if let previous, block.offset == previous.endOffset {
+                result = appendingReasoningFragment(block.text, to: result)
+            } else {
+                result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                    + "\n\n"
+                    + trimmed
+            }
+            previous = block
+        }
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func appendingReasoningFragment(_ fragment: String, to text: String) -> String {
+        guard !text.isEmpty, !fragment.isEmpty else { return text + fragment }
+        if text.last?.isWhitespace == true || fragment.first?.isWhitespace == true {
+            return text + fragment
+        }
+        if let first = fragment.first,
+           String(first).rangeOfCharacter(from: .punctuationCharacters) != nil {
+            return text + fragment
+        }
+        return text + " " + fragment
     }
 
     /// Some OpenAI-compatible gateways preserve the model's internal
@@ -599,8 +658,8 @@ enum PromptBuilder {
     private static func channelThinkingBlocks(
         in text: String,
         includeUnterminated: Bool
-    ) -> [(offset: Int, text: String)] {
-        var result: [(offset: Int, text: String)] = []
+    ) -> [ThinkingBlock] {
+        var result: [ThinkingBlock] = []
         var cursor = text.startIndex
         while let open = text.range(
             of: analysisChannel,
@@ -615,22 +674,24 @@ enum PromptBuilder {
                 .min { $0.lowerBound < $1.lowerBound }
 
             if let boundary {
-                let value = String(text[open.upperBound..<boundary.lowerBound])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawValue = String(text[open.upperBound..<boundary.lowerBound])
+                let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !value.isEmpty {
-                    result.append((
-                        text.distance(from: text.startIndex, to: open.lowerBound),
-                        value))
+                    result.append(ThinkingBlock(
+                        offset: text.distance(from: text.startIndex, to: open.lowerBound),
+                        endOffset: text.distance(from: text.startIndex, to: boundary.upperBound),
+                        text: rawValue))
                 }
                 cursor = boundary.upperBound
             } else {
                 if includeUnterminated {
-                    let value = String(text[open.upperBound...])
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rawValue = String(text[open.upperBound...])
+                    let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !value.isEmpty {
-                        result.append((
-                            text.distance(from: text.startIndex, to: open.lowerBound),
-                            value))
+                        result.append(ThinkingBlock(
+                            offset: text.distance(from: text.startIndex, to: open.lowerBound),
+                            endOffset: text.count,
+                            text: rawValue))
                     }
                 }
                 break

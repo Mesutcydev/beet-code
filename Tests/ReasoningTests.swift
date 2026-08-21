@@ -43,6 +43,16 @@ final class ReasoningTests: XCTestCase {
         XCTAssertFalse(reasoning)
     }
 
+    func testAdjacentProviderReasoningDeltasReadAsOneTrace() {
+        let raw = "<think>I</think><think> need</think><think> to create</think>"
+        XCTAssertEqual(
+            PromptBuilder.extractingThinkingIncludingOpen(raw),
+            "I need to create")
+        XCTAssertFalse(
+            StreamDisplayFilter.reasoningText(raw: raw).contains("\n\n"),
+            "streamed reasoning fragments must not become one paragraph per token")
+    }
+
     func testModelControlTokensAreHiddenAcrossChatTemplates() {
         let raw = "<|start_header_id|>assistant<|end_header_id|>\nOK<|eot_id|>"
         XCTAssertEqual(PromptBuilder.cleaningGeneratedText(raw), "OK")

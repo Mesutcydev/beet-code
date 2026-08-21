@@ -42,7 +42,8 @@ enum SessionExporter {
                 lines.append("")
                 lines.append(message.content)
             case .assistant:
-                let prose = ToolParser.strippingCalls(from: message.content)
+                let prose = ToolParser.strippingCalls(
+                    from: PromptBuilder.cleaningGeneratedText(message.content))
                 guard !prose.isEmpty else { continue }
                 lines.append("")
                 lines.append("## \(record.source == .app ? "Beet Code" : record.source.label) · \(time.string(from: message.timestamp))")

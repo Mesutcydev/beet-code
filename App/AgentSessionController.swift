@@ -676,8 +676,7 @@ final class AgentSessionController: ObservableObject {
         guard token == runID else { return }
         flushTokens()
         if !codexStreamingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let prose = PromptBuilder.strippingModelControlTokens(
-                ToolParser.strippingCalls(from: codexStreamingText))
+            let prose = Self.cleanedAssistantText(codexStreamingText)
             if !prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 transcript.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
                 appendCodexMessage(role: .assistant, content: prose)
@@ -730,6 +729,14 @@ final class AgentSessionController: ObservableObject {
             content: content,
             toolName: toolName,
             timestamp: Date()))
+    }
+
+    /// One defensive cleanup path for assistant text entering the visible
+    /// transcript. The agent loop still receives valid tool wire format so it
+    /// can parse and execute calls; only the user-facing/persisted answer is
+    /// stripped here.
+    private static func cleanedAssistantText(_ text: String) -> String {
+        ToolParser.strippingCalls(from: PromptBuilder.cleaningGeneratedText(text))
     }
 
     private func codexInvocation(
@@ -1148,7 +1155,7 @@ final class AgentSessionController: ObservableObject {
             case .assistant:
                 // Sanitize restored history the same way as live events:
                 // older sessions stored raw tool-call JSON in assistant text.
-                let prose = ToolParser.strippingCalls(from: message.content)
+                let prose = Self.cleanedAssistantText(message.content)
                 if !prose.isEmpty {
                     rebuilt.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
                 }
@@ -1563,8 +1570,7 @@ final class AgentSessionController: ObservableObject {
             liveReasoningText = ""
             // Wire format never reaches the transcript: strip tool-call
             // syntax, and drop the bubble entirely if nothing else remains.
-            let prose = PromptBuilder.strippingModelControlTokens(
-                ToolParser.strippingCalls(from: text))
+            let prose = Self.cleanedAssistantText(text)
             if !prose.isEmpty {
                 transcript.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
             }

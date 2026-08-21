@@ -641,8 +641,9 @@ private struct UserBubble: View {
     }
 }
 
-/// Assistant output: avatar-led, no bubble, full column width, inline
-/// markdown — the ChatGPT/Cursor reading pattern.
+/// Assistant output: avatar-led, no bubble, full column width, block-aware
+/// markdown — lists, headings, and code blocks should read like an answer,
+/// not like one flattened line of text.
 private struct AssistantMessage: View {
     let item: AgentSessionController.TranscriptItem
 
@@ -674,18 +675,18 @@ struct AssistantAvatar: View {
     }
 }
 
-/// Inline-markdown text with a plain-text fallback. Markdown renders code,
-/// bold, and links like ChatGPT; if parsing fails (raw identifiers with
-/// stray underscores), plain text shows — never a blank bubble. Set at
-/// `.body` (not callout): the transcript is the app's primary reading
-/// surface, so prose gets the full reading size.
+/// Markdown text with a plain-text fallback. Full parsing keeps headings,
+/// lists, paragraphs, and fenced code blocks structurally separated; if
+/// parsing fails (raw identifiers with stray underscores), plain text shows —
+/// never a blank bubble. Set at `.body` (not callout): the transcript is the
+/// app's primary reading surface, so prose gets the full reading size.
 struct MarkdownText: View {
     let text: String
 
     var body: some View {
         if let attributed = try? AttributedString(
             markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            options: .init(interpretedSyntax: .full)) {
             Text(attributed)
                 .font(.body)
                 .foregroundStyle(Theme.textPrimary)

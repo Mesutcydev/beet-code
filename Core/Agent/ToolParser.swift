@@ -63,6 +63,10 @@ enum ToolParser {
     struct Candidate: Equatable {
         let range: Range<String.Index>
         let payload: String
+        /// The complete wire-format container, when the payload came from a
+        /// fenced block or `<tool_call>` wrapper. Parsing only needs `range`,
+        /// while display cleanup must remove the wrapper as well.
+        let containerRange: Range<String.Index>?
     }
 
     static func parse(_ text: String) -> [ParsedToolCall] {
@@ -100,7 +104,10 @@ enum ToolParser {
                 else { continue }
                 let payload = text[payloadRange].trimmingCharacters(in: .whitespacesAndNewlines)
                 guard payload.hasPrefix("{") else { continue }
-                candidates.append(Candidate(range: payloadRange, payload: payload))
+                candidates.append(Candidate(
+                    range: payloadRange,
+                    payload: payload,
+                    containerRange: Range(match.range, in: text)))
             }
         }
 
@@ -109,7 +116,10 @@ enum ToolParser {
             let range = NSRange(text.startIndex..., in: text)
             for match in regex.matches(in: text, range: range) where match.numberOfRanges > 1 {
                 if let payloadRange = Range(match.range(at: 1), in: text) {
-                    candidates.append(Candidate(range: payloadRange, payload: String(text[payloadRange])))
+                    candidates.append(Candidate(
+                        range: payloadRange,
+                        payload: String(text[payloadRange]),
+                        containerRange: Range(match.range, in: text)))
                 }
             }
         }
@@ -148,13 +158,24 @@ enum ToolParser {
                     let range = objectStart..<text.index(after: index)
                     let overlaps = claimed.contains { $0.overlaps(range) }
                     if !overlaps {
-                        candidates.append(Candidate(range: range, payload: String(text[range])))
+                        candidates.append(Candidate(
+                            range: range,
+                            payload: String(text[range]),
+                            containerRange: nil))
                     }
                     start = nil
                 }
             }
         }
         return candidates
+    }
+
+    /// Removes an empty `<tool_call>` wrapper without touching a valid call,
+    /// so the agent loop can still parse any real tool request that follows.
+    static func strippingEmptyCallWrappers(from text: String) -> String {
+        let ranges = emptyCallWrapperRanges(in: text)
+        guard !ranges.isEmpty else { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return removing(ranges: ranges, from: text)
     }
 
     /// Removes everything that parses as a tool call (fenced blocks,
@@ -166,14 +187,41 @@ enum ToolParser {
         for candidate in collectCandidates(text) {
             guard let value = TolerantJSON.value(from: candidate.payload),
                   !shape(value).isEmpty else { continue }
-            removals.append(candidate.range)
+            removals.append(candidate.containerRange ?? candidate.range)
         }
+        // A model can emit an empty wrapper while deciding whether to call a
+        // tool. It is still protocol noise, and leaving the tags behind makes
+        // the final answer look like a broken XML transcript.
+        removals.append(contentsOf: emptyCallWrapperRanges(in: text))
         guard !removals.isEmpty else { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return removing(ranges: removals, from: text)
+    }
+
+    private static func emptyCallWrapperRanges(in text: String) -> [Range<String.Index>] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?is)<tool_call>\s*</tool_call>"#) else {
+            return []
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap {
+            Range($0.range, in: text)
+        }
+    }
+
+    private static func removing(
+        ranges: [Range<String.Index>],
+        from text: String
+    ) -> String {
         var result = ""
         var cursor = text.startIndex
-        for range in removals.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+        var lastRemovedEnd: String.Index?
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            // A valid wrapper and an empty-wrapper cleanup can overlap only
+            // when a malformed provider repeats tags. Avoid duplicating the
+            // intervening text if that happens.
+            if let lastRemovedEnd, range.lowerBound < lastRemovedEnd { continue }
             result += text[cursor..<range.lowerBound]
             cursor = range.upperBound
+            lastRemovedEnd = range.upperBound
         }
         result += text[cursor...]
         // Collapse the blank runs a removed block leaves behind.

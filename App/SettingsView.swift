@@ -2,10 +2,9 @@ import SwiftUI
 
 // MARK: - Settings window
 
-/// Tabbed, card-based settings. Four fixed tabs (General / Agent /
-/// Providers / Plugins) instead of one endless scrolling list; every
-/// section is a Theme-styled card with an icon header, consistent padding,
-/// and a footer that never truncates.
+/// Tabbed, card-based settings. Four native tabs (General / Agent /
+/// Providers / Plugins); every section is a Theme-styled card with an icon
+/// header, consistent padding, and a short footer.
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject private var settings = SettingsStore.shared
@@ -30,33 +29,21 @@ struct SettingsView: View {
     @State private var tab: Tab = .general
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Settings", selection: $tab) {
-                ForEach(Tab.allCases) { t in
-                    Label(t.rawValue, systemImage: t.icon).tag(t)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(Spacing.lg)
-            .padding(.bottom, Spacing.xs)
-
-            Divider().overlay(Theme.hairline)
-
-            // Plain conditional swap instead of TabView: macOS TabView draws
-            // its own tab strip, which would double the segmented picker.
-            Group {
-                switch tab {
-                case .general: GeneralTab()
-                case .agent: AgentTab()
-                case .providers: ProvidersTab()
-                case .plugins: PluginsTab()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        TabView(selection: $tab) {
+            GeneralTab()
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(Tab.general)
+            AgentTab()
+                .tabItem { Label("Agent", systemImage: "cpu") }
+                .tag(Tab.agent)
+            ProvidersTab()
+                .tabItem { Label("Providers", systemImage: "key") }
+                .tag(Tab.providers)
+            PluginsTab()
+                .tabItem { Label("Plugins", systemImage: "puzzlepiece") }
+                .tag(Tab.plugins)
         }
-        .background(Theme.bg)
-        .frame(width: 940, height: 720)
+        .frame(minWidth: 640, idealWidth: 680, minHeight: 520)
         .onReceive(NotificationCenter.default.publisher(for: .openProviderSettings)) { _ in
             tab = .providers
         }
@@ -272,7 +259,7 @@ private struct GeneralTab: View {
 
     var body: some View {
         TabScroll {
-            SettingsCard(title: "Composer", icon: "text.cursor", footer: "The composer's signature underline animates through the selected flow's palette; it brightens on focus and during streaming. Response style is also used by the agent when it writes the final handoff.") {
+            SettingsCard(title: "Composer", icon: "text.cursor", footer: "The border traces the selected flow. Response style is used in the agent’s final handoff.") {
                 SettingRow(label: "Style") {
                     Picker("Composer style", selection: $settings.composerFlow) {
                         ForEach(ComposerFlow.allCases) { flow in
@@ -389,13 +376,21 @@ private struct GeneralTab: View {
                 }
             }
 
-            SettingsCard(title: "Local API Server", icon: "network", footer: "Exposes the loaded model as an OpenAI-compatible endpoint on 127.0.0.1 — loopback only, nothing outside this Mac can reach it. Point Codex (--oss), Claude Code, Aider, or any OpenAI-format client at the base URL. The served model is whatever BeetCode has active; requests carry the full conversation, so the endpoint is stateless.") {
+            SettingsCard(title: "Local API Server", icon: "network", footer: "Loopback-only OpenAI-compatible endpoint for the active model. Nothing outside this Mac can reach it.") {
                 SettingToggle(label: "Enable local API server", isOn: $settings.apiServerEnabled)
                 SettingRow(label: "Port") {
                     TextField("1234", value: $settings.apiServerPort, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 90)
                         .monospacedDigit()
+                }
+                SettingRow(label: "Bearer token") {
+                    TextField("Required", text: Binding(
+                        get: { settings.apiServerToken },
+                        set: { settings.apiServerToken = $0 }))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                        .frame(minWidth: 180)
                 }
                 HStack(spacing: Spacing.sm) {
                     Circle()
@@ -417,11 +412,13 @@ private struct GeneralTab: View {
                     }
                     Spacer()
                     Button("Copy curl example") {
+                        let token = settings.ensureAPIServerToken()
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(
                             """
                             curl \(appState.apiServerBaseURL)/v1/chat/completions \\
                               -H 'Content-Type: application/json' \\
+                              -H 'Authorization: Bearer \(token)' \\
                               -d '{"model":"beetcode","messages":[{"role":"user","content":"Hello"}]}'
                             """,
                             forType: .string)
@@ -432,7 +429,7 @@ private struct GeneralTab: View {
                 }
             }
 
-            SettingsCard(title: "Remote Beetcode Sessions", icon: "iphone", footer: "Tailscale is the secure default. Local Wi‑Fi fallback is opt-in for trusted private networks. The QR contains only a short-lived, one-time pairing code; after pairing, the browser receives a scoped token valid for 30 days (or until revoked) and can continue saved Beetcode sessions. It never exposes the terminal CLI or the local model API.") {
+            SettingsCard(title: "Remote Beetcode Sessions", icon: "iphone", footer: "Tailscale is the default. The QR is a one-time pairing code; the browser then receives a scoped token.") {
                 SettingToggle(label: "Enable remote session access", isOn: $settings.remoteSessionEnabled)
                 SettingRow(label: "Port") {
                     TextField("9475", value: $settings.remoteSessionPort, format: .number)
@@ -490,7 +487,7 @@ private struct AgentTab: View {
 
     var body: some View {
         TabScroll {
-            SettingsCard(title: "Autonomy", icon: "shield.lefthalf.filled", footer: "Reads are always automatic. Every write shows a diff preview and asks first unless file edits are auto-approved. Auto-approving commands is a safe-command policy, not a shell bypass: only exact invocations of known read-only executables (swift, xcodebuild, ls, git status, rg, …) with arguments inside the workspace are admitted; shell operators, substitutions, redirections, backgrounding, and any path outside the workspace always require an approval card.") {
+            SettingsCard(title: "Autonomy", icon: "shield.lefthalf.filled", footer: "Reads run automatically. Writes and commands need approval unless you enable the safe-command policy.") {
                 SettingRow(label: "Agent mode", value: settings.agentMode.help) {
                     Picker("Agent mode", selection: $settings.agentMode) {
                         ForEach(AgentMode.allCases) { mode in
@@ -585,7 +582,7 @@ private struct ComputerControlCard: View {
         SettingsCard(
             title: "Computer control",
             icon: "desktopcomputer.and.arrow.down",
-            footer: "Lets the agent observe and drive any Mac app (computer_* tools): the accessibility tree and screenshots for observation, mouse/keyboard for actions. Observation is automatic; every click, keystroke, and scroll passes through the approval card. Both permissions are macOS-level and can be revoked anytime in System Settings → Privacy & Security."
+            footer: "Observation is automatic; clicks, keys, and scrolls need approval. Revoke in System Settings → Privacy & Security."
         ) {
             permissionRow(
                 label: "Accessibility",
@@ -894,6 +891,188 @@ private enum CapabilityMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// A model-aware effort control with a small "reactor" metaphor. It keeps the
+/// familiar one-choice semantics of a picker, but exposes the supported modes
+/// as a visible energy ladder so the user can understand the latency/quality
+/// trade-off without opening a generic menu.
+struct ReasoningEffortPicker: View {
+    let profile: RemoteModelProfile
+    @Binding var selection: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionNamespace
+
+    private var options: [ReasoningEffort] { profile.effectiveReasoningEfforts }
+
+    private var selectedOption: ReasoningEffort? {
+        guard let selection else { return nil }
+        return options.first { $0.rawValue == selection.lowercased() }
+    }
+
+    var body: some View {
+        if !options.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
+                    Label("Reasoning reactor", systemImage: "atom")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                    Text(selectionLabel)
+                        .font(.caption2.weight(.semibold).monospaced())
+                        .foregroundStyle(reactorTint)
+                }
+
+                HStack(spacing: 4) {
+                    reactorButton(
+                        id: "automatic",
+                        title: "Auto",
+                        subtitle: "provider default",
+                        glyph: "wand.and.stars",
+                        tint: Theme.accent,
+                        isSelected: selection == nil) {
+                            choose(nil)
+                        }
+
+                    ForEach(options) { option in
+                        reactorButton(
+                            id: option.id,
+                            title: option.label,
+                            subtitle: option.rawValue,
+                            glyph: option.glyph,
+                            tint: tint(for: option),
+                            isSelected: selectedOption == option) {
+                                choose(option.rawValue)
+                            }
+                    }
+                }
+                .padding(4)
+                .background(
+                    LinearGradient(
+                        colors: [Theme.surfaceInset, Theme.bg],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing),
+                    in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1))
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(reactorTint)
+                        .frame(width: 6, height: 6)
+                        .shadow(color: reactorTint.opacity(0.7), radius: 4)
+                    Text(selectionDetail)
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer()
+                    Text("\(options.count) modes")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    private var selectionLabel: String {
+        selectedOption?.label ?? "Auto"
+    }
+
+    private var selectionDetail: String {
+        if let selectedOption { return "\(selectedOption.detail) · wire: \(selectedOption.rawValue)" }
+        if let defaultEffort = profile.effectiveDefaultReasoningEffort {
+            return "The provider chooses its default · currently \(defaultEffort)"
+        }
+        return "The provider chooses the balance automatically"
+    }
+
+    private var reactorTint: Color {
+        if let selectedOption { return tint(for: selectedOption) }
+        return Theme.accent
+    }
+
+    private func tint(for option: ReasoningEffort) -> Color {
+        switch option.rawValue {
+        case "none", "minimal": Theme.info
+        case "low", "medium": Theme.accent
+        case "high", "xhigh": Theme.warning
+        case "max": Theme.danger
+        default: Theme.accent
+        }
+    }
+
+    private func reactorButton(
+        id: String,
+        title: String,
+        subtitle: String,
+        glyph: String,
+        tint: Color,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                ZStack {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Theme.washStrong(tint))
+                            .matchedGeometryEffect(id: "reactor-selection", in: selectionNamespace)
+                    }
+                    Image(systemName: glyph)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isSelected ? tint : Theme.textTertiary)
+                }
+                .frame(height: 22)
+                Text(title)
+                    .font(.caption2.weight(isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .foregroundStyle(isSelected ? tint : Theme.textTertiary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .padding(.horizontal, 4)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(ReactorNodeButtonStyle(isSelected: isSelected, reduceMotion: reduceMotion))
+        .help(isSelected ? "Selected: \(title) (\(subtitle))" : "Use \(title) reasoning (\(subtitle))")
+        .accessibilityLabel("\(title), \(subtitle)")
+        .accessibilityHint(isSelected ? "Selected" : "\(selectionDetail)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .id(id)
+    }
+
+    private func choose(_ effort: String?) {
+        if reduceMotion {
+            selection = effort
+        } else {
+            withAnimation(.snappy(duration: 0.22)) {
+                selection = effort
+            }
+        }
+    }
+}
+
+private struct ReactorNodeButtonStyle: ButtonStyle {
+    let isSelected: Bool
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Theme.wash(Theme.accent) : Color.clear))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(isSelected ? Theme.washBorder(Theme.accent) : Color.clear, lineWidth: 1))
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.965 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 /// Capability controls for a model whose endpoint identity may come from
 /// OpenCode or another compatible gateway. The override is keyed by the
 /// exact provider id + model pair, so two gateways using the same model name
@@ -906,6 +1085,7 @@ private struct RemoteModelCapabilityEditor: View {
     @State private var vision: CapabilityMode = .automatic
     @State private var tools: CapabilityMode = .automatic
     @State private var reasoning: CapabilityMode = .automatic
+    @State private var reasoningEffort: String?
     @State private var temperature: CapabilityMode = .automatic
 
     init(profile: RemoteModelProfile) {
@@ -916,6 +1096,7 @@ private struct RemoteModelCapabilityEditor: View {
         _vision = State(initialValue: CapabilityMode(value: override?.supportsVision))
         _tools = State(initialValue: CapabilityMode(value: override?.supportsTools))
         _reasoning = State(initialValue: CapabilityMode(value: override?.supportsReasoning))
+        _reasoningEffort = State(initialValue: override?.reasoningEffort)
         _temperature = State(initialValue: CapabilityMode(value: override?.supportsTemperature))
     }
 
@@ -942,6 +1123,7 @@ private struct RemoteModelCapabilityEditor: View {
 
                 capabilityPicker("Tools", selection: $tools)
                 capabilityPicker("Reasoning", selection: $reasoning)
+                ReasoningEffortPicker(profile: effectiveProfile, selection: $reasoningEffort)
                 capabilityPicker("Vision", selection: $vision)
                 capabilityPicker("Temperature", selection: $temperature)
 
@@ -972,7 +1154,7 @@ private struct RemoteModelCapabilityEditor: View {
         if let context = effectiveProfile.contextWindow { parts.append("context \(context.formatted())") }
         if let output = effectiveProfile.maxOutputTokens { parts.append("output \(output.formatted())") }
         if effectiveProfile.supportsTools == true { parts.append("tools") }
-        if effectiveProfile.supportsReasoning == true { parts.append("reasoning") }
+        if !effectiveProfile.effectiveReasoningEfforts.isEmpty { parts.append("reasoning") }
         if effectiveProfile.supportsVision == true { parts.append("vision") }
         if effectiveProfile.supportsTemperature == true { parts.append("temperature") }
         return parts.isEmpty ? "Effective metadata is unknown — use the controls below for this gateway." : parts.joined(separator: " · ")
@@ -1002,7 +1184,8 @@ private struct RemoteModelCapabilityEditor: View {
             supportsVision: vision.value,
             supportsTools: tools.value,
             supportsReasoning: reasoning.value,
-            supportsTemperature: temperature.value)
+            supportsTemperature: temperature.value,
+            reasoningEffort: reasoningEffort)
         AppPreferencesStore.shared.saveRemoteModelOverride(override, endpoint: profile.endpoint())
     }
 
@@ -1013,6 +1196,7 @@ private struct RemoteModelCapabilityEditor: View {
         tools = .automatic
         reasoning = .automatic
         temperature = .automatic
+        reasoningEffort = nil
         AppPreferencesStore.shared.saveRemoteModelOverride(nil, endpoint: profile.endpoint())
     }
 
@@ -1027,6 +1211,7 @@ private struct KnownProviderRow: View {
     @ObservedObject private var keyStore = APIKeyStore.shared
     @State private var keyDraft = ""
     @State private var modelDraft = ""
+    @State private var reasoningEffort: String?
     @State private var liveProfiles: [RemoteModelProfile] = []
     @State private var state: ProviderRowState = .idle
 
@@ -1051,8 +1236,25 @@ private struct KnownProviderRow: View {
 
     private var modelChoices: [String] {
         var seen = Set<String>()
-        return (liveProfiles.map(\.model) + provider.suggestedModels)
+        return (liveProfiles.map(\.model) + provider.availableModels)
             .filter { !seen.insert($0).inserted ? false : true }
+    }
+
+    private var selectedProfile: RemoteModelProfile {
+        let cached = liveProfiles.first(where: { $0.model == selectedModel })
+            ?? AppPreferencesStore.shared.current.remoteModelProfiles.values.first(where: {
+                $0.providerKey == provider.id && $0.model == selectedModel
+            })
+        let base = cached ?? RemoteModelProfile(
+            provider: .custom,
+            model: selectedModel,
+            supportsTools: true,
+            providerKey: provider.id,
+            providerDisplayName: provider.displayName,
+            apiProtocol: provider.apiProtocol,
+            baseURL: provider.baseURL.absoluteString)
+        return base.applying(
+            AppPreferencesStore.shared.remoteModelOverride(endpoint: base.endpoint()))
     }
 
     var body: some View {
@@ -1121,6 +1323,10 @@ private struct KnownProviderRow: View {
                 }
             }
 
+            ReasoningEffortPicker(profile: selectedProfile, selection: $reasoningEffort)
+                .id(selectedProfile.id)
+                .onChange(of: reasoningEffort) { _, _ in persistReasoningEffort() }
+
             switch state {
             case .idle: EmptyView()
             case .running(let message):
@@ -1138,7 +1344,11 @@ private struct KnownProviderRow: View {
             }
         }
         .padding(.vertical, Spacing.sm)
-        .task { restoreModel() }
+        .task {
+            restoreModel()
+            loadReasoningEffort()
+        }
+        .onChange(of: modelDraft) { _, _ in loadReasoningEffort() }
     }
 
     private var isRunning: Bool {
@@ -1180,6 +1390,19 @@ private struct KnownProviderRow: View {
             apiProtocol: provider.apiProtocol,
             baseURL: provider.baseURL.absoluteString)
         AppPreferencesStore.shared.saveRemoteModelProfiles([profile])
+    }
+
+    private func persistReasoningEffort() {
+        var override = AppPreferencesStore.shared
+            .remoteModelOverride(endpoint: selectedProfile.endpoint()) ?? RemoteModelOverride()
+        override.reasoningEffort = reasoningEffort
+        AppPreferencesStore.shared.saveRemoteModelOverride(
+            override, endpoint: selectedProfile.endpoint())
+    }
+
+    private func loadReasoningEffort() {
+        reasoningEffort = AppPreferencesStore.shared
+            .remoteModelOverride(endpoint: selectedProfile.endpoint())?.reasoningEffort
     }
 
     private func test() {
@@ -1408,6 +1631,7 @@ private struct ProviderCard: View {
     @State private var overrideVision: CapabilityMode = .automatic
     @State private var overrideTools: CapabilityMode = .automatic
     @State private var overrideReasoning: CapabilityMode = .automatic
+    @State private var overrideReasoningEffort: String?
     @State private var overrideTemperature: CapabilityMode = .automatic
 
     enum TestState: Equatable {
@@ -1554,7 +1778,7 @@ private struct ProviderCard: View {
                                     }
                                 }
                                 Section("Common") {
-                                    ForEach(provider.suggestedModels.filter { !liveModels.contains($0) }, id: \.self) { model in
+                                    ForEach(provider.availableModels.filter { !liveModels.contains($0) }, id: \.self) { model in
                                         Text(model).tag(model)
                                     }
                                 }
@@ -1565,7 +1789,7 @@ private struct ProviderCard: View {
                             }
                             if !modelDraft.isEmpty,
                                !liveModels.contains(modelDraft),
-                               !provider.suggestedModels.contains(modelDraft) {
+                               !provider.availableModels.contains(modelDraft) {
                                 Section("Selected") {
                                     Text(modelDraft).tag(modelDraft)
                                 }
@@ -1685,7 +1909,7 @@ private struct ProviderCard: View {
     /// Suggested models, any saved draft, plus whatever the provider's live
     /// `/models` endpoint returned — static presets go stale fast (P10).
     private var modelOptions: [String] {
-        var options = provider.suggestedModels
+        var options = provider.availableModels
         for live in liveModels where !options.contains(live) {
             options.append(live)
         }
@@ -1778,7 +2002,7 @@ private struct ProviderCard: View {
         if let context = profile.contextWindow { parts.append("context \(context.formatted())") }
         if let output = profile.maxOutputTokens { parts.append("output \(output.formatted())") }
         if profile.supportsTools == true { parts.append("tools") }
-        if profile.supportsReasoning == true { parts.append("reasoning") }
+        if !profile.effectiveReasoningEfforts.isEmpty { parts.append("reasoning") }
         if profile.supportsVision == true { parts.append("vision") }
         return parts.isEmpty ? "Model metadata is unknown — use the capability overrides below for unusual gateways." : parts.joined(separator: " · ")
     }
@@ -1796,6 +2020,10 @@ private struct ProviderCard: View {
                 }
                 capabilityPicker("Tools", selection: $overrideTools)
                 capabilityPicker("Reasoning", selection: $overrideReasoning)
+                if let profile = selectedProfile {
+                    ReasoningEffortPicker(profile: profile, selection: $overrideReasoningEffort)
+                        .id(profile.id)
+                }
                 capabilityPicker("Vision", selection: $overrideVision)
                 capabilityPicker("Temperature", selection: $overrideTemperature)
                 HStack {
@@ -1839,6 +2067,7 @@ private struct ProviderCard: View {
         overrideVision = CapabilityMode(value: override?.supportsVision)
         overrideTools = CapabilityMode(value: override?.supportsTools)
         overrideReasoning = CapabilityMode(value: override?.supportsReasoning)
+        overrideReasoningEffort = override?.reasoningEffort
         overrideTemperature = CapabilityMode(value: override?.supportsTemperature)
     }
 
@@ -1851,7 +2080,8 @@ private struct ProviderCard: View {
             supportsVision: overrideVision.value,
             supportsTools: overrideTools.value,
             supportsReasoning: overrideReasoning.value,
-            supportsTemperature: overrideTemperature.value)
+            supportsTemperature: overrideTemperature.value,
+            reasoningEffort: overrideReasoningEffort)
         AppPreferencesStore.shared.saveRemoteModelOverride(override, provider: provider, model: model)
     }
 

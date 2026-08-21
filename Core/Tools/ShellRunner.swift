@@ -196,6 +196,61 @@ enum ShellRunner {
             output: output)
     }
 
+    /// Starts `/bin/zsh -c` in a new process group and returns immediately.
+    /// stdout/stderr go to `logURL`. Caller owns the pid and must `killGroup`.
+    static func spawnDetached(
+        command: String,
+        workingDirectory: URL,
+        logURL: URL,
+        environment: [String: String] = sanitizedEnvironment()
+    ) throws -> pid_t {
+        let logFD = open(logURL.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+        guard logFD >= 0 else { throw ShellRunnerError.spawnFailed(errno) }
+        defer { close(logFD) }
+
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_adddup2(&fileActions, logFD, STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(&fileActions, logFD, STDERR_FILENO)
+        _ = workingDirectory.path.withCString { path in
+            posix_spawn_file_actions_addchdir_np(&fileActions, path)
+        }
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
+
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setpgroup(&attributes, 0)
+        defer { posix_spawnattr_destroy(&attributes) }
+
+        let invocation = ["zsh", "-c", command]
+        let argv: [UnsafeMutablePointer<CChar>?] = invocation.map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        let environmentPairs = environment.map { "\($0.key)=\($0.value)" }
+        let envp: [UnsafeMutablePointer<CChar>?] = environmentPairs.map { strdup($0) } + [nil]
+        defer { envp.forEach { free($0) } }
+
+        var pid: pid_t = 0
+        let spawnResult = "/bin/zsh".withCString { executableCString in
+            posix_spawn(&pid, executableCString, &fileActions, &attributes, argv, envp)
+        }
+        guard spawnResult == 0 else { throw ShellRunnerError.spawnFailed(spawnResult) }
+        return pid
+    }
+
+    static func killGroup(_ pid: pid_t, waitSeconds: TimeInterval = 2) {
+        kill(-pid, SIGTERM)
+        let deadline = Date().addingTimeInterval(waitSeconds)
+        var status: Int32 = 0
+        while Date() < deadline {
+            let waited = waitpid(pid, &status, WNOHANG)
+            if waited == pid || waited == -1 { return }
+            usleep(20_000)
+        }
+        kill(-pid, SIGKILL)
+        _ = waitpid(pid, &status, 0)
+    }
+
     private static func exitCode(from status: Int32) -> Int32 {
         // sys/wait.h macros are not visible to Swift; decode manually.
         let signalBits = status & 0x7f

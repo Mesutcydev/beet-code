@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Long-lived workspace processes (dev servers) that survive across agent
@@ -16,7 +17,7 @@ enum BackgroundProcessStore {
     }
 
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var processes: [String: Process] = [:]
+    nonisolated(unsafe) private static var pids: [String: pid_t] = [:]
     nonisolated(unsafe) private static var records: [String: Record] = [:]
     nonisolated(unsafe) private static var nextID: Int = 1
 
@@ -31,34 +32,16 @@ enum BackgroundProcessStore {
         let logURL = logDir.appendingPathComponent("\(id).log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
-        process.currentDirectoryURL = workingDirectory
-        process.environment = ShellRunner.sanitizedEnvironment()
-        let handle = try FileHandle(forWritingTo: logURL)
-        process.standardOutput = handle
-        process.standardError = handle
-        try process.run()
-        ChildProcessRegistry.register(process)
+        let pid = try ShellRunner.spawnDetached(
+            command: command, workingDirectory: workingDirectory, logURL: logURL)
+        ChildProcessRegistry.register(pid: pid)
 
         let record = Record(
-            id: id, command: command, pid: process.processIdentifier,
+            id: id, command: command, pid: pid,
             logPath: logURL.path, startedAt: Date(), running: true)
         lock.withLock {
-            processes[id] = process
+            pids[id] = pid
             records[id] = record
-        }
-        process.terminationHandler = { proc in
-            ChildProcessRegistry.unregister(proc)
-            lock.withLock {
-                if var existing = records[id] {
-                    existing.running = false
-                    records[id] = existing
-                }
-                processes[id] = nil
-            }
-            try? handle.close()
         }
         return record
     }
@@ -67,9 +50,9 @@ enum BackgroundProcessStore {
         lock.withLock {
             records.values.map { record in
                 var copy = record
-                if let process = processes[record.id] {
-                    copy.running = process.isRunning
-                    copy.pid = process.processIdentifier
+                if let pid = pids[record.id] {
+                    copy.running = kill(pid, 0) == 0
+                    copy.pid = pid
                 } else {
                     copy.running = false
                 }
@@ -91,36 +74,29 @@ enum BackgroundProcessStore {
 
     @discardableResult
     static func stop(id: String) -> Bool {
-        let process = lock.withLock { processes[id] }
-        guard let process, process.isRunning else { return false }
-        process.terminate()
-        let deadline = Date().addingTimeInterval(2)
-        while process.isRunning, Date() < deadline {
-            usleep(20_000)
-        }
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
-        ChildProcessRegistry.unregister(process)
+        let pid = lock.withLock { pids[id] }
+        guard let pid else { return false }
+        ShellRunner.killGroup(pid)
+        ChildProcessRegistry.unregister(pid: pid)
         lock.withLock {
             if var existing = records[id] {
                 existing.running = false
                 records[id] = existing
             }
-            processes[id] = nil
+            pids[id] = nil
         }
         return true
     }
 
     /// Test hook.
     static func resetAll() {
-        let running = lock.withLock { Array(processes.values) }
-        for process in running where process.isRunning {
-            process.terminate()
-            ChildProcessRegistry.unregister(process)
+        let running = lock.withLock { Array(pids.values) }
+        for pid in running {
+            ShellRunner.killGroup(pid)
+            ChildProcessRegistry.unregister(pid: pid)
         }
         lock.withLock {
-            processes.removeAll()
+            pids.removeAll()
             records.removeAll()
         }
     }

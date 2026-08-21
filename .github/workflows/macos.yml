@@ -35,5 +35,6 @@ jobs:
           -destination 'platform=macOS'
           -derivedDataPath "$RUNNER_TEMP/BeetCodeDerivedData"
           CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
           ONLY_ACTIVE_ARCH=YES
           test

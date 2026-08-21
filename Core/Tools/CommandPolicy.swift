@@ -17,6 +17,17 @@ struct CommandPolicy: Sendable {
         "git", "rg", "grep", "find", "cat", "head", "tail",
     ]
 
+    /// git subcommands that are inspections, not mutations or remotes.
+    private static let readOnlyGit: Set<String> = [
+        "status", "diff", "log", "show", "branch", "ls-files",
+        "rev-parse", "cat-file", "help", "--version",
+    ]
+
+    /// find predicates that write or execute.
+    private static let mutatingFind: Set<String> = [
+        "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fls",
+    ]
+
     /// Shell syntax that is never auto-approved: separators, substitution,
     /// redirections, backgrounding, heredocs, and newline-separated commands.
     private static let forbiddenTokens: [(String, String)] = [
@@ -45,6 +56,15 @@ struct CommandPolicy: Sendable {
             return Decision(safeForAutoApproval: false, reason: "executable '\(executableName)' requires approval")
         }
 
+        if executableName == "git" {
+            guard let subcommand = parts.dropFirst().first, Self.readOnlyGit.contains(subcommand) else {
+                return Decision(safeForAutoApproval: false, reason: "git subcommand requires approval")
+            }
+        }
+        if executableName == "find", parts.contains(where: { Self.mutatingFind.contains($0) }) {
+            return Decision(safeForAutoApproval: false, reason: "find mutation flag requires approval")
+        }
+
         // Path arguments must resolve inside the workspace — absolute paths,
         // relative traversals (`../`), dot paths, and any path-looking token.
         for argument in parts.dropFirst() {
@@ -69,15 +89,13 @@ struct CommandPolicy: Sendable {
         guard let executable = parts.first else { return false }
         let name = URL(fileURLWithPath: executable).lastPathComponent
         switch name {
-        case "ls", "pwd", "wc", "file", "rg", "grep", "find", "cat", "head", "tail":
+        case "ls", "pwd", "wc", "file", "rg", "grep", "cat", "head", "tail":
             return false
+        case "find":
+            return parts.contains(where: { Self.mutatingFind.contains($0) })
         case "git":
             guard let subcommand = parts.dropFirst().first else { return true }
-            let readOnly: Set<String> = [
-                "status", "diff", "log", "show", "branch", "ls-files",
-                "rev-parse", "cat-file", "config", "help", "--version",
-            ]
-            return !readOnly.contains(subcommand)
+            return !Self.readOnlyGit.contains(subcommand)
         case "swift", "xcodebuild", "xcodegen":
             // Toolchain commands write build artifacts inside the workspace.
             return true

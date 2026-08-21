@@ -54,7 +54,7 @@ public actor LocalAPIServer {
             idleTTLSeconds: Int? = nil,
             exposeStandardRoutes: Bool = true,
             maxBodyBytes: Int = 32 * 1024 * 1024,
-            allowCORS: Bool = true
+            allowCORS: Bool = false
         ) {
             self.port = port
             self.bindIPv6 = bindIPv6

@@ -6,6 +6,20 @@ struct StatusBarView: View {
     @EnvironmentObject private var appState: AppState
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            statusRow(includeSecondary: true)
+            statusRow(includeSecondary: false)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .font(.caption)
+        .foregroundStyle(Theme.textSecondary)
+        .lineLimit(1)
+        .background(Theme.bg)
+    }
+
+    @ViewBuilder
+    private func statusRow(includeSecondary: Bool) -> some View {
         HStack(spacing: 10) {
             chip(icon: appState.activeModelID == nil ? "cpu" : "checkmark.seal",
                  tint: appState.activeModelID == nil ? Theme.textSecondary : Theme.success) {
@@ -13,7 +27,7 @@ struct StatusBarView: View {
                     .lineLimit(1)
             }
             .help(appState.isRemoteActive ? "Active remote (BYOK) engine" : "Active local MLX model")
-            .layoutPriority(1)
+            .layoutPriority(2)
 
             chip(icon: "memorychip", tint: Theme.info) {
                 Text(ByteFormatter.bytes(appState.currentFootprint))
@@ -24,7 +38,7 @@ struct StatusBarView: View {
                     .monospacedDigit()
             }
             .help("Process footprint vs. remaining model budget.")
-            .layoutPriority(0)
+            .layoutPriority(1)
 
             thermalChip
             cpuChip
@@ -34,7 +48,7 @@ struct StatusBarView: View {
 
             Spacer(minLength: 0)
 
-            if let tps = appState.lastEngineStats.tokensPerSecond {
+            if includeSecondary, let tps = appState.lastEngineStats.tokensPerSecond {
                 chip(icon: "speedometer", tint: Theme.accent) {
                     Text(String(format: "%.1f", tps))
                         .monospacedDigit()
@@ -44,7 +58,7 @@ struct StatusBarView: View {
                 .help("Tokens per second from the last generation")
             }
 
-            if appState.sessionUsage.totalTokens > 0 {
+            if includeSecondary, appState.sessionUsage.totalTokens > 0 {
                 let label = appState.sessionUsage.compactLabel(
                     provider: appState.engine.activeRemoteEndpoint?.provider)
                 chip(icon: "sum", tint: Theme.info) {
@@ -55,12 +69,6 @@ struct StatusBarView: View {
                 .help("This chat: \(appState.sessionUsage.promptTokens) prompt + \(appState.sessionUsage.completionTokens) completion tokens across \(appState.sessionUsage.turns) generation(s). Cost is a published-rate estimate, not a bill.")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .font(.caption)
-        .foregroundStyle(Theme.textSecondary)
-        .lineLimit(1)
-        .background(Theme.bg)
     }
 
     /// Thermal state only — never a percentage, so nobody reads it as a
@@ -73,12 +81,13 @@ struct StatusBarView: View {
         .help("Thermal state merges the kernel thermal state with a sustained-CPU-load proxy (sustained load escalates even when the kernel reports nominal). Serious caps tokens per turn; critical blocks model loads.")
     }
 
-    /// Whole-machine CPU load, separate from the thermal state so the two
-    /// numbers never blur into one chip. Hidden while the machine is idle.
+    /// Whole-machine CPU load. Hidden while the machine is idle so the bar
+    /// stays model + phase + RAM first.
     @ViewBuilder
     private var cpuChip: some View {
         let busy = appState.thermal.cpuBusyFraction
-        if busy > 0 {
+        let elevated = appState.thermal.effectiveState != .nominal || busy > 0.35
+        if elevated {
             chip(icon: "gauge.medium", tint: Theme.textSecondary) {
                 Text("CPU")
                 Text(String(format: "%d%%", Int(busy * 100)))
@@ -102,8 +111,9 @@ struct StatusBarView: View {
                 }
                 Text(phaseLabel(phase))
             }
-            .help("Agent phase: (phaseLabel(phase))")
-            .accessibilityLabel("Agent phase: (phaseLabel(phase))")
+            .help("Agent phase: \(phaseLabel(phase))")
+            .accessibilityLabel("Agent phase: \(phaseLabel(phase))")
+            .layoutPriority(2)
         }
     }
 

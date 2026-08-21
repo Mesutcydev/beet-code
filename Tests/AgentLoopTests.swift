@@ -658,23 +658,25 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertTrue(collector.toolCalls().isEmpty)
     }
 
-    func testProjectPolicyExplicitlyDisablesUiDefaults() async throws {
+    func testProjectPolicyCannotDisableUiSafetySwitches() async throws {
         workspace!.write(
             #"{"plan":false,"goal":false,"verifyAfterEdits":false}"#,
             to: ".beetcode.json")
-        engine.enqueue(.text("Done."))
+        engine.enqueue(.text("Plan: still planning."))
         var config = AgentLoop.Configuration()
         config.planMode = true
-        config.goalMode = true
         config.verifyAfterEdits = true
 
-        let collector = await runToCompletion(makeLoop(config: config))
-
-        XCTAssertEqual(collector.finish, .completed("Done."))
-        XCTAssertFalse(collector.all.contains { event in
-            if case .planProposed = event { return true }
-            return false
-        }, "an explicit project policy false must turn off the UI plan default")
+        let loop = makeLoop(config: config)
+        let collector = EventCollector()
+        let stream = await loop.run(userMessage: "task")
+        let collectionTask = Task { await collector.start(stream) }
+        let seen = await collector.waitUntil(timeout: 5) { events in
+            events.contains { if case .planProposed = $0 { return true }; return false }
+        }
+        await loop.cancel()
+        _ = await collectionTask.value
+        XCTAssertTrue(seen, "project policy must not turn off the user's plan-mode switch")
     }
 
     func testPlanModeRevisionFeedsBackAndReproposes() async throws {

@@ -103,7 +103,7 @@ final class LocalAPIServerTests: XCTestCase {
         _ = try await post("/v1/chat/completions", json: body)
         _ = try await post("/v1/chat/completions", json: body)
 
-        XCTAssertEqual(engine.resetCallCount, 2, "every request resets the engine session")
+        XCTAssertEqual(engine.resetCallCount, 0, "local API must not reset the in-app engine")
         XCTAssertEqual(engine.turnHistory.count, 2)
         // Each call must have received ALL four turns, in order.
         for turns in engine.turnHistory {
@@ -174,13 +174,13 @@ final class LocalAPIServerTests: XCTestCase {
 
     // MARK: CORS
 
-    func testOptionsPreflight() async throws {
+    func testOptionsPreflightDoesNotReflectArbitraryOriginsByDefault() async throws {
         var request = URLRequest(url: URL(string: baseURL + "/v1/chat/completions")!)
         request.httpMethod = "OPTIONS"
+        request.setValue("https://evil.example", forHTTPHeaderField: "Origin")
         let (_, response) = try await URLSession.shared.data(for: request)
         let httpResponse = response as! HTTPURLResponse
-        XCTAssertEqual(httpResponse.statusCode, 204)
-        XCTAssertNotNil(httpResponse.value(forHTTPHeaderField: "Access-Control-Allow-Origin"))
+        XCTAssertNil(httpResponse.value(forHTTPHeaderField: "Access-Control-Allow-Origin"))
     }
 
     // MARK: Anthropic-format /v1/messages
@@ -219,7 +219,7 @@ final class LocalAPIServerTests: XCTestCase {
         _ = try await post("/v1/messages", json: body)
         _ = try await post("/v1/messages", json: body)
 
-        XCTAssertEqual(engine.resetCallCount, 2)
+        XCTAssertEqual(engine.resetCallCount, 0, "local API must not reset the in-app engine")
         XCTAssertEqual(engine.turnHistory.count, 2)
         for turns in engine.turnHistory {
             XCTAssertEqual(turns.map(\.content), ["sys", "u1", "a1", "u2"])

@@ -117,6 +117,28 @@ final class AppPreferencesTests: XCTestCase {
         store.save(broken)
         XCTAssertNil(store.validatedWorkspaceURL())
         // State is untouched.
-        XCTAssertNotNil(store.current.lastWorkspacePath)
+        XCTAssertEqual(store.current.lastWorkspacePath, broken.lastWorkspacePath)
+    }
+
+    func testWorkspaceTrustIsExplicit() throws {
+        let previous = AppPreferencesStore.shared.current
+        defer { AppPreferencesStore.shared.save(previous) }
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lf-trust-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        var cleared = previous
+        cleared.trustedWorkspacePaths = []
+        AppPreferencesStore.shared.save(cleared)
+        XCTAssertFalse(WorkspaceTrust.isTrusted(temp))
+        XCTAssertFalse(WorkspaceTrust.hasProjectExecutables(temp))
+        try FileManager.default.createDirectory(
+            at: temp.appendingPathComponent(".beetcode"), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: temp.appendingPathComponent(".beetcode/hooks.json"))
+        XCTAssertTrue(WorkspaceTrust.hasProjectExecutables(temp))
+        XCTAssertTrue(WorkspaceTrust.needsConsent(temp))
+        WorkspaceTrust.trust(temp)
+        XCTAssertTrue(WorkspaceTrust.isTrusted(temp))
+        XCTAssertFalse(WorkspaceTrust.needsConsent(temp))
     }
 }

@@ -18,7 +18,8 @@ enum PromptBuilder {
         goalMode: Bool = false,
         outputStyle: ProjectPolicy.OutputStyle = .normal,
         contextWindowTokens: Int? = nil,
-        responseReserveTokens: Int = 4096
+        responseReserveTokens: Int = 4096,
+        leanPrompt: Bool = false
     ) -> String {
         var sections: [String] = []
         sections.append("""
@@ -41,7 +42,11 @@ enum PromptBuilder {
             """)
         }
 
-        if goalMode {
+        // Small local GGUF models are much more reliable when the lean
+        // prompt contains one direct instruction surface. Goal mode is still
+        // tracked by the controller, but its long-form prompt block can make
+        // Llama-family models echo the tool protocol instead of answering.
+        if goalMode && !leanPrompt {
             sections.append("""
             # Goal mode
 
@@ -55,7 +60,10 @@ enum PromptBuilder {
 
         sections.append(outputStylePrompt(outputStyle))
 
-        if let agentPrompt, !agentPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !leanPrompt,
+           let agentPrompt,
+           !agentPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
             sections.append("# Active agent profile\n\n\(bounded(agentPrompt, characters: 12_000))")
         }
 
@@ -83,6 +91,7 @@ enum PromptBuilder {
         }
         sections.append("# Available tools\n\n" + toolDocs.joined(separator: "\n\n"))
 
+        if !leanPrompt {
         // Capability guidance: the tool list alone doesn't teach the model
         // WHEN to reach for the in-app browser or the simulator. Derived from
         // the actual tool list so it never advertises something absent.
@@ -133,6 +142,23 @@ enum PromptBuilder {
         unique. Use `write_file` only for new files or complete rewrites. You \
         must read a file before editing it.
         """)
+        } else {
+            // Large local models on a memory-constrained Mac cannot afford a
+            // full workspace index, project history, or capability catalog in
+            // every prefill. Keep the direct-answer path explicit.
+            sections.append("""
+            # Lightweight local mode
+
+            Answer ordinary questions directly when no file inspection or edit
+            is needed. Do not call a tool just to be helpful. For coding work,
+            use only the compact tool list above and keep each step focused.
+            For a short request such as "Reply with exactly X", return exactly
+            the requested text. Do not add greetings, identity statements,
+            "Task complete", or a conclusion unless the user asks for them.
+            Preserve the user's requested Markdown, line breaks, and code
+            indentation in the answer.
+            """)
+        }
 
         let prompt = sections.joined(separator: "\n\n")
         guard let contextWindowTokens else { return prompt }
@@ -308,25 +334,34 @@ enum PromptBuilder {
             """)
         }
 
-        if names.contains("create_macos_app") || names.contains("build_diagnostics") {
+        if names.contains("create_macos_app") || names.contains("create_ios_app")
+            || names.contains("build_diagnostics") || names.contains("macos_build_run") {
             blocks.append("""
-            ## Building a native Mac / iOS app
+            ## Delivering a native iOS or macOS app
 
-            When the user asks you to create or ship an app, do not invent an \
-            Xcode project by hand:
-            - Empty folder / new Mac app: call `create_macos_app` first \
-            (XcodeGen `project.yml` + SwiftUI skeleton). Then edit files.
-            - After adding or removing Swift files: `run_command` \
-            `xcodegen generate` if `project.yml` exists.
-            - Verify with `build_diagnostics` (no command argument). It detects \
-            .xcworkspace, .xcodeproj, project.yml, or Package.swift and runs the \
-            appropriate macOS build; when test sources are present it runs the \
-            test action (`xcodebuild test` or `swift test`). Do not default to \
-            `swift build` on an Xcode app — it will fail.
-            - iOS UI: prefer `sim_build_run` after the Mac compile is green.
-            - Stay in the workspace. Prefer `apply_patch` for edits. Read \
-            before write. Fix compiler errors from `build_diagnostics` \
-            before claiming done.
+            When the user asks you to create, build, run, or ship an Apple app, \
+            stay in this loop until the app actually launches. Do not stop at \
+            writing files.
+
+            macOS:
+            - Empty folder: `create_macos_app` (XcodeGen `project.yml` + SwiftUI skeleton).
+            - After adding or removing Swift files: `run_command` `xcodegen generate`.
+            - Deliver with `macos_build_run` (build + launch the .app). \
+            `build_diagnostics` is the compile-only check.
+            - If the window looks wrong, use `computer_ui_tree` / \
+            `computer_screenshot` then `describe_image`.
+
+            iOS:
+            - Empty folder: `create_ios_app`.
+            - After adding or removing Swift files: `xcodegen generate`.
+            - Deliver with `sim_build_run` (build → install → launch → \
+            screenshot → describe). Fix from diagnostics or the screenshot \
+            and repeat until the screen is correct.
+            - For finer control: `sim_list_devices` → `sim_boot_device` → \
+            `sim_launch_app`, then `sim_tap` / `sim_describe`.
+
+            Do not invent a pbxproj by hand. Stay in the workspace. Prefer \
+            `apply_patch` for edits. Read before write.
             """)
         }
 
@@ -411,6 +446,70 @@ enum PromptBuilder {
             }
         }
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Removes chat-template control tokens that can leak when a local model
+    /// uses a different generation wrapper than the one it was fine-tuned
+    /// with. The answer itself is left untouched so Markdown, code fences,
+    /// indentation, and line breaks retain their original structure.
+    static func strippingModelControlTokens(_ text: String) -> String {
+        var result = text
+        let patterns = [
+            #"(?is)<\|start_header_id\|>\s*(?:system|user|assistant|tool)\s*<\|end_header_id\|>"#,
+            #"(?is)<\|im_start\|>\s*(?:system|user|assistant|tool)\s*"#,
+            #"<\|(?:eot_id|end_of_text|im_end|im_start|end|begin_of_text|start_of_turn|end_of_turn)\|>"#,
+            #"<\|(?:start_header_id|end_header_id|assistant|user|system|tool)\|>"#,
+            #"</?s>"#
+        ]
+        for pattern in patterns {
+            result = result.replacingOccurrences(
+                of: pattern,
+                with: "",
+                options: [.regularExpression, .caseInsensitive])
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// One cleanup path for every engine before text reaches the transcript
+    /// or the persisted session. Tool syntax is handled separately because it
+    /// must remain available to the agent loop's parser.
+    static func cleaningGeneratedText(_ text: String) -> String {
+        strippingModelControlTokens(strippingThinking(text))
+    }
+
+    /// Extracts the small, unambiguous exact-answer requests commonly used to
+    /// smoke-test a local model. Some instruct finetunes answer those prompts
+    /// conversationally (for example, "I'll."), so the agent can enforce the
+    /// user's explicit contract without changing ordinary prose generation.
+    static func exactRequestedAnswer(in request: String) -> String? {
+        let trimmed = request.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = trimmed.lowercased()
+        let prefixes = [
+            "reply with exactly ",
+            "respond with exactly ",
+            "output exactly ",
+            "return exactly ",
+        ]
+        guard let prefix = prefixes.first(where: { lowercased.hasPrefix($0) }) else {
+            return nil
+        }
+
+        var answer = String(trimmed.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // The period in "Reply with exactly OK." is sentence punctuation for
+        // the instruction, not part of the requested token. Remove it before
+        // handling the equally common "and nothing else" suffix.
+        if let last = answer.last, ".!?".contains(last) {
+            answer.removeLast()
+            answer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let nothingElse = " and nothing else"
+        if answer.lowercased().hasSuffix(nothingElse) {
+            answer.removeLast(nothingElse.count)
+            answer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !answer.isEmpty, answer.count <= 512 else { return nil }
+        return answer
     }
 
     private static let reasoningTagPairs: [(open: String, close: String)] = [

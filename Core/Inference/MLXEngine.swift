@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 /// MLX-backed engine. Runs in-process on the app's own GPU context.
 ///
@@ -63,9 +64,17 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
                 Log.engine.info("Loading model \(modelID, privacy: .public)")
                 let started = Date()
 
-                let container = try await LLMModelFactory.shared.loadContainer(
-                    from: directory,
-                    using: HFTokenizerLoader())
+                let container: ModelContainer
+                if MLXModelInspector.isVisionLanguageModel(at: directory) {
+                    Log.engine.info("Detected multimodal MLX checkpoint; loading through the VLM factory")
+                    container = try await VLMModelFactory.shared.loadContainer(
+                        from: directory,
+                        using: HFTokenizerLoader())
+                } else {
+                    container = try await LLMModelFactory.shared.loadContainer(
+                        from: directory,
+                        using: HFTokenizerLoader())
+                }
 
                 // Keep the Metal buffer cache modest: weights are memory-mapped
                 // and paged in on demand; a large cache would double-count RAM.

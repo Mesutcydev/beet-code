@@ -17,7 +17,7 @@ Updated 2026-08-20. This is the implementation record for remote BYOK providers,
 
 | Provider family | Transport | Model discovery | Native tool envelope |
 | --- | --- | --- | --- |
-| OpenAI, DeepSeek, Alibaba, OpenRouter, LongCat, Custom | OpenAI-compatible `/chat/completions` | `/models` when supported | OpenAI `tools` |
+| OpenAI, DeepSeek, Alibaba, OpenRouter, LongCat, Tabitoken, Custom | OpenAI-compatible `/chat/completions` | `/models` when supported | OpenAI `tools` |
 | Gemini | Native `generateContent` / `streamGenerateContent` | Paginated `/models` with generation-capability filtering | Gemini `functionDeclarations` / `functionCall` |
 | Anthropic | Native Messages API | `/models` | Anthropic `tools` / `tool_use` |
 

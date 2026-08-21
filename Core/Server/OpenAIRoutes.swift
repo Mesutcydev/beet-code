@@ -141,20 +141,19 @@ public enum OpenAIRoutes {
         let created = Int(Date().timeIntervalSince1970)
         let modelName = await Self.reportedModelID(engine: engine, requested: requestedModel)
 
-        // The endpoint is stateless: reset the engine session and replay the
-        // full conversation, so repeated calls never accumulate stale turns.
-        await engine.reset()
+        let isolated = IsolatedReplayEngine(base: engine)
+        await isolated.reset()
 
         if stream {
             return .stream(
                 LocalAPIServer.Response(status: 200, contentType: "text/event-stream"),
                 lines: streamCompletion(
-                    engine: engine, turns: turns, id: completionID, model: modelName,
+                    engine: isolated, turns: turns, id: completionID, model: modelName,
                     created: created, maxTokens: maxTokens, temperature: temperature))
         } else {
             return .response(await nonStreamingCompletion(
-                engine: engine, turns: turns, id: completionID, model: modelName,
-                created: created, maxTokens: maxTokens, temperature: temperature))
+                engine: isolated, turns: turns, id: completionID, model: modelName,
+                    created: created, maxTokens: maxTokens, temperature: temperature))
         }
     }
 
@@ -333,16 +332,17 @@ public enum OpenAIRoutes {
         let messageID = "msg_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(24))"
         let modelName = await reportedModelID(engine: engine, requested: requestedModel)
 
-        await engine.reset()
+        let isolated = IsolatedReplayEngine(base: engine)
+        await isolated.reset()
 
         if stream {
             return .stream(
                 LocalAPIServer.Response(status: 200, contentType: "text/event-stream"),
                 lines: anthropicStream(
-                    engine: engine, turns: turns, id: messageID, model: modelName, maxTokens: maxTokens))
+                    engine: isolated, turns: turns, id: messageID, model: modelName, maxTokens: maxTokens))
         } else {
             return .response(await anthropicNonStreaming(
-                engine: engine, turns: turns, id: messageID, model: modelName, maxTokens: maxTokens))
+                engine: isolated, turns: turns, id: messageID, model: modelName, maxTokens: maxTokens))
         }
     }
 

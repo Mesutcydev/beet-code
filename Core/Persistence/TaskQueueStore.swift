@@ -202,10 +202,7 @@ final class TaskQueueStore: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
         guard let data = try? encoder.encode(task) else { return }
-        // Do not include the prompt in diagnostics or file names. If the
-        // local key is temporarily unavailable, preserve functionality with a
-        // bounded protected directory; the next write re-encrypts it.
-        let payload = SessionCrypto.encrypt(data) ?? data
+        guard let payload = SessionCrypto.encrypt(data) else { return }
         let target = url(for: task.id)
         lock.lock()
         defer { lock.unlock() }

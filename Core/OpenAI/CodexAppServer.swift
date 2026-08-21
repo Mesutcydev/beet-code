@@ -177,7 +177,7 @@ actor CodexAppServerClient {
 
     func start() async throws {
         if isAlive, isInitialized { return }
-        if isAlive { await stop() }
+        await stop()
         guard let executableURL else { throw CodexAppServerError.executableNotFound }
 
         let child = Process()
@@ -264,9 +264,14 @@ actor CodexAppServerClient {
 
     private func markDead(status: Int32) {
         guard isAlive else { return }
+        readerTask?.cancel()
+        readerTask = nil
+        stdin?.closeFile()
+        stdin = nil
+        if let process { ChildProcessRegistry.unregister(process) }
+        process = nil
         isAlive = false
         isInitialized = false
-        if let process { ChildProcessRegistry.unregister(process) }
         let continuations = pending.values
         pending.removeAll()
         for continuation in continuations {
@@ -703,6 +708,7 @@ final class CodexAccountStore: ObservableObject {
                 guard !Task.isCancelled else { return }
                 await MainActor.run { self?.handle(message) }
             }
+            await MainActor.run { self?.observationTask = nil }
         }
     }
 

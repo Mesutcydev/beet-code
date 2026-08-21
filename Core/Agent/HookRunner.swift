@@ -52,11 +52,15 @@ struct HookRunner: Sendable {
         root.appendingPathComponent(".beetcode/hooks.json")
     }
 
-    static func load(workspaceRoot: URL) -> HookRunner {
+    static func load(workspaceRoot: URL, includeWorkspace: Bool = false) -> HookRunner {
         var pre: [HookConfig] = []
         var post: [HookConfig] = []
         var stop: [HookConfig] = []
-        for url in [userConfigURL, workspaceConfigURL(root: workspaceRoot)] {
+        var urls = [userConfigURL]
+        if includeWorkspace {
+            urls.append(workspaceConfigURL(root: workspaceRoot))
+        }
+        for url in urls {
             guard FileManager.default.fileExists(atPath: url.path),
                   let data = try? Data(contentsOf: url),
                   let file = try? JSONDecoder().decode(HookFile.self, from: data)
@@ -120,6 +124,7 @@ struct HookRunner: Sendable {
         process.currentDirectoryURL = workspaceRoot
         process.executableURL = URL(fileURLWithPath: hook.command)
         process.arguments = hook.args
+        process.environment = ShellRunner.sanitizedEnvironment()
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()
@@ -134,7 +139,7 @@ struct HookRunner: Sendable {
         stdin.fileHandleForWriting.write(Data(payload.encoded().utf8))
         try? stdin.fileHandleForWriting.close()
 
-        let timeout = max(0.2, hook.timeout)
+        let timeout = min(max(0.2, hook.timeout), 15)
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)

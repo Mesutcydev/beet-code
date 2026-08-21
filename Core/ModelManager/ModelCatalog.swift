@@ -78,6 +78,156 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
     }
 }
 
+/// Reads the metadata that distinguishes an ordinary MLX language model from
+/// a multimodal checkpoint. Qwen3.5 keeps its language-model configuration
+/// under `text_config`; using only the root-level fields makes that checkpoint
+/// look like a small, generic model and sends it through the wrong factory.
+enum MLXModelInspector {
+    struct Metadata: Equatable, Sendable {
+        let family: String
+        let parameters: String
+        let quantization: String
+        let contextWindow: Int
+        let isVisionLanguage: Bool
+    }
+
+    static func read(from directory: URL) -> Metadata? {
+        let configURL = directory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL) else { return nil }
+        return metadata(from: data, directory: directory)
+    }
+
+    static func metadata(from data: Data, directory: URL) -> Metadata? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return metadata(from: json, directory: directory)
+    }
+
+    static func isVisionLanguageModel(at directory: URL) -> Bool {
+        read(from: directory)?.isVisionLanguage ?? false
+    }
+
+    /// Folders named only for their quantization (for example `2-bit`) are
+    /// common when several exports live under one model directory. Include
+    /// the parent model name so imports remain identifiable and collision-free.
+    static func suggestedID(for directory: URL) -> String {
+        let leaf = directory.lastPathComponent
+        guard isQuantizationFolder(leaf) else { return leaf }
+
+        let parent = directory.deletingLastPathComponent().lastPathComponent
+        guard !parent.isEmpty, parent != "." else { return leaf }
+        return "\(parent)-\(leaf)"
+    }
+
+    /// Uses the parent model folder as the human-facing name when the
+    /// selected folder is only a quantization label such as `2-bit`.
+    static func displayName(for directory: URL, metadata: Metadata) -> String {
+        let leaf = directory.lastPathComponent
+        let candidate = isQuantizationFolder(leaf)
+            ? directory.deletingLastPathComponent().lastPathComponent
+            : leaf
+        guard !candidate.isEmpty, candidate != ".", candidate != "Models" else {
+            return [metadata.family, metadata.parameters]
+                .filter { $0 != "—" }
+                .joined(separator: " ")
+        }
+        return candidate
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    private static func metadata(from json: [String: Any], directory: URL) -> Metadata {
+        let modelType = json["model_type"] as? String ?? "custom"
+        let textConfig = json["text_config"] as? [String: Any]
+        let hasVisionConfig = json["vision_config"] is [String: Any]
+        let architectures = (json["architectures"] as? [String] ?? [])
+            .map { $0.lowercased() }
+        let isConditionalGeneration = architectures.contains { $0.contains("conditionalgeneration") }
+        let isLanguageModelOnly = json["language_model_only"] as? Bool
+        let isVisionLanguage = (textConfig != nil && hasVisionConfig)
+            || isLanguageModelOnly == false
+            || isConditionalGeneration
+
+        let configForText = textConfig ?? json
+        let contextWindow = integer(configForText["max_position_embeddings"])
+            ?? integer(json["max_position_embeddings"])
+            ?? 32_768
+
+        let quantizationConfig = json["quantization_config"] as? [String: Any]
+        let bits = integer(quantizationConfig?["bits"])
+            ?? integer((json["quantization"] as? [String: Any])?["bits"])
+        let quantization = bits.map { "\($0)-bit" }
+            ?? quantizationFromPath(directory)
+            ?? "—"
+
+        return Metadata(
+            family: prettyFamily(modelType),
+            parameters: parameterLabel(from: directory) ?? "—",
+            quantization: quantization,
+            contextWindow: contextWindow,
+            isVisionLanguage: isVisionLanguage)
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        return nil
+    }
+
+    private static func prettyFamily(_ raw: String) -> String {
+        var label = ""
+        for (index, part) in raw.split(separator: "_").enumerated() {
+            let text = String(part)
+            if index > 0 {
+                label += text.allSatisfy({ $0.isNumber }) ? "." : " "
+            }
+            label += text.prefix(1).uppercased() + text.dropFirst()
+        }
+        return label.isEmpty ? "Custom" : label
+    }
+
+    private static func parameterLabel(from directory: URL) -> String? {
+        let names = [
+            directory.lastPathComponent,
+            directory.deletingLastPathComponent().lastPathComponent,
+        ]
+        let pattern = #"(?i)(\d+(?:\.\d+)?)\s*b(?=[^a-zA-Z0-9]|$)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+
+        for name in names {
+            let range = NSRange(name.startIndex..., in: name)
+            guard let match = regex.firstMatch(in: name, range: range),
+                  let valueRange = Range(match.range(at: 1), in: name) else { continue }
+            return "\(name[valueRange])B"
+        }
+        return nil
+    }
+
+    private static func quantizationFromPath(_ directory: URL) -> String? {
+        let names = [directory.lastPathComponent, directory.deletingLastPathComponent().lastPathComponent]
+        let pattern = #"(?i)^(\d+)[-_]?bits?$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+
+        for name in names {
+            guard let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+                  let valueRange = Range(match.range(at: 1), in: name) else { continue }
+            return "\(name[valueRange])-bit"
+        }
+        return nil
+    }
+
+    private static func isQuantizationFolder(_ name: String) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: #"(?i)^\d+[-_]?bits?$"#) else {
+            return false
+        }
+        let range = NSRange(name.startIndex..., in: name)
+        return regex.firstMatch(in: name, range: range)?.range == range
+    }
+}
+
 enum ModelCatalog {
 
     /// Files fetched when downloading a repo snapshot. Covers both MLX
@@ -242,11 +392,44 @@ enum ModelCatalog {
     static func loadUserModels() -> [CatalogModel] {
         guard let data = try? Data(contentsOf: userCatalogURL) else { return [] }
         do {
-            return try JSONDecoder().decode([CatalogModel].self, from: data)
+            let models = try JSONDecoder().decode([CatalogModel].self, from: data)
+            let repaired = models.map(repairUserModel)
+            if repaired != models { saveUserModels(repaired) }
+            return repaired
         } catch {
             Log.app.error("User model catalog failed to decode: \(String(describing: error), privacy: .public)")
             return []
         }
+    }
+
+    /// Repairs entries imported by older builds. Keep the legacy id and
+    /// directory in place so an existing multi-gigabyte import is reused;
+    /// only the display metadata is refreshed from config.json.
+    private static func repairUserModel(_ model: CatalogModel) -> CatalogModel {
+        guard model.format == .mlx else { return model }
+
+        let candidates = [
+            URL(fileURLWithPath: model.repo, isDirectory: true),
+            userCatalogURL.deletingLastPathComponent()
+                .appendingPathComponent("Models", isDirectory: true)
+                .appendingPathComponent(model.id, isDirectory: true),
+        ]
+        guard let directory = candidates.first(where: {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path)
+        }), let metadata = MLXModelInspector.read(from: directory) else {
+            return model
+        }
+
+        var repaired = model
+        repaired.displayName = MLXModelInspector.displayName(for: directory, metadata: metadata)
+        repaired.family = metadata.family
+        repaired.parameters = metadata.parameters
+        repaired.quantization = metadata.quantization
+        repaired.contextWindow = metadata.contextWindow
+        if metadata.isVisionLanguage {
+            repaired.notes = "Imported multimodal MLX model (text + vision weights) from \(model.repo)"
+        }
+        return repaired
     }
 
     static func saveUserModels(_ models: [CatalogModel]) {

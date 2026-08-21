@@ -49,6 +49,7 @@ struct ComposerBorder: ViewModifier {
     var animated: Bool = true
 
     @State private var isHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var cornerRadius: CGFloat { Radius.lg }
     private var borderWidth: CGFloat { phase == .idle ? 1.5 : 2.5 }
@@ -57,21 +58,15 @@ struct ComposerBorder: ViewModifier {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
+    /// Motion only while the composer is in use. Idle is a static hairline
+    /// plus a quiet accent stroke — never a 60 fps wallpaper.
+    private var shouldAnimate: Bool {
+        animated && !reduceMotion && phase != .idle
+    }
+
     func body(content: Content) -> some View {
-        // Idle stays still until the user approaches the surface. Focus,
-        // streaming, approval, and hover all make the perimeter come alive;
-        // this gives the border an interaction model instead of a permanent
-        // animated wallpaper.
-        // The trace is the composer's identity, so it stays alive even while
-        // idle. Focus/hover only change its intensity; they never make the
-        // signature disappear and leave a dead-looking card behind.
-        let shouldAnimate = animated
         content
-            // One elevated card: the composer floats on the raised surface
-            // above the window bg — not a recessed input well.
             .background(Theme.surface, in: shape)
-            // A whisper of elevation so the card floats over the window bg —
-            // appearance-aware, since dark mode needs a far deeper shadow.
             .shadow(color: Theme.cardShadow, radius: 6, y: 2)
             .contentShape(shape)
             .onHover { hovering in
@@ -79,11 +74,6 @@ struct ComposerBorder: ViewModifier {
                     isHovering = hovering
                 }
             }
-            // Outer glow (streaming/approval only): rendered BEHIND the
-            // surface so only the bleed beyond the card edge shows — the
-            // light appears to radiate without hazing the input area.
-            // allowsHitTesting(false) on every decorative layer: without it
-            // the overlay swallows clicks meant for the composer's buttons.
             .background {
                 if shouldAnimate && (phase == .streaming || phase == .awaitingApproval) {
                     TimelineView(.animation) { timeline in
@@ -96,14 +86,10 @@ struct ComposerBorder: ViewModifier {
                     .allowsHitTesting(false)
                 }
             }
-            // Baseline edge so the card stays defined while the gradient is
-            // dim at idle.
             .overlay {
                 shape.strokeBorder(Theme.hairline, lineWidth: 1)
                     .allowsHitTesting(false)
             }
-            // Signature: the animated light tracing the FULL perimeter of
-            // the composer, intensifying idle → focused → streaming.
             .overlay {
                 if shouldAnimate {
                     TimelineView(.animation) { timeline in
@@ -113,7 +99,9 @@ struct ComposerBorder: ViewModifier {
                     }
                     .allowsHitTesting(false)
                 } else {
-                    borderGradient(angle: .degrees(45))
+                    shape.strokeBorder(
+                        Theme.accent.opacity((phase == .idle ? 0.35 : 0.75) + (isHovering ? 0.08 : 0)),
+                        lineWidth: 1.5)
                         .allowsHitTesting(false)
                 }
             }

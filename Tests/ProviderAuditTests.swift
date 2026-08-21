@@ -193,7 +193,7 @@ final class ProviderAuditTests: XCTestCase {
 
     func testCurrentProviderDefaultsAndRoutes() {
         XCTAssertEqual(LLMProvider.longCat.defaultModel, "LongCat-2.0")
-        XCTAssertEqual(LLMProvider.longCat.suggestedModels, ["LongCat-2.0"])
+        XCTAssertEqual(LLMProvider.longCat.suggestedModels, ["LongCat-2.0", "LongCat-2.0-thinking"])
         XCTAssertEqual(LLMProvider.longCat.openAICompatibleBaseURL?.absoluteString,
                        "https://api.longcat.chat/openai/v1")
         XCTAssertEqual(LLMProvider.longCat.modelsURL?.absoluteString,
@@ -203,6 +203,125 @@ final class ProviderAuditTests: XCTestCase {
                        "https://opencode.ai/zen/v1")
         XCTAssertEqual(LLMProvider.openCode.modelsURL?.absoluteString,
                        "https://opencode.ai/zen/v1/models")
+    }
+
+    func testCuratedModelCatalogsAndReasoningEfforts() throws {
+        let builtInProviders = LLMProvider.allCases.filter { $0 != .custom }
+        XCTAssertTrue(builtInProviders.allSatisfy { !$0.availableModels.isEmpty })
+        XCTAssertTrue(KnownRemoteProvider.all.allSatisfy { !$0.availableModels.isEmpty })
+
+        let tabitoken = try XCTUnwrap(KnownRemoteProvider.find("tabitoken"))
+        XCTAssertTrue(tabitoken.availableModels.contains("claude-opus-5-thinking"))
+        XCTAssertEqual(
+            RemoteModelCatalog.reasoningEfforts(
+                provider: .custom,
+                providerKey: tabitoken.id,
+                model: "claude-opus-5-thinking").map(\.rawValue),
+            ["low", "medium", "high", "xhigh", "max"])
+        XCTAssertEqual(
+            RemoteModelCatalog.reasoningEfforts(provider: .openAI, model: "gpt-5.1").map(\.rawValue),
+            ["none", "low", "medium", "high"])
+        XCTAssertEqual(
+            RemoteModelCatalog.reasoningEfforts(provider: .gemini, model: "gemini-3.7-flash").map(\.rawValue),
+            ["minimal", "low", "medium", "high"])
+    }
+
+    func testReasoningEffortOverrideIsValidatedAndHonorsExplicitOff() {
+        let profile = RemoteModelProfile(
+            provider: .custom,
+            model: "claude-opus-5-thinking",
+            providerKey: "tabitoken")
+        XCTAssertEqual(
+            profile.selectedReasoningEffort(using: RemoteModelOverride(reasoningEffort: "XHIGH")),
+            "xhigh")
+        XCTAssertNil(
+            profile.selectedReasoningEffort(using: RemoteModelOverride(reasoningEffort: "not-a-mode")))
+
+        let disabled = profile.applying(RemoteModelOverride(supportsReasoning: false))
+        XCTAssertTrue(disabled.effectiveReasoningEfforts.isEmpty)
+    }
+
+    func testReasoningEffortWireFieldsEncodeOnlyWhenSelected() throws {
+        let openAI = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(RemoteLLMClient.OpenAIRequest(
+                model: "gpt-5.1",
+                messages: [],
+                temperature: nil,
+                max_tokens: nil,
+                max_completion_tokens: nil,
+                stream: false,
+                tools: nil,
+                thinking: nil,
+                reasoning_effort: "high",
+                stream_options: nil))) as? [String: Any]
+        XCTAssertEqual(openAI?["reasoning_effort"] as? String, "high")
+
+        let ordinaryOpenAI = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(RemoteLLMClient.OpenAIRequest(
+                model: "gpt-4o",
+                messages: [],
+                temperature: nil,
+                max_tokens: nil,
+                max_completion_tokens: nil,
+                stream: false,
+                tools: nil,
+                thinking: nil,
+                reasoning_effort: nil,
+                stream_options: nil))) as? [String: Any]
+        XCTAssertNil(ordinaryOpenAI?["reasoning_effort"])
+
+        let responses = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(RemoteLLMClient.ResponsesRequest(
+                model: "gpt-5.1",
+                input: [],
+                temperature: nil,
+                max_output_tokens: 128,
+                stream: false,
+                tools: nil,
+                reasoning: .init(effort: "high")))) as? [String: Any]
+        XCTAssertEqual((responses?["reasoning"] as? [String: Any])?["effort"] as? String, "high")
+
+        let anthropic = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(RemoteLLMClient.AnthropicRequest(
+                model: "claude-opus-5",
+                max_tokens: 128,
+                system: nil,
+                messages: [],
+                temperature: nil,
+                stream: false,
+                tools: nil,
+                output_config: .init(effort: "xhigh")))) as? [String: Any]
+        XCTAssertEqual((anthropic?["output_config"] as? [String: Any])?["effort"] as? String, "xhigh")
+    }
+
+    func testTabitokenPresetMatchesOpenAICompatibilityContract() async throws {
+        let provider = try XCTUnwrap(KnownRemoteProvider.find("tabitoken"))
+        let endpoint = provider.endpoint()
+
+        XCTAssertEqual(provider.displayName, "Tabitoken")
+        XCTAssertEqual(provider.defaultModel, "claude-opus-5-thinking")
+        XCTAssertEqual(endpoint.provider, .custom)
+        XCTAssertEqual(endpoint.providerID, "tabitoken")
+        XCTAssertEqual(endpoint.effectiveProtocol, .openAIChatCompletions)
+        XCTAssertEqual(endpoint.effectiveBaseURL?.absoluteString, "https://tabitoken.com/v1")
+        XCTAssertEqual(
+            endpoint.effectiveBaseURL?.appendingPathComponent("chat/completions").absoluteString,
+            "https://tabitoken.com/v1/chat/completions")
+
+        providerFixtureStore.setResponder { _ in
+            let body = #"{"data":[{"id":"claude-opus-5-thinking"}]}"#
+            return (200, Data(body.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProviderFixtureURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let profiles = try await RemoteLLMClient.fetchModelProfiles(
+            endpoint: endpoint, apiKey: "fixture-tabitoken-key", session: session)
+
+        XCTAssertEqual(profiles.map(\.model), ["claude-opus-5-thinking"])
+        let request = try XCTUnwrap(providerFixtureStore.snapshotRequests().first)
+        XCTAssertEqual(request.url?.absoluteString, "https://tabitoken.com/v1/models")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-tabitoken-key")
     }
 
     func testRemoteModelOverrideAppliesEveryCapability() {
@@ -268,6 +387,15 @@ final class ProviderAuditTests: XCTestCase {
                 from: Data($0.utf8), provider: .openCode).map(\.model)
         }
         XCTAssertEqual(names, ["array-model", "models-key", "result-model"])
+    }
+
+    func testCompatibleModelCatalogReadsReasoningMetadata() throws {
+        let body = #"{"data":[{"id":"gateway-reasoner","supported_reasoning_efforts":["high","low"],"default_reasoning_effort":"high"}]}"#
+        let profile = try XCTUnwrap(
+            RemoteLLMClient.compatibleModelProfiles(from: Data(body.utf8), provider: .custom).first)
+        XCTAssertEqual(profile.supportedReasoningEfforts, ["high", "low"])
+        XCTAssertEqual(profile.defaultReasoningEffort, "high")
+        XCTAssertEqual(profile.effectiveReasoningEfforts.map(\.rawValue), ["low", "high"])
     }
 
     // MARK: Deterministic provider contract fixtures
@@ -508,6 +636,13 @@ final class ProviderAuditTests: XCTestCase {
         XCTAssertThrowsError(try WebFetchPolicy.validatedURL("file:///etc/passwd"))
         XCTAssertThrowsError(try WebFetchPolicy.validatedURL("javascript:alert(1)"))
         XCTAssertThrowsError(try WebFetchPolicy.validatedURL("data:text/html,hi"))
+    }
+
+    func testWebFetchRejectsLoopbackAndPrivateHosts() {
+        XCTAssertThrowsError(try WebFetchPolicy.validatedURL("http://127.0.0.1/secret"))
+        XCTAssertThrowsError(try WebFetchPolicy.validatedURL("http://localhost/"))
+        XCTAssertThrowsError(try WebFetchPolicy.validatedURL("http://192.168.1.1/"))
+        XCTAssertThrowsError(try WebFetchPolicy.validatedURL("http://10.0.0.1/"))
     }
 
     func testWebFetchAllowsHTTPSAndBareHosts() throws {

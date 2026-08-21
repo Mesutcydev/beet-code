@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.9.0](https://img.shields.io/badge/Download-Beet%20Code%200.9.0%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.0.zip)
+[![Download Beet Code 0.9.1](https://img.shields.io/badge/Download-Beet%20Code%200.9.1%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.1.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.0.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.1.zip), extract it, and move **Beet Code.app** to Applications (or Desktop). Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -270,7 +270,8 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 - **Major provider coverage**: OpenAI Responses and chat completions,
   Anthropic Messages, Gemini, OpenRouter, DeepSeek, Alibaba DashScope,
   LongCat, OpenCode Zen/Go, Mistral, Groq, xAI, Together AI, Fireworks,
-  Cerebras, Perplexity, Cohere, Hugging Face, NVIDIA NIM, and DeepInfra.
+  Cerebras, Perplexity, Cohere, Hugging Face, NVIDIA NIM, DeepInfra, and
+  Tabitoken.
   Custom OpenAI-compatible endpoints continue to cover Ollama, LM Studio,
   vLLM, llama.cpp, and private gateways.
 - **Provider-aware model picker**: API and local models have separate
@@ -301,6 +302,13 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   and `api_key=…` without storing the wrapper.
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
+
+## v0.9.1 — Local model reliability and release links
+
+- Local Llama 3.1, Qwen2.5, and Qwen3 GGUF turns share one clean answer path: reasoning and chat-template control tokens stay out of the transcript, while Markdown lists, code fences, line breaks, and indentation remain intact.
+- Constrained local mode uses a smaller prompt, core coding tools, bounded context/output, and deterministic sampling so 16 GB Apple Silicon Macs can answer without exhausting memory or echoing the agent protocol.
+- Imported MLX model folders keep their real model identity when the selected directory is named only `2-bit`, and multimodal/config metadata is detected before choosing the local engine.
+- The release page, ZIP link, and GitHub Pages download buttons now point to the v0.9.1 build.
 
 ## v0.9.0 — ChatGPT account access and provider surfaces
 
@@ -449,6 +457,12 @@ The bundled catalog currently includes:
   `describe_image` tool without a BYOK provider
 
 Catalog entries are ordinary Swift values; adding a user model later does not require changing the engine.
+
+Import accepts MLX folders with root `config.json` and single or sharded
+`.safetensors` weights, including Qwen-style nested `text_config`/vision
+metadata, plus single-file or folder-contained GGUF models. A folder named
+only for quantization, such as `2-bit`, inherits the parent model name in the
+picker; the format and architecture are selected from the model metadata.
 
 ## Current limitations
 

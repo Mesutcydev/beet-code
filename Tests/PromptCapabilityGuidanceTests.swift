@@ -79,11 +79,13 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(names.contains("glob"))
         XCTAssertTrue(names.contains("web_fetch"))
         XCTAssertTrue(names.contains("create_macos_app"))
+        XCTAssertTrue(names.contains("create_ios_app"))
+        XCTAssertTrue(names.contains("macos_build_run"))
     }
 
     func testAppBuildGuidanceAppearsWithScaffoldTools() {
         let text = prompt(tools: [StubTool(name: "create_macos_app"), StubTool(name: "build_diagnostics")])
-        XCTAssertTrue(text.contains("Building a native Mac / iOS app"))
+        XCTAssertTrue(text.contains("Delivering a native iOS or macOS app"))
         XCTAssertTrue(text.contains("create_macos_app"))
     }
 
@@ -112,5 +114,27 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
             responseReserveTokens: 2_048)
         XCTAssertLessThanOrEqual(text.count, 8_192 * 3)
         XCTAssertTrue(text.contains("read_file"))
+    }
+
+    func testLeanPromptOmitsWorkspaceContextAndAddsDirectAnswerGuidance() {
+        let text = PromptBuilder.systemPrompt(
+            tools: [StubTool(name: "read_file")],
+            workspace: Workspace(root: tempRoot),
+            projectInstructions: String(repeating: "rule ", count: 2_000),
+            workspaceHistory: String(repeating: "history ", count: 2_000),
+            leanPrompt: true)
+        XCTAssertTrue(text.contains("Answer ordinary questions directly"))
+        XCTAssertFalse(text.contains("# Project instructions"))
+        XCTAssertFalse(text.contains("# Earlier work in this workspace"))
+    }
+
+    func testLeanPromptOmitsGoalModeProtocolExpansion() {
+        let text = PromptBuilder.systemPrompt(
+            tools: [StubTool(name: "read_file")],
+            workspace: Workspace(root: tempRoot),
+            goalMode: true,
+            leanPrompt: true)
+        XCTAssertTrue(text.contains("Answer ordinary questions directly"))
+        XCTAssertFalse(text.contains("# Goal mode"))
     }
 }

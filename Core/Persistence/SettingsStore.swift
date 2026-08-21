@@ -344,6 +344,25 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Bearer required by the local API. Generated on first use so browser
+    /// origins cannot CSRF the loopback endpoint.
+    var apiServerToken: String {
+        get { defaults.string(forKey: DefaultsKeys.apiServerToken) ?? "" }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.apiServerToken)
+            objectWillChange.send()
+        }
+    }
+
+    @discardableResult
+    func ensureAPIServerToken() -> String {
+        let existing = apiServerToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !existing.isEmpty { return existing }
+        let generated = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        apiServerToken = generated
+        return generated
+    }
+
     /// Remote Beetcode browser control. Disabled by default because enabling
     /// it creates a network listener, even though every control route still
     /// requires a one-time pairing code followed by a bearer token.
@@ -449,6 +468,7 @@ final class SettingsStore: ObservableObject {
         static let composerBorderAnimation = "composerBorderAnimation"
         static let apiServerEnabled = "apiServerEnabled"
         static let apiServerPort = "apiServerPort"
+        static let apiServerToken = "apiServerToken"
         static let remoteSessionEnabled = "remoteSessionEnabled"
         static let remoteSessionPort = "remoteSessionPort"
         static let remoteSessionAllowLAN = "remoteSessionAllowLAN"

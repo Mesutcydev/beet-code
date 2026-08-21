@@ -5,10 +5,12 @@ import Foundation
 /// rejected — this is not a workspace-escape hatch.
 enum WebFetchError: Error, LocalizedError {
     case invalidURL(String)
+    case blockedHost(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL(let raw): "Invalid or non-http(s) URL: \(raw)"
+        case .blockedHost(let host): "Refusing to fetch private or loopback host: \(host)"
         }
     }
 }
@@ -24,7 +26,27 @@ enum WebFetchPolicy {
         guard scheme == "http" || scheme == "https" else {
             throw WebFetchError.invalidURL(trimmed)
         }
+        if let host = url.host, isBlockedHost(host) {
+            throw WebFetchError.blockedHost(host)
+        }
         return url
+    }
+
+    static func isBlockedHost(_ host: String) -> Bool {
+        let lower = host.lowercased()
+        if lower == "localhost" || lower.hasSuffix(".localhost") || lower == "metadata.google.internal" {
+            return true
+        }
+        if lower == "::1" || lower.hasPrefix("[::1]") { return true }
+        let parts = lower.split(separator: ".").compactMap { Int($0) }
+        if parts.count == 4 {
+            if parts[0] == 127 { return true }
+            if parts[0] == 10 { return true }
+            if parts[0] == 192 && parts[1] == 168 { return true }
+            if parts[0] == 169 && parts[1] == 254 { return true }
+            if parts[0] == 172 && (16...31).contains(parts[1]) { return true }
+        }
+        return false
     }
 }
 
@@ -87,21 +109,33 @@ struct WebFetchTool: AgentTool {
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 20
         config.httpAdditionalHeaders = ["User-Agent": "BeetCode/0.8 (agent web_fetch)"]
-        let session = URLSession(configuration: config)
+        let delegate = WebFetchRedirectGuard()
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
-        let (data, response): (Data, URLResponse)
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
-            (data, response) = try await session.data(from: url)
+            (bytes, response) = try await session.bytes(from: url)
         } catch {
             return "error: fetch failed — \(error.localizedDescription)"
+        }
+        if let host = response.url?.host, WebFetchPolicy.isBlockedHost(host) {
+            return "error: refused redirected host \(host)"
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             return "error: HTTP \(status) from \(url.absoluteString)"
         }
-        guard data.count <= Self.maxBytes else {
-            return "error: response is \(data.count) bytes — larger than the \(Self.maxBytes) byte cap"
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > Self.maxBytes {
+                    return "error: response exceeded the \(Self.maxBytes) byte cap"
+                }
+            }
+        } catch {
+            return "error: fetch failed — \(error.localizedDescription)"
         }
         let rawText = String(decoding: data, as: UTF8.self)
         let type = (response.mimeType ?? "").lowercased()
@@ -112,5 +146,23 @@ struct WebFetchTool: AgentTool {
             body = rawText.count > limit ? String(rawText.prefix(limit)) + "\n…[truncated]" : rawText
         }
         return "url: \(url.absoluteString)\nstatus: \(status)\n\n\(body)"
+    }
+}
+
+/// Drops redirects onto loopback or RFC1918 hosts so web_fetch cannot be
+/// used as an SSRF trampoline.
+final class WebFetchRedirectGuard: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url, let host = url.host, !WebFetchPolicy.isBlockedHost(host) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }

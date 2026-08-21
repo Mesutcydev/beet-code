@@ -630,6 +630,18 @@ final class CommandPolicyTests: XCTestCase {
         XCTAssertTrue(evaluate("rg pattern sub").safeForAutoApproval)
     }
 
+    func testGitAndFindMutationsAreNeverAutoApproved() {
+        XCTAssertFalse(evaluate("git reset --hard").safeForAutoApproval)
+        XCTAssertFalse(evaluate("git push").safeForAutoApproval)
+        XCTAssertFalse(evaluate("git config --global user.email a@b.c").safeForAutoApproval)
+        XCTAssertFalse(evaluate("find . -delete").safeForAutoApproval)
+        XCTAssertTrue(evaluate("git status").safeForAutoApproval)
+        XCTAssertTrue(CommandPolicy().isPotentiallyMutating("git reset --hard"))
+        XCTAssertTrue(CommandPolicy().isPotentiallyMutating("find . -delete"))
+        XCTAssertFalse(CommandPolicy().isPotentiallyMutating("git status"))
+        XCTAssertFalse(CommandPolicy().isPotentiallyMutating("find . -name '*.swift'"))
+    }
+
     func testUnknownExecutableDenied() {
         XCTAssertFalse(evaluate("rm -rf .").safeForAutoApproval)
         XCTAssertFalse(evaluate("curl http://evil").safeForAutoApproval)

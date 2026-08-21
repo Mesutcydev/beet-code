@@ -61,11 +61,11 @@ enum Theme {
 
     // Text tiers. Dark secondary/tertiary sit a touch brighter than the
     // neutrals around them so captions stay legible on the lifted surfaces;
-    // beet tiers are warm pinks tuned to stay readable on the saturated
-    // Pantone background (secondary ≈ 5.6:1, tertiary ≈ 3.5:1).
+    // beet tiers are warm pinks on Pantone 19-2030. Tertiary is ≥ 4.5:1
+    // for captions (WCAG AA).
     static let textPrimary   = Color.dynamic(light: 0x14161A, dark: 0xF2F4F8, beet: 0xFDF2F6)
     static let textSecondary = Color.dynamic(light: 0x5B616E, dark: 0xA3AABB, beet: 0xF7D6E1)
-    static let textTertiary  = Color.dynamic(light: 0x8A909C, dark: 0x717889, beet: 0xE5B3C4)
+    static let textTertiary  = Color.dynamic(light: 0x8A909C, dark: 0x717889, beet: 0xF3CDD8)
 
     /// Elevation shadow: a whisper in light mode, much deeper in dark —
     /// after the surface lift above, the shadow is what separates a card
@@ -207,6 +207,11 @@ extension View {
         modifier(HoverLiftModifier())
     }
 
+    /// Press confirmation for plain buttons (Run, chips, footer tools).
+    func lfPressScale() -> some View {
+        buttonStyle(LFPlainPressButtonStyle())
+    }
+
     /// Semantic accent-washed card (approval / question / plan / error).
     func lfWashCard(_ tint: Color, radius: CGFloat = Radius.lg) -> some View {
         background(Theme.wash(tint), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
@@ -289,5 +294,33 @@ private struct HoverLiftModifier: ViewModifier {
             .onHover { hovering = $0 }
             .pointerStyle(hovering ? .link : .default)
             .brightness(hovering ? 0.03 : 0)
+    }
+}
+
+/// Plain chrome with a 120 ms press scale. Use instead of `.buttonStyle(.plain)`
+/// on primary and chip actions.
+struct LFPlainPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Shared panel dismiss control — one glyph, one help string.
+struct PanelCloseButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Close panel")
+        .accessibilityLabel("Close panel")
     }
 }

@@ -52,6 +52,9 @@ actor AgentLoop {
         var persistSessions: Bool = true
         /// Nested read-only subagents cannot suspend on ask_user (no UI).
         var allowAskUser: Bool = true
+        /// Omits large workspace/tool-context sections for local models that
+        /// are running close to the Mac's memory ceiling.
+        var leanPrompt: Bool = false
     }
 
     // Dependencies
@@ -108,13 +111,17 @@ actor AgentLoop {
         self.workspace = workspace
         self.memory = memory
         self.taskHint = taskHint
-        self.hooks = hooks ?? HookRunner.load(workspaceRoot: workspace.root)
+        self.hooks = hooks ?? HookRunner.load(
+            workspaceRoot: workspace.root,
+            includeWorkspace: WorkspaceTrust.isTrusted(workspace.root))
         let projectPolicy = ProjectPolicy.load(workspaceRoot: workspace.root)
         var effectiveConfiguration = configuration
-        if let plan = projectPolicy?.plan { effectiveConfiguration.planMode = plan }
-        if let goal = projectPolicy?.goal { effectiveConfiguration.goalMode = goal }
-        if let verifyAfterEdits = projectPolicy?.verifyAfterEdits {
-            effectiveConfiguration.verifyAfterEdits = verifyAfterEdits
+        // Repo policy may only tighten safety. It must not turn off plan,
+        // goal, or verification that the user enabled in Settings.
+        if projectPolicy?.plan == true { effectiveConfiguration.planMode = true }
+        if projectPolicy?.goal == true { effectiveConfiguration.goalMode = true }
+        if projectPolicy?.verifyAfterEdits == true {
+            effectiveConfiguration.verifyAfterEdits = true
         }
         // Control tools are part of the prompt and the executor's registry,
         // but the loop intercepts them before execution ever happens.
@@ -151,16 +158,20 @@ actor AgentLoop {
         let projectInstructions = ProjectInstructions.section(workspaceRoot: workspace.root)
         let historySection = WorkspaceHistory.section(workspacePath: workspace.root.path)
         self.systemPrompt = PromptBuilder.systemPrompt(
-            tools: allTools, workspace: workspace, repoIndex: repoIndex,
-            memorySection: memorySection, projectInstructions: projectInstructions,
-            projectPolicy: projectPolicy?.promptSection,
-            workspaceHistory: historySection,
-            agentPrompt: effectiveConfiguration.agentPrompt,
+            tools: allTools,
+            workspace: workspace,
+            repoIndex: effectiveConfiguration.leanPrompt ? nil : repoIndex,
+            memorySection: effectiveConfiguration.leanPrompt ? nil : memorySection,
+            projectInstructions: effectiveConfiguration.leanPrompt ? nil : projectInstructions,
+            projectPolicy: effectiveConfiguration.leanPrompt ? nil : projectPolicy?.promptSection,
+            workspaceHistory: effectiveConfiguration.leanPrompt ? nil : historySection,
+            agentPrompt: effectiveConfiguration.leanPrompt ? nil : effectiveConfiguration.agentPrompt,
             planMode: effectiveConfiguration.planMode,
             goalMode: effectiveConfiguration.goalMode,
             outputStyle: effectiveConfiguration.outputStyle,
             contextWindowTokens: effectiveConfiguration.contextWindowTokens,
-            responseReserveTokens: effectiveConfiguration.maxTokensPerTurn)
+            responseReserveTokens: effectiveConfiguration.maxTokensPerTurn,
+            leanPrompt: effectiveConfiguration.leanPrompt)
         (engine as? any NativeToolConfigurable)?.configureNativeTools(
             allTools.map { NativeToolSpec(tool: $0) })
         if let seed = seedRecord {
@@ -174,7 +185,10 @@ actor AgentLoop {
                 workspacePath: seed.workspacePath,
                 modelID: seed.modelID.isEmpty ? modelID : seed.modelID,
                 messages: seed.messages,
-                checkpoints: seed.checkpoints)
+                checkpoints: seed.checkpoints,
+                source: seed.source,
+                schemaVersion: seed.schemaVersion,
+                codexThreadID: seed.codexThreadID)
         } else {
             self.record = SessionRecord(
                 id: sessionID,
@@ -284,11 +298,15 @@ actor AgentLoop {
 
     /// Every terminal path funnels through here: yields `.finished` exactly
     /// once and closes the stream so consumers' `for await` loops end.
-    private func finish(_ reason: AgentFinish) {
+    private func finish(_ reason: AgentFinish) async {
         guard !hasFinished else { return }
         hasFinished = true
         isRunning = false
         setPhase(.finished)
+        if let task = engineCancelTask {
+            engineCancelTask = nil
+            await task.value
+        }
         // Terminal snapshot: durable task state, never disposable cache.
         saveTaskCapsule()
         persist()
@@ -398,7 +416,7 @@ actor AgentLoop {
                 }
                 // Cancellation arriving during generation must not be
                 // reported as a successful completion.
-                if cancelled { finish(.cancelled); return }
+                if cancelled { await finish(.cancelled); return }
                 let extractedReasoning = PromptBuilder.extractingThinking(raw)
                 if configuration.showReasoning,
                    let think = extractedReasoning,
@@ -407,10 +425,19 @@ actor AgentLoop {
                         SessionMessage(role: .reasoning, content: think, toolName: nil, timestamp: Date()))
                     eventContinuation?.yield(.reasoning(think))
                 }
-                var visible = PromptBuilder.strippingThinking(raw)
+                var visible = PromptBuilder.cleaningGeneratedText(raw)
 
                 // 2. Parse tool calls.
                 let calls = ToolParser.parse(visible)
+                // A short exact-answer request is an explicit output
+                // contract, not a request for conversational filler. A few
+                // instruct finetunes answer "Reply with exactly OK" with a
+                // fragment such as "I'll."; normalize only this unambiguous
+                // no-tool case and leave ordinary prose untouched.
+                if calls.isEmpty,
+                   let exact = PromptBuilder.exactRequestedAnswer(in: taskHint) {
+                    visible = exact
+                }
 
                 // 2t. A reply ending in an UNTERMINATED tool-call object
                 // executed nothing — the token ceiling cut the JSON off
@@ -469,10 +496,10 @@ actor AgentLoop {
                     setPhase(.awaitingPlanApproval)
                     eventContinuation?.yield(.planProposed(planText))
                     let decision = await requestPlanApproval(planText)
-                    if cancelled { finish(.cancelled); return }
+                    if cancelled { await finish(.cancelled); return }
                     switch decision {
                     case .cancel:
-                        finish(.declined("The plan was not approved."))
+                        await finish(.declined("The plan was not approved."))
                         return
                     case .revise(let feedback):
                         // The feedback becomes the next user turn; the loop
@@ -514,7 +541,7 @@ actor AgentLoop {
                         SessionMessage(role: .assistant, content: visible, toolName: nil, timestamp: Date()))
                     eventContinuation?.yield(.assistantMessage(visible))
                     rememberCompletion(summary: visible)
-                    finish(.completed(visible))
+                    await finish(.completed(visible))
                     return
                 }
 
@@ -561,7 +588,7 @@ actor AgentLoop {
                         SessionMessage(role: .assistant, content: summary, toolName: nil, timestamp: Date()))
                     eventContinuation?.yield(.assistantMessage(summary))
                     rememberCompletion(summary: summary)
-                    finish(.completed(summary))
+                    await finish(.completed(summary))
                     return
                 }
                 if call.name == "ask_user" {
@@ -575,7 +602,7 @@ actor AgentLoop {
                     }
                     let question = call.string("question") ?? "Please answer."
                     let answer = await askUser(question)
-                    if cancelled { finish(.cancelled); return }
+                    if cancelled { await finish(.cancelled); return }
                     setPhase(.working)
                     let observation = "User answered: \(answer)"
                     record.messages.append(
@@ -597,7 +624,7 @@ actor AgentLoop {
                     } else {
                         observation = await runSubagent(prompt: prompt, role: role)
                     }
-                    if cancelled { finish(.cancelled); return }
+                    if cancelled { await finish(.cancelled); return }
                     eventContinuation?.yield(.toolCallFinished(
                         invocation, output: observation, failed: observation.hasPrefix("error:")))
                     record.messages.append(
@@ -627,12 +654,12 @@ actor AgentLoop {
                     continue
                 case .needsApproval:
                     guard await requestApproval(for: call, invocation: invocation) != nil else {
-                        if cancelled { finish(.cancelled); return }
+                        if cancelled { await finish(.cancelled); return }
                         let declined = "declined by user"
                         record.messages.append(
                             SessionMessage(role: .toolResult, content: declined, toolName: call.name, timestamp: Date()))
                         eventContinuation?.yield(.toolCallFinished(invocation, output: declined, failed: true))
-                        finish(.declined("User declined the requested action."))
+                        await finish(.declined("User declined the requested action."))
                         return
                     }
                     // Approved: back to work.
@@ -656,6 +683,31 @@ actor AgentLoop {
                     continue
                 case .rewrite(let next):
                     call = ParsedToolCall(name: call.name, arguments: next, index: call.index)
+                    // A rewrite must re-enter the gate. Otherwise a workspace
+                    // hook can turn an approved `ls` into `rm -rf .`.
+                    switch permissionGate.decision(for: call, risk: risk) {
+                    case .denied(let reason):
+                        let message = "denied by OpenCode permission after hook rewrite: \(reason)"
+                        record.messages.append(
+                            SessionMessage(role: .toolResult, content: message, toolName: call.name, timestamp: Date()))
+                        history.append(ChatTurn(role: .tool, content: message))
+                        eventContinuation?.yield(.toolCallFinished(invocation, output: message, failed: true))
+                        await compactIfNeeded()
+                        continue
+                    case .needsApproval:
+                        guard await requestApproval(for: call, invocation: invocation) != nil else {
+                            if cancelled { await finish(.cancelled); return }
+                            let declined = "declined by user"
+                            record.messages.append(
+                                SessionMessage(role: .toolResult, content: declined, toolName: call.name, timestamp: Date()))
+                            eventContinuation?.yield(.toolCallFinished(invocation, output: declined, failed: true))
+                            await finish(.declined("User declined the requested action."))
+                            return
+                        }
+                        setPhase(.working)
+                    case .auto:
+                        break
+                    }
                 }
 
                 // 3d. Checkpoint immediately before any approved mutation
@@ -702,20 +754,20 @@ actor AgentLoop {
                     await runVerificationChecks()
                 }
 
-                if cancelled { finish(.cancelled); return }
+                if cancelled { await finish(.cancelled); return }
                 await compactIfNeeded()
             }
 
             if cancelled {
-                finish(.cancelled)
+                await finish(.cancelled)
             } else {
-                finish(.maxTurnsReached(configuration.maxTurns))
+                await finish(.maxTurnsReached(configuration.maxTurns))
             }
         } catch {
             if cancelled {
-                finish(.cancelled)
+                await finish(.cancelled)
             } else {
-                finish(.engineError(error.localizedDescription))
+                await finish(.engineError(error.localizedDescription))
             }
         }
     }
@@ -892,7 +944,9 @@ actor AgentLoop {
             if let command = call.string("command") {
                 return commandPolicy.isPotentiallyMutating(command)
             }
-            return true
+            // computer_*, browser_*, web_fetch, mcp__*, and similar execute
+            // tools have no shell command — they are not git mutations.
+            return false
         case .read, .none:
             return false
         }

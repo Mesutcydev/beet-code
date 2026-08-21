@@ -279,47 +279,47 @@ final class AppState: ObservableObject {
     /// model is unloaded, while the app is waiting for approval, or while a
     /// different workspace is active.
     func drainTaskQueue() {
-        guard activeQueuedTaskID == nil,
-              !sessions.isRunning,
-              isEngineReady,
-              let next = taskQueue.loadAll().first(where: { $0.state == .queued })
-        else {
-            refreshTaskQueue()
-            return
-        }
+        while activeQueuedTaskID == nil, !sessions.isRunning, isEngineReady {
+            guard let next = taskQueue.loadAll().first(where: { $0.state == .queued }) else {
+                refreshTaskQueue()
+                return
+            }
 
-        guard let record = SessionStore.shared.load(id: next.sessionID),
-              record.workspacePath == next.workspacePath,
-              SessionStore.shared.validateWorkspaceBinding(record)
-        else {
+            guard let record = SessionStore.shared.load(id: next.sessionID),
+                  record.workspacePath == next.workspacePath,
+                  SessionStore.shared.validateWorkspaceBinding(record)
+            else {
+                taskQueue.update(next.id) { task in
+                    task.state = .failed
+                    task.phase = nil
+                    task.lastError = "The task's workspace or session is no longer available."
+                }
+                refreshTaskQueue()
+                continue
+            }
+
+            activeQueuedTaskID = next.id
             taskQueue.update(next.id) { task in
-                task.state = .failed
-                task.phase = nil
-                task.lastError = "The task's workspace or session is no longer available."
+                task.state = .running
+                task.phase = "Starting"
+                task.attempts += 1
+                task.lastError = nil
             }
             refreshTaskQueue()
-            return
-        }
 
-        activeQueuedTaskID = next.id
-        taskQueue.update(next.id) { task in
-            task.state = .running
-            task.phase = "Starting"
-            task.attempts += 1
-            task.lastError = nil
+            guard sessions.continuePersistedSession(id: next.sessionID, message: next.message) else {
+                taskQueue.update(next.id) { task in
+                    task.state = .failed
+                    task.phase = nil
+                    task.lastError = "The session could not be resumed."
+                }
+                activeQueuedTaskID = nil
+                refreshTaskQueue()
+                continue
+            }
+            return
         }
         refreshTaskQueue()
-
-        guard sessions.continuePersistedSession(id: next.sessionID, message: next.message) else {
-            taskQueue.update(next.id) { task in
-                task.state = .failed
-                task.phase = nil
-                task.lastError = "The session could not be resumed."
-            }
-            activeQueuedTaskID = nil
-            refreshTaskQueue()
-            return
-        }
     }
 
     private var isEngineReady: Bool {
@@ -414,17 +414,9 @@ final class AppState: ObservableObject {
         // each test selects its own isolated fixture, and an asynchronous
         // launch restore must never race that selection.
         if !isTestHost, let workspace = self.preferences.validatedWorkspaceURL() {
-            Task { await self.sessions.switchWorkspace(to: workspace) }
+            let sessionID = preferences.lastSessionID
+            Task { await self.sessions.switchWorkspace(to: workspace, sessionID: sessionID) }
             Log.app.info("Restored workspace \(workspace.path, privacy: .public)")
-        }
-
-        // Session: only when its workspace binding is still valid.
-        if !isTestHost,
-           let sessionID = preferences.lastSessionID,
-           let record = SessionStore.shared.load(id: sessionID),
-           SessionStore.shared.validateWorkspaceBinding(record) {
-            _ = sessions.restore(record)
-            Log.app.info("Restored session \(record.title, privacy: .public)")
         }
 
         // Model: reload the last-used local model so the composer is ready
@@ -556,6 +548,18 @@ final class AppState: ObservableObject {
             enginePhase = .failed("\(model.displayName) is incomplete (missing weight files). Remove it and download again.")
             return
         }
+        // Reject a model that cannot fit even on a clean machine before
+        // stopping the currently working model. This is especially important
+        // when a large MLX checkpoint is selected while a GGUF helper is
+        // already resident.
+        if model.id != activeModelID {
+            do {
+                try MemoryAdvisor.admitFreshLoad(diskBytes: installed.sizeBytes)
+            } catch {
+                enginePhase = .failed(error.localizedDescription)
+                return
+            }
+        }
         // An active agent must fully stop before its engine is swapped:
         // cancellation is awaited, so generation can never outlive the model.
         await sessions.stopAndWait()
@@ -573,7 +577,12 @@ final class AppState: ObservableObject {
         // (warm KV cache) — the pool evicts LRU idle residents only when the
         // memory budget or the residency cap requires it. Single-resident
         // routers (test doubles) keep the old unload-first behavior.
-        if engine.enginePool == nil, activeModelID != nil, activeModelID != model.id {
+        let constrainedLocalMachine = MemoryAdvisor.physicalMemory < 24 * 1024 * 1024 * 1024
+        if constrainedLocalMachine, activeModelID != model.id, engine.enginePool != nil {
+            await engine.unloadAll()
+            activeModelID = nil
+            effectiveContextWindow = nil
+        } else if engine.enginePool == nil, activeModelID != nil, activeModelID != model.id {
             await engine.unload()
             activeModelID = nil
         }
@@ -749,7 +758,12 @@ final class AppState: ObservableObject {
         let server = apiServer ?? LocalAPIServer(engine: engine)
         apiServer = server
         do {
-            try await server.start(.init(port: port, bindIPv6: false, modelIDOverride: activeModelID))
+            try await server.start(.init(
+                port: port,
+                bindIPv6: false,
+                modelIDOverride: activeModelID,
+                bearerToken: settings.ensureAPIServerToken(),
+                allowCORS: false))
             apiServerRunning = true
             apiServerError = nil
         } catch {

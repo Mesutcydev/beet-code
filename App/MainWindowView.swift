@@ -49,6 +49,36 @@ struct MainWindowView: View {
     /// the three columns fit a 960-pt window instead of overflowing.
     private var chatMinWidth: CGFloat { dockedPanelOpen ? 300 : 380 }
 
+    private enum ToolPanel {
+        case browser, simulator, diagnostics
+    }
+
+    /// One tool surface at a time — stacked Browser/Simulator/Diagnostics
+    /// sheets (or three docked columns) hide the composer.
+    private func presentToolPanel(_ panel: ToolPanel) {
+        showCompactSidebar = false
+        showBrowser = panel == .browser
+        showSimulator = panel == .simulator
+        showDiagnostics = panel == .diagnostics
+        appState.isSimulatorPanelOpen = showSimulator
+    }
+
+    private func toggleToolPanel(_ panel: ToolPanel) {
+        let open: Bool = switch panel {
+        case .browser: showBrowser
+        case .simulator: showSimulator
+        case .diagnostics: showDiagnostics
+        }
+        if open {
+            showBrowser = false
+            showSimulator = false
+            showDiagnostics = false
+            appState.isSimulatorPanelOpen = false
+        } else {
+            presentToolPanel(panel)
+        }
+    }
+
     var body: some View {
         notificationView
     }
@@ -72,6 +102,14 @@ struct MainWindowView: View {
             .toolbarBackground(Theme.bg, for: .windowToolbar)
             .toolbarBackground(.visible, for: .windowToolbar)
             .background(Theme.bg)
+            .onChange(of: showCompactSidebar) { _, on in
+                if on {
+                    showBrowser = false
+                    showSimulator = false
+                    showDiagnostics = false
+                    appState.isSimulatorPanelOpen = false
+                }
+            }
     }
 
     private var presentationView: some View {
@@ -96,17 +134,16 @@ struct MainWindowView: View {
                 showRemoteAccess = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .openBrowserPanel)) { _ in
-                showBrowser = true
+                presentToolPanel(.browser)
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleBrowserPanel)) { _ in
-                showBrowser.toggle()
+                toggleToolPanel(.browser)
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleSimulatorPanel)) { _ in
-                showSimulator.toggle()
-                appState.isSimulatorPanelOpen = showSimulator
+                toggleToolPanel(.simulator)
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleDiagnosticsPanel)) { _ in
-                showDiagnostics.toggle()
+                toggleToolPanel(.diagnostics)
             }
             .onReceive(NotificationCenter.default.publisher(for: .gitStatus)) { _ in
                 sessions.gitStatus()
@@ -190,22 +227,19 @@ struct MainWindowView: View {
 
     private var responsiveLayout: some View {
         GeometryReader { proxy in
-            layout(for: proxy.size.width)
+            Group {
+                if proxy.size.width < 900 {
+                    portraitLayout
+                } else {
+                    wideLayout
+                }
+            }
         }
-    }
-
-    private func layout(for width: CGFloat) -> AnyView {
-        if width < 900 {
-            return AnyView(portraitLayout)
-        }
-        return AnyView(wideLayout)
     }
 
     private var wideLayout: some View {
         NavigationSplitView {
-            SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
-                        showDiagnostics: $showDiagnostics,
-                        showRemoteAccess: $showRemoteAccess)
+            SidebarView(showRemoteAccess: $showRemoteAccess)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 292, max: 380)
         } detail: {
             HStack(spacing: 0) {
@@ -285,9 +319,7 @@ struct MainWindowView: View {
         }
         .background(Theme.bg)
         .sheet(isPresented: $showCompactSidebar) {
-            SidebarView(showBrowser: $showBrowser, showSimulator: $showSimulator,
-                        showDiagnostics: $showDiagnostics,
-                        showRemoteAccess: $showRemoteAccess,
+            SidebarView(showRemoteAccess: $showRemoteAccess,
                         showsCloseButton: true)
             .environmentObject(appState)
             .environmentObject(sessions)
@@ -316,11 +348,6 @@ private struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var sessions: AgentSessionController
     @Environment(\.dismiss) private var dismiss
-    /// Docked panel state lives in MainWindowView; the sidebar footer drives
-    /// it through these bindings (one source of truth, no notifications).
-    @Binding var showBrowser: Bool
-    @Binding var showSimulator: Bool
-    @Binding var showDiagnostics: Bool
     @Binding var showRemoteAccess: Bool
     /// The compact portrait sidebar is presented as a sheet, so it must offer
     /// an explicit escape hatch in addition to Escape and the window chrome.
@@ -451,19 +478,7 @@ private struct SidebarView: View {
                 .accessibilityLabel("Switch workspace")
 
                 if showsCloseButton {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(Theme.textSecondary)
-                    .help("Close Chats")
-                    .accessibilityLabel("Close Chats")
-                    .accessibilityHint("Returns to the conversation")
+                    PanelCloseButton { dismiss() }
                 }
             }
 
@@ -806,32 +821,22 @@ private struct SidebarView: View {
         VStack(spacing: 8) {
             Divider().overlay(Theme.hairline)
             HStack(spacing: 4) {
-                footerTool("Browser", icon: "safari", isActive: showBrowser) {
-                    showBrowser.toggle()
+                footerTool("Models", icon: "cpu", isActive: false) {
+                    NotificationCenter.default.post(name: .openModelManager, object: nil)
                 }
-                footerTool("Simulator", icon: "iphone", isActive: showSimulator) {
-                    showSimulator.toggle()
-                    appState.isSimulatorPanelOpen = showSimulator
-                }
-                footerTool("Diagnostics", icon: "stethoscope", isActive: showDiagnostics) {
-                    showDiagnostics.toggle()
+                footerTool("Settings", icon: "gearshape", isActive: false) {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 }
                 Menu {
                     Button("Remote sessions…") { showRemoteAccess = true }
                     Divider()
                     Button("Export current chat…") { exportCurrentChat() }
-                    Button("Model manager…") {
-                        NotificationCenter.default.post(name: .openModelManager, object: nil)
-                    }
-                    Button("Settings…") {
-                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                    }
                 } label: {
                     VStack(spacing: 4) {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 13, weight: .semibold))
                         Text("More")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundStyle(Theme.textSecondary)
                     .frame(maxWidth: .infinity, minHeight: 38)
@@ -854,16 +859,15 @@ private struct SidebarView: View {
                 Image(systemName: icon)
                     .font(.system(size: 12, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
             }
             .foregroundStyle(isActive ? Theme.accent : Theme.textSecondary)
             .frame(maxWidth: .infinity, minHeight: 38)
             .background(isActive ? Theme.wash(Theme.accent) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LFPlainPressButtonStyle())
         .lfHoverLift()
         .help(title)
         .accessibilityLabel(title)

@@ -52,10 +52,11 @@ targets:
       properties:
         CFBundleDisplayName: "Beet Code"
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "0.9.0"
-        CFBundleVersion: "13"
+        CFBundleShortVersionString: "0.9.1"
+        CFBundleVersion: "14"
         LSApplicationCategoryType: public.app-category.developer-tools
         LSMinimumSystemVersion: "15.0"
+        NSHumanReadableCopyright: "Copyright © 2026 BeetCode contributors"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.beetcode.app

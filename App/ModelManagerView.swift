@@ -160,13 +160,19 @@ struct ModelManagerView: View {
         }
 
         // Read model config for display metadata when present (GGUF folders
-        // usually ship no config.json).
+        // usually ship no config.json). MLXModelInspector also understands
+        // nested Qwen3.5 text/vision configs and their quantization metadata.
         var family = format == .gguf ? "GGUF" : "Custom"
         var contextWindow = format == .gguf ? 8_192 : 32_768
-        if let configData = try? Data(contentsOf: url.appendingPathComponent("config.json")),
-           let json = try? JSONSerialization.jsonObject(with: configData) as? [String: Any] {
-            family = (json["model_type"] as? String)?.capitalized ?? family
-            contextWindow = (json["max_position_embeddings"] as? Int) ?? contextWindow
+        var parameters = "—"
+        var quantization = format == .gguf ? (ggufQuantization(url.lastPathComponent) ?? "GGUF") : "—"
+        var mlxMetadata: MLXModelInspector.Metadata?
+        if format == .mlx, let metadata = MLXModelInspector.read(from: url) {
+            mlxMetadata = metadata
+            family = metadata.family
+            contextWindow = metadata.contextWindow
+            parameters = metadata.parameters
+            quantization = metadata.quantization
         }
 
         // GGUF folders: the header inside the .gguf is the source of truth —
@@ -178,8 +184,11 @@ struct ModelManagerView: View {
             if let architecture = sniffed.architecture { family = architecture.capitalized }
         }
 
-        let dirName = url.lastPathComponent
+        let dirName = MLXModelInspector.suggestedID(for: url)
         let size = (try? ModelStore.sizeOfDirectory(url)) ?? 0
+        let displayName = mlxMetadata.map {
+            MLXModelInspector.displayName(for: url, metadata: $0)
+        } ?? prettifiedName(dirName)
 
         // Copy into the managed Models directory if it isn't already there.
         let dest = modelsBase.appendingPathComponent(dirName, isDirectory: true)
@@ -194,15 +203,17 @@ struct ModelManagerView: View {
         return CatalogModel(
             id: dirName,
             repo: url.path,
-            displayName: prettifiedName(dirName),
+            displayName: displayName,
             family: family,
-            parameters: "—",
-            quantization: format == .gguf ? (ggufQuantization(dirName) ?? "GGUF") : "—",
+            parameters: parameters,
+            quantization: quantization,
             diskBytes: size,
             contextWindow: contextWindow,
             minRAMGB: max(6, Int(Double(size) / 1_000_000_000 * 1.5)),
             recommendedRAMGB: max(8, Int(Double(size) / 1_000_000_000 * 2)),
-            notes: "Imported from \(url.path)",
+            notes: mlxMetadata?.isVisionLanguage == true
+                ? "Imported multimodal MLX model (text + vision weights) from \(url.path)"
+                : "Imported from \(url.path)",
             format: format)
     }
 

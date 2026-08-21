@@ -49,6 +49,9 @@ enum RemoteLLMClient {
         /// extension. Keep it provider-gated so strict OpenAI-compatible
         /// servers never receive an unknown field.
         var thinking: Thinking?
+        /// Standard OpenAI-compatible reasoning control. It is optional so
+        /// ordinary models receive the exact same payload as before.
+        var reasoning_effort: String? = nil
         /// Asks OpenAI-compatible servers for a final usage chunk — powers
         /// truthful token stats instead of chunk counting.
         var stream_options: StreamOptions?
@@ -71,6 +74,11 @@ enum RemoteLLMClient {
         var max_output_tokens: Int?
         var stream: Bool = true
         var tools: [ResponsesTool]?
+        var reasoning: Reasoning? = nil
+
+        struct Reasoning: Encodable, Sendable {
+            var effort: String
+        }
 
         struct ResponsesTool: Encodable, Sendable {
             var type: String = "function"
@@ -138,6 +146,12 @@ enum RemoteLLMClient {
         struct GenerationConfig: Codable, Sendable {
             var temperature: Double?
             var maxOutputTokens: Int?
+            var thinkingConfig: ThinkingConfig?
+
+            struct ThinkingConfig: Codable, Sendable {
+                var thinkingBudget: Int?
+                var thinkingLevel: String?
+            }
         }
         var contents: [Content]
         var tools: [NativeToolBridge.GeminiTool]? = nil
@@ -191,6 +205,11 @@ enum RemoteLLMClient {
         var temperature: Double?
         var stream: Bool = true
         var tools: [NativeToolBridge.AnthropicTool]?
+        var output_config: OutputConfig? = nil
+
+        struct OutputConfig: Encodable, Sendable {
+            var effort: String
+        }
     }
 
     struct AnthropicChunk: Codable, Sendable {
@@ -413,6 +432,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        reasoningEffort: String? = nil,
         tools: [NativeToolSpec] = [],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
@@ -430,6 +450,7 @@ enum RemoteLLMClient {
                 turns: turns,
                 temperature: temperature,
                 maxTokens: maxTokens,
+                reasoningEffort: reasoningEffort,
                 tools: tools,
                 headers: endpoint.headers,
                 onUsage: onUsage)
@@ -441,6 +462,7 @@ enum RemoteLLMClient {
                 turns: turns,
                 temperature: temperature,
                 maxTokens: maxTokens,
+                reasoningEffort: reasoningEffort,
                 tools: tools,
                 headers: endpoint.headers,
                 onUsage: onUsage)
@@ -452,6 +474,7 @@ enum RemoteLLMClient {
                 turns: turns,
                 temperature: temperature,
                 maxTokens: maxTokens,
+                reasoningEffort: reasoningEffort,
                 tools: tools,
                 headers: endpoint.headers,
                 onUsage: onUsage)
@@ -464,6 +487,7 @@ enum RemoteLLMClient {
                 turns: turns,
                 temperature: temperature,
                 maxTokens: maxTokens,
+                reasoningEffort: reasoningEffort,
                 tools: tools,
                 headers: endpoint.headers,
                 onUsage: onUsage)
@@ -478,6 +502,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        reasoningEffort: String? = nil,
         tools: [NativeToolSpec] = [],
         headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
@@ -488,7 +513,8 @@ enum RemoteLLMClient {
                     let first = streamOpenAIOnce(
                         provider: provider, baseURL: baseURL, apiKey: apiKey,
                         model: model, turns: turns, temperature: temperature,
-                        maxTokens: maxTokens, includeStreamOptions: true,
+                        maxTokens: maxTokens, reasoningEffort: reasoningEffort,
+                        includeStreamOptions: true,
                         tools: tools, headers: headers, onUsage: onUsage)
                     for try await chunk in first {
                         if Task.isCancelled { throw RemoteLLMError.cancelled }
@@ -500,7 +526,8 @@ enum RemoteLLMClient {
                         let retry = streamOpenAIOnce(
                             provider: provider, baseURL: baseURL, apiKey: apiKey,
                             model: model, turns: turns, temperature: temperature,
-                            maxTokens: maxTokens, includeStreamOptions: false,
+                            maxTokens: maxTokens, reasoningEffort: reasoningEffort,
+                            includeStreamOptions: false,
                             tools: tools, headers: headers, onUsage: onUsage)
                         for try await chunk in retry {
                             if Task.isCancelled { throw RemoteLLMError.cancelled }
@@ -513,7 +540,8 @@ enum RemoteLLMClient {
                             let plain = streamOpenAIOnce(
                                 provider: provider, baseURL: baseURL, apiKey: apiKey,
                                 model: model, turns: turns, temperature: temperature,
-                                maxTokens: maxTokens, includeStreamOptions: false,
+                                maxTokens: maxTokens, reasoningEffort: reasoningEffort,
+                                includeStreamOptions: false,
                                 tools: [], headers: headers, onUsage: onUsage)
                             for try await chunk in plain {
                                 if Task.isCancelled { throw RemoteLLMError.cancelled }
@@ -544,6 +572,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        reasoningEffort: String? = nil,
         includeStreamOptions: Bool,
         tools: [NativeToolSpec] = [],
         headers: [String: String] = [:],
@@ -564,6 +593,7 @@ enum RemoteLLMClient {
                 thinking: provider == .longCat
                     ? .init(type: reasoningEnabled ? "enabled" : "disabled")
                     : nil,
+                reasoning_effort: reasoningEffort,
                 stream_options: includeStreamOptions ? .init() : nil)
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
@@ -598,6 +628,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        reasoningEffort: String? = nil,
         tools: [NativeToolSpec] = [],
         headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
@@ -615,7 +646,8 @@ enum RemoteLLMClient {
                 temperature: omitsTemperature(model) ? nil : temperature,
                 max_output_tokens: maxTokens,
                 stream: true,
-                tools: responseTools.isEmpty ? nil : responseTools)
+                tools: responseTools.isEmpty ? nil : responseTools,
+                reasoning: reasoningEffort.map { .init(effort: $0) })
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("responses"))
                 request.httpMethod = "POST"
@@ -643,6 +675,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        reasoningEffort: String? = nil,
         tools: [NativeToolSpec] = [],
         headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
@@ -659,7 +692,8 @@ enum RemoteLLMClient {
                 systemInstruction: system.map { .init(role: "user", parts: [.init(text: $0)]) },
                 generationConfig: .init(
                     temperature: temperature,
-                    maxOutputTokens: maxTokens))
+                    maxOutputTokens: maxTokens,
+                    thinkingConfig: geminiThinkingConfig(model: model, effort: reasoningEffort)))
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
@@ -685,6 +719,7 @@ enum RemoteLLMClient {
         turns: [ChatTurn],
         temperature: Double?,
         maxTokens: Int?,
+        reasoningEffort: String? = nil,
         tools: [NativeToolSpec] = [],
         headers: [String: String] = [:],
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
@@ -698,7 +733,8 @@ enum RemoteLLMClient {
                 messages: messages,
                 temperature: omitsTemperature(model) ? nil : temperature,
                 stream: true,
-                tools: tools.isEmpty ? nil : NativeToolBridge.anthropicTools(from: tools))
+                tools: tools.isEmpty ? nil : NativeToolBridge.anthropicTools(from: tools),
+                output_config: reasoningEffort.map { .init(effort: $0) })
             runStreamingRequest(makeRequest: {
                 var request = URLRequest(url: baseURL.appendingPathComponent("messages"))
                 request.httpMethod = "POST"
@@ -717,6 +753,31 @@ enum RemoteLLMClient {
                 return request
             }, continuation: continuation, onUsage: onUsage)
         }
+    }
+
+    /// Gemini 3 exposes named thinking levels while Gemini 2.5 uses a token
+    /// budget. The UI keeps one effort vocabulary, but the wire payload stays
+    /// native to the selected model family.
+    private static func geminiThinkingConfig(
+        model: String,
+        effort: String?
+    ) -> GeminiRequest.GenerationConfig.ThinkingConfig? {
+        guard let effort = effort.flatMap(ReasoningEffort.init) else { return nil }
+        let modelID = model.lowercased()
+        if modelID.contains("gemini-2.5") {
+            let budget: Int
+            switch effort.rawValue {
+            case "none": budget = 0
+            case "minimal", "low": budget = 1_024
+            case "medium": budget = 8_192
+            case "high", "xhigh", "max": budget = 24_576
+            default: return nil
+            }
+            return .init(thinkingBudget: budget, thinkingLevel: nil)
+        }
+        guard modelID.contains("gemini-3") else { return nil }
+        let level = effort.rawValue == "none" ? "minimal" : effort.rawValue
+        return .init(thinkingBudget: nil, thinkingLevel: level)
     }
 
     /// Non-streaming connectivity probe used by the Settings "Test" button.
@@ -1122,8 +1183,36 @@ enum RemoteLLMClient {
                 return nil
             }
             let displayName = (entry["name"] as? String) ?? (entry["display_name"] as? String)
-            return RemoteModelProfile(provider: provider, model: id, displayName: displayName)
+            let efforts = reasoningEfforts(from: entry)
+            let defaultEffort = (entry["default_reasoning_effort"] as? String)
+                ?? (entry["defaultReasoningEffort"] as? String)
+            return RemoteModelProfile(
+                provider: provider,
+                model: id,
+                displayName: displayName,
+                supportsReasoning: efforts.isEmpty ? nil : true,
+                supportedReasoningEfforts: efforts,
+                defaultReasoningEffort: defaultEffort)
         }
+    }
+
+    private static func reasoningEfforts(from entry: [String: Any]) -> [String] {
+        let keys = [
+            "supported_reasoning_efforts", "supportedReasoningEfforts",
+            "reasoning_efforts", "reasoningEfforts",
+        ]
+        for key in keys {
+            if let values = entry[key] as? [String] {
+                return values
+            }
+            if let values = entry[key] as? [[String: Any]] {
+                let strings = values.compactMap {
+                    ($0["reasoning_effort"] as? String) ?? ($0["reasoningEffort"] as? String)
+                }
+                if !strings.isEmpty { return strings }
+            }
+        }
+        return []
     }
 
     private static func deduplicatedProfiles(_ profiles: [RemoteModelProfile]) -> [RemoteModelProfile] {
@@ -1280,6 +1369,23 @@ enum RemoteLLMClient {
         return .none
     }
 
+    private final class SSEActivity: @unchecked Sendable {
+        private let lock = NSLock()
+        private var last = Date()
+
+        func touch() {
+            lock.lock()
+            last = Date()
+            lock.unlock()
+        }
+
+        var idle: TimeInterval {
+            lock.lock()
+            defer { lock.unlock() }
+            return Date().timeIntervalSince(last)
+        }
+    }
+
     /// Consumes an SSE byte stream, decoding data: {json} lines into text
     /// deltas. Lines are split at the BYTE level and decoded only when
     /// complete — per-byte String decoding (the old code) corrupted every
@@ -1293,13 +1399,59 @@ enum RemoteLLMClient {
         onText: @escaping @Sendable (String) -> Void,
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil
     ) async throws {
+        let clock = SSEActivity()
+        let source = SSEByteBox(bytes)
+        let text = onText
+        let usage = onUsage
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await source.consume(
+                    clock: clock, onText: text, onUsage: usage)
+            }
+            group.addTask {
+                do {
+                    while !Task.isCancelled {
+                        try await Task.sleep(nanoseconds: 1_000_000_000)
+                        if clock.idle > inactivityTimeout {
+                            throw RemoteLLMError.transport(
+                                "stream stalled — no data for \(Int(inactivityTimeout))s")
+                        }
+                    }
+                } catch is CancellationError {
+                    return
+                }
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private final class SSEByteBox<S: AsyncSequence>: @unchecked Sendable
+    where S.Element == UInt8, S.Failure == any Error {
+        let sequence: S
+        init(_ sequence: S) { self.sequence = sequence }
+
+        func consume(
+            clock: SSEActivity,
+            onText: @escaping @Sendable (String) -> Void,
+            onUsage: (@Sendable (UsageInfo) -> Void)?
+        ) async throws {
+            try await RemoteLLMClient.consumeSSELocked(
+                bytes: sequence, clock: clock, onText: onText, onUsage: onUsage)
+        }
+    }
+
+    private static func consumeSSELocked(
+        bytes: some AsyncSequence<UInt8, any Error>,
+        clock: SSEActivity,
+        onText: @escaping @Sendable (String) -> Void,
+        onUsage: (@Sendable (UsageInfo) -> Void)?
+    ) async throws {
         var line: [UInt8] = []
-        var lastActivity = Date()
-        var sinceCheck = 0
         var done = false
         var toolAcc: [Int: (name: String, arguments: String)] = [:]
         for try await byte in bytes {
-            lastActivity = Date()
+            clock.touch()
             if byte == 0x0A || byte == 0x0D {
                 if !line.isEmpty {
                     switch processSSELine(line) {
@@ -1332,15 +1484,6 @@ enum RemoteLLMClient {
                 }
             } else if !done {
                 line.append(byte)
-            }
-            // Watchdog: check at most every 4 KB to keep Date() cheap.
-            sinceCheck += 1
-            if sinceCheck >= 4096 {
-                sinceCheck = 0
-                if Date().timeIntervalSince(lastActivity) > inactivityTimeout {
-                    throw RemoteLLMError.transport(
-                        "stream stalled — no data for \(Int(inactivityTimeout))s")
-                }
             }
         }
         if !line.isEmpty, !done {

@@ -56,11 +56,11 @@ enum MemoryAdvisor {
 
     /// Fraction of physical RAM reserved for the OS and other apps.
     ///
-    /// This leaves a little more room for large quantized models on Macs with
-    /// attached cooling while still reserving 20% of physical RAM outside the
-    /// model budget. Thermal and memory-pressure admission guards remain in
-    /// force independently of this budget.
-    nonisolated(unsafe) static var osReserveFraction: Double = 0.20
+    /// A local model shares unified memory with macOS, Metal, the app, and
+    /// any model helper processes. Keeping 30% outside the model budget avoids
+    /// admitting a checkpoint that fits only on paper and then stalls during
+    /// its first prefill on a 16 GB Mac.
+    nonisolated(unsafe) static var osReserveFraction: Double = 0.30
     /// On-disk weights → peak working-set multiplier (page-in spike + KV cache slack).
     nonisolated(unsafe) static var workingSetOverhead: Double = 1.3
     /// Fixed headroom kept free above the projected working set.
@@ -127,6 +127,15 @@ enum MemoryAdvisor {
         )
     }
 
+    /// Verdict for a model on a clean machine, before accounting for a model
+    /// that may already be resident. This lets the UI reject an oversized
+    /// replacement before unloading the model that is currently working.
+    static func freshLoadVerdict(diskBytes: Int64) -> Verdict {
+        let physical = physicalMemory
+        let usable = UInt64(Double(physical) * (1.0 - osReserveFraction))
+        return verdict(projected: projectedFootprint(diskBytes: diskBytes), budget: usable)
+    }
+
     static func verdict(projected: UInt64, budget: UInt64) -> Verdict {
         guard budget > 0 else { return .wontFit("No memory budget available to evaluate.") }
         let ratio = Double(projected) / Double(budget)
@@ -142,17 +151,19 @@ enum MemoryAdvisor {
     /// The one gate every model load must pass. Thermal critical and the
     /// post-pressure cooldown are safety stops that cannot be bypassed.
     static func admitLoad(diskBytes: Int64, thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) throws {
-        if thermalState == .critical {
-            throw AdmissionError.thermalCritical
-        }
-        cooldownLock.lock()
-        let blockedUntil = pressureLoadBlockedUntil
-        cooldownLock.unlock()
-        if Date() < blockedUntil {
-            throw AdmissionError.pressureCooldown
-        }
+        try checkTransientLoadGuards(thermalState: thermalState)
         let verdict = budget(diskBytes: diskBytes).verdict
         if case .wontFit(let reason) = verdict {
+            throw AdmissionError.wontFit(reason)
+        }
+    }
+
+    /// Admission for a replacement model before any existing resident is
+    /// unloaded. It prevents a model that cannot fit on a clean machine from
+    /// taking the currently usable model down with it.
+    static func admitFreshLoad(diskBytes: Int64, thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) throws {
+        try checkTransientLoadGuards(thermalState: thermalState)
+        if case .wontFit(let reason) = freshLoadVerdict(diskBytes: diskBytes) {
             throw AdmissionError.wontFit(reason)
         }
     }
@@ -168,6 +179,18 @@ enum MemoryAdvisor {
     /// True when our own headroom is low enough that critical pressure is our problem.
     static var shouldDumpOnCriticalPressure: Bool {
         availableBudget < criticalDumpHeadroom
+    }
+
+    private static func checkTransientLoadGuards(thermalState: ProcessInfo.ThermalState) throws {
+        if thermalState == .critical {
+            throw AdmissionError.thermalCritical
+        }
+        cooldownLock.lock()
+        let blockedUntil = pressureLoadBlockedUntil
+        cooldownLock.unlock()
+        if Date() < blockedUntil {
+            throw AdmissionError.pressureCooldown
+        }
     }
 
     private static func usableBudgetMinusCurrentFootprint(physical: UInt64, footprint: UInt64) -> UInt64 {

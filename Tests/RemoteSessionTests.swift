@@ -61,6 +61,7 @@ final class RemoteSessionTests: XCTestCase {
         let config = LocalAPIServer.Config()
         XCTAssertEqual(config.bindHost, "127.0.0.1")
         XCTAssertTrue(config.exposeStandardRoutes)
+        XCTAssertFalse(config.allowCORS)
 
         let remoteConfig = LocalAPIServer.Config(
             port: RemoteSessionHost.defaultPort,

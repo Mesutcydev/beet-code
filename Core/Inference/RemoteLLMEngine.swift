@@ -75,12 +75,22 @@ final class RemoteLLMEngine: LLMEngine, NativeToolConfigurable, @unchecked Senda
         // the Keychain key. Respect explicit capability overrides at the
         // request boundary so a model that advertises no tools or temperature
         // support does not receive parameters it will reject.
-        let profile = AppPreferencesStore.shared
-            .remoteModelProfile(endpoint: endpoint)
-            .map { $0.applying(AppPreferencesStore.shared.remoteModelOverride(endpoint: endpoint)) }
+        let modelOverride = AppPreferencesStore.shared.remoteModelOverride(endpoint: endpoint)
+        let baseProfile = AppPreferencesStore.shared.remoteModelProfile(endpoint: endpoint)
+            ?? RemoteModelProfile(
+                provider: endpoint.provider,
+                model: endpoint.model,
+                providerKey: endpoint.providerID,
+                providerDisplayName: endpoint.effectiveDisplayName,
+                apiProtocol: endpoint.effectiveProtocol,
+                baseURL: endpoint.effectiveBaseURL?.absoluteString,
+                headers: endpoint.headers,
+                apiKey: endpoint.apiKey)
+        let profile = baseProfile.applying(modelOverride)
         let tools = withLock { nativeTools }
-        let effectiveTools = profile?.supportsTools == false ? [] : tools
-        let effectiveTemperature = profile?.supportsTemperature == false ? nil : temperature
+        let effectiveTools = profile.supportsTools == false ? [] : tools
+        let effectiveTemperature = profile.supportsTemperature == false ? nil : temperature
+        let reasoningEffort = profile.selectedReasoningEffort(using: modelOverride)
         guard endpoint.effectiveBaseURL != nil else {
             return AsyncThrowingStream { continuation in
                 continuation.finish(throwing: RemoteLLMError.invalidConfiguration(
@@ -96,6 +106,7 @@ final class RemoteLLMEngine: LLMEngine, NativeToolConfigurable, @unchecked Senda
             turns: allTurns,
             temperature: effectiveTemperature,
             maxTokens: maxTokens,
+            reasoningEffort: reasoningEffort,
             tools: effectiveTools,
             onUsage: onUsage)
 
@@ -318,6 +329,17 @@ final class EngineRouter: LLMEngine, NativeToolConfigurable, @unchecked Sendable
             // Pool semantics: only the ACTIVE model unloads; other residents
             // stay warm until memory pressure or the cap evicts them.
             await pool.unloadActive()
+            return
+        }
+        await local.unload()
+    }
+
+    /// Clears every local resident. On small unified-memory Macs, keeping an
+    /// old GGUF helper and a new MLX checkpoint alive at the same time can
+    /// exhaust RAM even though each model is individually admissible.
+    func unloadAll() async {
+        if let pool {
+            await pool.unloadAll()
             return
         }
         await local.unload()

@@ -102,7 +102,6 @@ struct ComposerView: View {
             HStack(alignment: .top, spacing: 12) {
                 ComposerSignal(phase: phase)
                 editor
-                    .frame(height: 52, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 ComposerCommandMenu(store: store) {
                     focusEditor()
@@ -117,11 +116,10 @@ struct ComposerView: View {
             .textFieldStyle(.plain)
             .font(AppFont.editor)
             .foregroundStyle(Theme.textPrimary)
-            .lineLimit(1...4)
+            .lineLimit(1...8)
             .focused($editorFocused)
             .padding(.horizontal, 1)
             .padding(.vertical, 1)
-            .frame(height: 52, alignment: .topLeading)
             // Enter sends; Shift+Enter falls through to the field and
             // inserts a newline.
             .onKeyPress(phases: .down) { press in
@@ -453,7 +451,7 @@ private struct AttachChip: View {
                 .font(.system(size: 11, weight: .medium))
                 .lfComposerPill(active: false)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LFPlainPressButtonStyle())
         .help("Attach files or images — files are quoted into the message, images are described by the vision provider")
         .accessibilityLabel("Attach files")
     }
@@ -500,7 +498,7 @@ private struct IntentChipButton: View {
             }
             .lfComposerPill(active: active)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LFPlainPressButtonStyle())
         .help("Intent — pick the agent's roles and context sources for this turn")
         .popover(isPresented: $showPicker, arrowEdge: .top) {
             IntentPicker(store: store)
@@ -605,7 +603,7 @@ private struct SettingsToggleChip: View {
             }
             .lfComposerPill(active: isOn)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LFPlainPressButtonStyle())
         .help(help)
         .accessibilityValue(isOn ? "On" : "Off")
     }
@@ -701,47 +699,58 @@ private struct SendStopButton: View {
     let store: ComposerStore
 
     var body: some View {
-        if controller.isRunning {
-            Button {
-                controller.stop()
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 10, weight: .bold))
-                    Text("Stop")
-                        .font(.caption.weight(.semibold))
-                }
-                    .foregroundStyle(.white)
-                    .frame(width: 76, height: 40)
-                    .background(Theme.danger, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        Group {
+            if controller.isRunning {
+                stopButton
+            } else {
+                sendButton
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-            .help("Stop the agent (Esc)")
-            .accessibilityLabel("Stop the agent")
-        } else {
-            Button {
-                store.send()
-            } label: {
-                HStack(spacing: 7) {
-                    Text("Run")
-                        .font(.caption.weight(.semibold))
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .bold))
-                }
-                    .foregroundStyle(store.canSend ? AnyShapeStyle(Color.white) : AnyShapeStyle(Theme.textTertiary))
-                    .frame(width: 76, height: 40)
-                    .background(
-                        store.canSend ? AnyShapeStyle(Theme.accentGradient) : AnyShapeStyle(Theme.surfaceInset),
-                        in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(!store.canSend)
-            .help(store.canSend
-                  ? "Send (\(ShortcutBinding(rawValue: settings.sendShortcut).displayValue))"
-                  : store.sendBlocker ?? "Cannot send")
-            .accessibilityLabel("Send")
         }
+        .frame(width: 76, height: 40)
+    }
+
+    private var stopButton: some View {
+        Button {
+            controller.stop()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 10, weight: .bold))
+                Text("Stop")
+                    .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: 76, height: 40)
+            .background(Theme.danger, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(LFPlainPressButtonStyle())
+        .keyboardShortcut(.cancelAction)
+        .help("Stop the agent (Esc)")
+        .accessibilityLabel("Stop the agent")
+    }
+
+    private var sendButton: some View {
+        Button {
+            store.send()
+        } label: {
+            HStack(spacing: 7) {
+                Text("Run")
+                    .font(.caption.weight(.semibold))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 11, weight: .bold))
+            }
+            .foregroundStyle(store.canSend ? Color.white : Theme.textTertiary)
+            .frame(width: 76, height: 40)
+            .background(
+                store.canSend ? Theme.accent : Theme.surfaceInset,
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(LFPlainPressButtonStyle())
+        .disabled(!store.canSend)
+        .help(store.canSend
+              ? "Send (\(ShortcutBinding(rawValue: settings.sendShortcut).displayValue))"
+              : store.sendBlocker ?? "Cannot send")
+        .accessibilityLabel("Send")
     }
 }
 

@@ -67,10 +67,15 @@ actor MCPRegistry {
     /// stdio entries spawn a child process; `url` entries speak
     /// Streamable-HTTP (JSON body or SSE response carriage) with optional
     /// OAuth 2.0 (PKCE + refresh) when the entry carries an `oauth` block.
-    func start(workspaceRoot: URL, includeOpenCode: Bool = true) async -> Result {
+    func start(
+        workspaceRoot: URL,
+        includeOpenCode: Bool = true,
+        includeWorkspace: Bool = false
+    ) async -> Result {
         let (servers, configErrors) = MCPConfig.load(
             workspaceRoot: workspaceRoot,
-            includeOpenCode: includeOpenCode)
+            includeOpenCode: includeOpenCode,
+            includeWorkspace: includeWorkspace)
         var result = Result()
         result.errors = configErrors
         guard !servers.isEmpty else { return result }

@@ -4,6 +4,7 @@
 
 # Xcode / build artifacts
 .derived/
+.derived-install/
 .derived-xcode27/
 DerivedData/
 build/

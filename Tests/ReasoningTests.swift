@@ -36,6 +36,33 @@ final class ReasoningTests: XCTestCase {
         XCTAssertEqual(StreamDisplayFilter.reasoningText(raw: raw), "inspect the project")
     }
 
+    func testStreamFilterPreservesAnswerStructure() {
+        let raw = "- first\n- second\n\n```swift\nlet value = 1\n```"
+        let (visible, reasoning) = StreamDisplayFilter.display(raw: raw)
+        XCTAssertEqual(visible, raw)
+        XCTAssertFalse(reasoning)
+    }
+
+    func testModelControlTokensAreHiddenAcrossChatTemplates() {
+        let raw = "<|start_header_id|>assistant<|end_header_id|>\nOK<|eot_id|>"
+        XCTAssertEqual(PromptBuilder.cleaningGeneratedText(raw), "OK")
+        let qwen = "<|im_start|>assistant\nDone<|im_end|>"
+        XCTAssertEqual(PromptBuilder.cleaningGeneratedText(qwen), "Done")
+    }
+
+    func testExactAnswerContractIsRecognizedWithoutTouchingOrdinaryProse() {
+        XCTAssertEqual(
+            PromptBuilder.exactRequestedAnswer(in: "Reply with exactly OK."),
+            "OK")
+        XCTAssertEqual(
+            PromptBuilder.exactRequestedAnswer(in: "Respond with exactly READY and nothing else."),
+            "READY")
+        XCTAssertEqual(
+            PromptBuilder.exactRequestedAnswer(in: "Output exactly - first\n- second"),
+            "- first\n- second")
+        XCTAssertNil(PromptBuilder.exactRequestedAnswer(in: "Please answer normally."))
+    }
+
     func testNumberAccessor() {
         let call = ParsedToolCall(name: "t", arguments: .object(["x": .number(0.5)]), index: 0)
         XCTAssertEqual(call.number("x"), 0.5)

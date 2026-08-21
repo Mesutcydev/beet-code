@@ -357,7 +357,7 @@ final class SessionStore: @unchecked Sendable {
         // Keychain/securityd IPC, and holding the lock across it deadlocks
         // every concurrent load().
         guard let data = try? JSONEncoder().encode(record) else { return }
-        let payload = SessionCrypto.encrypt(data) ?? data
+        guard let payload = SessionCrypto.encrypt(data) else { return }
         try? payload.write(to: target, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         invalidateCache()

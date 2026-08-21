@@ -43,6 +43,10 @@ final class BrowserController: ObservableObject {
     @Published var isLoading = false
     @Published var lastError: String?
 
+    /// Active `file://` policy for in-page navigations. Agent `open` sets
+    /// `.confined`; the user address bar sets `.allowAny`.
+    private(set) var navigationFilePolicy: BrowserURLValidator.FilePolicy = .refuse
+
     /// Test seam: tools check this instead of asserting UI state.
     private(set) var navigationCount = 0
 
@@ -67,6 +71,7 @@ final class BrowserController: ObservableObject {
     @discardableResult
     func open(_ urlString: String, filePolicy: BrowserURLValidator.FilePolicy = .allowAny) throws -> URL {
         let url = try BrowserURLValidator.validatedURL(urlString, filePolicy: filePolicy)
+        navigationFilePolicy = filePolicy
         navigationCount += 1
         isLoading = true
         lastError = nil

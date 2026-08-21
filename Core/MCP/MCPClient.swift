@@ -86,7 +86,8 @@ enum MCPConfig {
     /// can surface them without breaking the agent.
     static func load(
         workspaceRoot: URL,
-        includeOpenCode: Bool = true
+        includeOpenCode: Bool = true,
+        includeWorkspace: Bool = false
     ) -> (servers: [String: MCPServerConfig], errors: [String]) {
         var merged: [String: MCPServerConfig] = [:]
         var errors: [String] = []
@@ -94,13 +95,17 @@ enum MCPConfig {
         // OpenCode uses the same transport vocabulary with an `mcp` root
         // object. Import it before Beet Code's native files so an explicit
         // `.beetcode/mcp.json` entry remains the local override.
-        if includeOpenCode {
+        if includeOpenCode, includeWorkspace {
             let openCode = OpenCodeCompatibility.load(workspace: workspaceRoot)
             merged.merge(openCode.mcpServers) { _, local in local }
             errors.append(contentsOf: openCode.warnings)
         }
 
-        for (label, url) in [("user", userConfigURL), ("workspace", workspaceConfigURL(root: workspaceRoot))] {
+        var sources: [(String, URL)] = [("user", userConfigURL)]
+        if includeWorkspace {
+            sources.append(("workspace", workspaceConfigURL(root: workspaceRoot)))
+        }
+        for (label, url) in sources {
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             do {
                 let data = try Data(contentsOf: url)
@@ -213,7 +218,7 @@ actor MCPConnection: MCPTransport {
         }
         child.executableURL = Self.resolveExecutable(command)
         child.arguments = config.args
-        var environment = ProcessInfo.processInfo.environment
+        var environment = ShellRunner.sanitizedEnvironment()
         for (key, value) in config.env { environment[key] = value }
         // Keep the child's stdio protocol clean.
         environment["PYTHONUNBUFFERED"] = "1"

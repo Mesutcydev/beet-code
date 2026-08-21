@@ -55,12 +55,7 @@ struct BrowserPanelView: View {
                         }
                     }
 
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .help("Close browser panel")
+                PanelCloseButton(action: onClose)
             }
             .padding(10)
 
@@ -172,6 +167,26 @@ private struct BrowserWebViewHost: NSViewRepresentable {
             BrowserController.shared.markFailed(error.localizedDescription)
         }
 
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.cancel)
+                return
+            }
+            do {
+                _ = try BrowserURLValidator.validatedURL(
+                    url.absoluteString,
+                    filePolicy: BrowserController.shared.navigationFilePolicy)
+                decisionHandler(.allow)
+            } catch {
+                BrowserController.shared.markFailed(error.localizedDescription)
+                decisionHandler(.cancel)
+            }
+        }
+
         /// Keep navigation inside the panel; new-window requests become
         /// same-panel loads so popups don't escape the agent's view.
         func webView(_ webView: WKWebView,
@@ -179,7 +194,14 @@ private struct BrowserWebViewHost: NSViewRepresentable {
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {
             if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
-                webView.load(URLRequest(url: url))
+                do {
+                    _ = try BrowserURLValidator.validatedURL(
+                        url.absoluteString,
+                        filePolicy: BrowserController.shared.navigationFilePolicy)
+                    webView.load(URLRequest(url: url))
+                } catch {
+                    BrowserController.shared.markFailed(error.localizedDescription)
+                }
             }
             return nil
         }

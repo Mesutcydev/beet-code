@@ -16,13 +16,15 @@ enum StreamDisplayFilter {
     /// The visible portion of what has streamed so far, plus whether the
     /// model currently appears to be reasoning.
     static func display(raw: String) -> (visible: String, reasoning: Bool) {
-        let stripped = PromptBuilder.strippingThinking(raw)
+        let stripped = PromptBuilder.cleaningGeneratedText(raw)
         // Tool-call syntax is wire format, never transcript content: strip
         // complete calls and hide the tail of one still streaming in, so
         // raw JSON/fenced blocks can never flash on screen.
         let prose = cuttingUnterminatedToolTail(ToolParser.strippingCalls(from: stripped))
-        let visible = prose.split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
+        // Preserve newlines and indentation. Collapsing whitespace made
+        // Markdown lists and code blocks look like one malformed paragraph
+        // while the answer was streaming.
+        let visible = prose.trimmingCharacters(in: .whitespacesAndNewlines)
         if hasRepetitionFillerTail(visible) {
             return (trimmingFillerTail(visible), true)
         }

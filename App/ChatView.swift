@@ -20,7 +20,13 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             chatHeader
+            if controller.workspaceTrustNeeded {
+                workspaceTrustBanner
+            }
             transcript
+            if hasPendingGate {
+                pendingGate
+            }
             Divider()
             ComposerView(store: composerStore)
                 .environmentObject(controller)
@@ -56,17 +62,11 @@ struct ChatView: View {
                 .frame(width: 24, height: 24)
                 .background(Theme.wash(Theme.accent), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(sessionTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(controller.workspaceURL?.lastPathComponent ?? "Choose a workspace")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
-            }
+            Text(sessionTitle)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
 
             Spacer(minLength: 8)
 
@@ -93,6 +93,26 @@ struct ChatView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.hairline.opacity(0.7)).frame(height: 1)
         }
+    }
+
+    private var workspaceTrustBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.shield")
+                .foregroundStyle(Theme.warning)
+            Text("This project contains MCP servers or hooks. Trust it before they can run.")
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Trust workspace") {
+                controller.trustCurrentWorkspace()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Theme.wash(Theme.warning))
     }
 
     /// Workspace tools used to live in the sidebar footer. Keeping them next
@@ -149,7 +169,7 @@ struct ChatView: View {
                 .frame(width: 25, height: 25)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LFPlainPressButtonStyle())
         .lfHoverLift()
         .help(label)
         .accessibilityLabel(label)
@@ -204,25 +224,6 @@ struct ChatView: View {
                     } else if controller.isReasoningVisible && controller.isRunning {
                         ReasoningIndicator()
                     }
-                    if let approval = controller.pendingApproval {
-                        ApprovalCard(request: approval) { approved, always in
-                            controller.approve(approved, always: always)
-                        }
-                    }
-                    if let question = controller.pendingQuestion {
-                        QuestionCard(question: question) { answer in
-                            controller.answerQuestion(answer)
-                        }
-                    }
-                    if let plan = controller.pendingPlan {
-                        PlanCard(plan: plan) { feedback in
-                            if let feedback {
-                                controller.revisePlan(feedback)
-                            } else {
-                                controller.approvePlan()
-                            }
-                        }
-                    }
                     if let finish = controller.finishReason {
                         FinishBanner(reason: finish)
                     }
@@ -258,7 +259,7 @@ struct ChatView: View {
                 if running { scrollToLatest(proxy, animated: true) }
             }
             .overlay(alignment: .bottomTrailing) {
-                if !isPinnedToBottom && controller.isRunning {
+                if !isPinnedToBottom && (controller.isRunning || hasPendingGate) {
                     Button {
                         isPinnedToBottom = true
                         withAnimation { proxy.scrollTo("bottom") }
@@ -319,18 +320,18 @@ struct ChatView: View {
                     .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 6)
             }
 
-            Text(emptyTitle)
+            Text(emptyHeadline)
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.textPrimary)
-            Text("Open a project folder, pick a downloaded model, and describe a coding task. Reads run automatically; every edit and command shows up here for approval.")
+            Text(emptyBody)
                 .font(.callout)
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 560)
 
             // ChatGPT-style quick prompts: one tap drops a ready-made task
-            // into the composer. Only offered when a model can actually run
-            // (no dead affordance on a failed/no-model state).
+            // into the composer. Only offered when a workspace and a model
+            // are both ready (no dead chips on an empty folder or failed load).
             if canSuggestPrompts {
                 VStack(spacing: 10) {
                     suggestionRow(suggestions[0])
@@ -387,11 +388,40 @@ struct ChatView: View {
     }
 
     /// Suggestion chips make sense only when a run could actually start.
+    private var hasRunnableModel: Bool {
+        appState.activeModel != nil || appState.isRemoteActive || appState.isCodexActive
+    }
+
     private var canSuggestPrompts: Bool {
+        guard controller.workspaceURL != nil, hasRunnableModel else { return false }
         switch appState.enginePhase {
-        case .ready, .idle: return appState.activeModel != nil || appState.isRemoteActive || appState.isCodexActive || APIKeyStore.shared.configuredProviders.isEmpty == false
+        case .ready, .idle: return true
         case .loading, .failed: return false
         }
+    }
+
+    private var emptyHeadline: LocalizedStringKey {
+        if controller.workspaceURL == nil { return "Choose a workspace" }
+        if case .failed = appState.enginePhase { return "Model failed to load" }
+        if case .loading = appState.enginePhase { return "Loading model…" }
+        if !hasRunnableModel { return "Load a model to start" }
+        return "Describe a task"
+    }
+
+    private var emptyBody: LocalizedStringKey {
+        if controller.workspaceURL == nil {
+            return "Open a project folder from the sidebar. Tools stay confined to that folder."
+        }
+        if case .failed = appState.enginePhase {
+            return "Check the model file or pick another engine in the composer, then try again."
+        }
+        if case .loading = appState.enginePhase {
+            return "The composer unlocks when the engine is ready."
+        }
+        if !hasRunnableModel {
+            return "Pick a downloaded model in the composer, or add a provider key in Settings."
+        }
+        return "Reads run automatically; every edit and command shows up here for approval."
     }
 
     @ViewBuilder
@@ -415,20 +445,52 @@ struct ChatView: View {
                     .background(Theme.surface, in: Capsule())
                     .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LFPlainPressButtonStyle())
                 .lfHoverLift()
                 .help(suggestion.prompt)
             }
         }
     }
 
-    private var emptyTitle: String {
-        switch appState.enginePhase {
-        case .idle: "Load a model to start"
-        case .loading: "Loading model…"
-        case .ready: "Describe a task"
-        case .failed: "Model failed to load"
+    private var hasPendingGate: Bool {
+        controller.pendingApproval != nil
+            || controller.pendingQuestion != nil
+            || controller.pendingPlan != nil
+    }
+
+    /// Approval, plan, and question cards stay above the composer so a long
+    /// transcript cannot hide the gate the user has to act on.
+    private var pendingGate: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if let approval = controller.pendingApproval {
+                    ApprovalCard(request: approval) { approved, always in
+                        controller.approve(approved, always: always)
+                    }
+                }
+                if let question = controller.pendingQuestion {
+                    QuestionCard(question: question) { answer in
+                        controller.answerQuestion(answer)
+                    }
+                }
+                if let plan = controller.pendingPlan {
+                    PlanCard(plan: plan) { feedback in
+                        if let feedback {
+                            controller.revisePlan(feedback)
+                        } else {
+                            controller.approvePlan()
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: ContentColumn.maxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
+        .frame(maxHeight: 280)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Pending approval")
     }
 
     /// ⌘V: paste images (screenshots) or file URLs.
@@ -1188,7 +1250,7 @@ private struct DiffPreview: View {
 
     private var sideBySide: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(diff.sideBySide.enumerated()), id: \.offset) { _, row in
+            ForEach(diff.sideBySide) { row in
                 HStack(alignment: .top, spacing: 0) {
                     diffCell(row.left, kind: row.leftKind)
                     Divider().overlay(Theme.hairline)
@@ -1365,27 +1427,15 @@ private struct StreamingCard: View {
 /// instead of raw filler ("thinking thinking…") or half-streamed JSON.
 /// Reduce Motion: static text, no pulse.
 private struct ReasoningIndicator: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
-
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             AssistantAvatar()
             HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 12))
+                ProgressView().controlSize(.mini)
                 Text("Working…")
                     .font(.callout)
             }
             .foregroundStyle(Theme.textSecondary)
-            .opacity(reduceMotion ? 1 : (pulse ? 1 : 0.55))
-            .task {
-                guard !reduceMotion else { return }
-                while !Task.isCancelled {
-                    withAnimation(.easeInOut(duration: 0.7)) { pulse.toggle() }
-                    try? await Task.sleep(for: .milliseconds(700))
-                }
-            }
         }
         .accessibilityLabel("The model is working")
     }
@@ -1397,8 +1447,6 @@ private struct ReasoningIndicator: View {
 private struct LiveReasoningCard: View {
     let text: String
     let phase: AgentPhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
 
     var body: some View {
         HStack(alignment: .top, spacing: Spacing.sm) {
@@ -1424,14 +1472,6 @@ private struct LiveReasoningCard: View {
         }
         .padding(Spacing.md)
         .lfTranscriptCard(Theme.accent)
-        .opacity(reduceMotion ? 1 : (pulse ? 1 : 0.92))
-        .task {
-            guard !reduceMotion else { return }
-            while !Task.isCancelled {
-                withAnimation(.easeInOut(duration: 0.7)) { pulse.toggle() }
-                try? await Task.sleep(for: .milliseconds(700))
-            }
-        }
         .accessibilityLabel("Live reasoning: \(text)")
     }
 

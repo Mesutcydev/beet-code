@@ -143,6 +143,24 @@ final class NativeToolAndAppBuildTests: XCTestCase {
         XCTAssertEqual(BuildDiagnosticsTool.projectName(fromYML: root.appendingPathComponent("project.yml")), "DemoNotes")
     }
 
+    func testCreateIOSAppWritesXcodeGenTree() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beet-ios-scaffold-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tool = CreateIOSAppTool()
+        let call = ParsedToolCall(
+            name: "create_ios_app",
+            arguments: .object(["name": .string("Demo Notes")]),
+            index: 0)
+        let output = try await tool.execute(call, in: ToolContext(workspace: Workspace(root: root)))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("project.yml").path), output)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("App/DemoNotesApp.swift").path), output)
+        let yml = try String(contentsOf: root.appendingPathComponent("project.yml"), encoding: .utf8)
+        XCTAssertTrue(yml.contains("platform: iOS"), yml)
+        XCTAssertTrue(yml.contains("name: DemoNotes"), yml)
+    }
+
     func testReasoningHeuristicIncludesCodex() {
         XCTAssertTrue(RemoteLLMClient.usesMaxCompletionTokens("codex-mini"))
         XCTAssertTrue(RemoteLLMClient.usesMaxCompletionTokens("gpt-5.2"))

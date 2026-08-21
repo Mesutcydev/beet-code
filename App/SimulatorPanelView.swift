@@ -49,14 +49,7 @@ struct SimulatorPanelView: View {
             .controlSize(.small)
             .help("Refresh the device list")
             if let onClose {
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Close the simulator panel")
+                PanelCloseButton(action: onClose)
                 // No .cancelAction here: Esc is owned by the composer's
                 // stop button (stopping a run must never be ambiguous).
             }

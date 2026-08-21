@@ -41,7 +41,8 @@ enum DiffEngine {
         }
     }
 
-    struct SideBySideRow: Sendable, Equatable {
+    struct SideBySideRow: Sendable, Equatable, Identifiable {
+        let id: Int
         var left: String?
         var leftKind: LineKind?
         var right: String?
@@ -56,23 +57,27 @@ enum DiffEngine {
             switch line.kind {
             case .context:
                 rows.append(SideBySideRow(
+                    id: rows.count,
                     left: line.text, leftKind: .context,
                     right: line.text, rightKind: .context))
                 index += 1
             case .removed:
                 if index + 1 < lines.count, lines[index + 1].kind == .added {
                     rows.append(SideBySideRow(
+                        id: rows.count,
                         left: line.text, leftKind: .removed,
                         right: lines[index + 1].text, rightKind: .added))
                     index += 2
                 } else {
                     rows.append(SideBySideRow(
+                        id: rows.count,
                         left: line.text, leftKind: .removed,
                         right: nil, rightKind: nil))
                     index += 1
                 }
             case .added:
                 rows.append(SideBySideRow(
+                    id: rows.count,
                     left: nil, leftKind: nil,
                     right: line.text, rightKind: .added))
                 index += 1

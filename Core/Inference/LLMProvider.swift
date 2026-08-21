@@ -1,5 +1,95 @@
 import Foundation
 
+/// A provider-facing reasoning effort value. The raw value is what travels on
+/// the wire; the labels are intentionally more human than a row of generic
+/// Low / Medium / High controls so the selector can explain the trade-off.
+struct ReasoningEffort: Identifiable, Sendable, Equatable, Hashable {
+    let rawValue: String
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch rawValue.lowercased() {
+        case "none": "Quiet"
+        case "minimal": "Spark"
+        case "low": "Cruise"
+        case "medium": "Focus"
+        case "high": "Deep"
+        case "xhigh": "Orbit"
+        case "max": "Overdrive"
+        default:
+            rawValue
+                .replacingOccurrences(of: "-", with: " ")
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized
+        }
+    }
+
+    var detail: String {
+        switch rawValue.lowercased() {
+        case "none": "Skip deliberate reasoning"
+        case "minimal": "A quick spark before the answer"
+        case "low": "Fast and lightly considered"
+        case "medium": "Balanced thought and speed"
+        case "high": "Longer, more deliberate thinking"
+        case "xhigh": "Extended deep-work mode"
+        case "max": "Use the full reasoning runway"
+        default: "Provider-defined reasoning mode"
+        }
+    }
+
+    var glyph: String {
+        switch rawValue.lowercased() {
+        case "none": "circle.slash"
+        case "minimal": "sparkles"
+        case "low": "wind"
+        case "medium": "scope"
+        case "high": "brain.head.profile"
+        case "xhigh": "orbit"
+        case "max": "flame.fill"
+        default: "wand.and.stars"
+        }
+    }
+
+    /// Used by the reactor control to make more effort feel visually denser.
+    var energy: Double {
+        switch rawValue.lowercased() {
+        case "none": 0.12
+        case "minimal": 0.22
+        case "low": 0.38
+        case "medium": 0.56
+        case "high": 0.74
+        case "xhigh": 0.9
+        case "max": 1.0
+        default: 0.56
+        }
+    }
+
+    init?(_ rawValue: String) {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty, value != "default", value != "automatic" else { return nil }
+        self.rawValue = value
+    }
+
+    static let standardRawValues = ["low", "medium", "high"]
+
+    static func options(from rawValues: [String]) -> [ReasoningEffort] {
+        var seen = Set<String>()
+        return rawValues
+            .compactMap(ReasoningEffort.init)
+            .filter { seen.insert($0.rawValue).inserted }
+            .sorted { lhs, rhs in
+                let lhsRank = ordering.firstIndex(of: lhs.rawValue) ?? ordering.count
+                let rhsRank = ordering.firstIndex(of: rhs.rawValue) ?? ordering.count
+                return lhsRank == rhsRank
+                    ? lhs.rawValue < rhs.rawValue
+                    : lhsRank < rhsRank
+            }
+    }
+
+    private static let ordering = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+}
+
 /// Remote LLM providers supported by the BYOK (bring-your-own-key) engine.
 /// Most are OpenAI-compatible chat-completions APIs; Gemini and Anthropic
 /// use their native formats; `custom` lets the user point at ANY
@@ -118,22 +208,52 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
         }
     }
 
+    /// Curated model ids shown before a provider's live `/models` response is
+    /// available. The live response remains authoritative when it succeeds.
+    var availableModels: [String] { suggestedModels }
+
     /// Model presets offered in the BYOK settings UI.
     /// Static fallback model list — shown before a live `/v1/models` fetch
     /// succeeds. Keep to the CURRENT generation; the live fetch (triggered
     /// automatically when a key is saved) is the source of truth.
     var suggestedModels: [String] {
         switch self {
-        case .openAI: ["gpt-5.2", "gpt-5", "gpt-5-mini", "gpt-4.1"]
+        case .openAI: [
+            "gpt-5.2", "gpt-5.2-pro", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-5-nano",
+            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini",
+            "o3", "o4-mini", "gpt-oss-120b", "gpt-oss-20b",
+        ]
         case .deepSeek: ["deepseek-chat", "deepseek-reasoner"]
-        case .longCat: ["LongCat-2.0"]
-        case .alibaba: ["qwen-plus", "qwen-max", "qwen-turbo"]
-        case .alibabaTokenPlan: ["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro", "deepseek-v4-flash-0731", "glm-5.2"]
-        case .gemini: ["gemini-3.7-flash", "gemini-2.5-flash", "gemini-2.5-pro"]
-        case .openRouter: ["anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5", "openai/gpt-5"]
-        case .openCode: ["gpt-5.6-luna", "claude-opus-4-6", "gpt-5.6-sol", "grok-4.5"]
-        case .openCodeGo: ["kimi-k3", "grok-4.5", "glm-5.2", "minimax-m3", "qwen3.8-max"]
-        case .anthropic: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5"]
+        case .longCat: ["LongCat-2.0", "LongCat-2.0-thinking"]
+        case .alibaba: [
+            "qwen-plus", "qwen-max", "qwen-turbo", "qwen3-coder-plus", "qwen3-coder-flash",
+            "qwen3-max", "qwen3.5-plus",
+        ]
+        case .alibabaTokenPlan: [
+            "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+            "qwen3-coder-plus", "deepseek-v4-pro", "deepseek-v4-flash-0731", "glm-5.2",
+        ]
+        case .gemini: [
+            "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash",
+            "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-2.5-pro",
+            "gemini-2.5-flash", "gemini-2.5-flash-lite",
+        ]
+        case .openRouter: [
+            "openrouter/auto", "openai/gpt-5.2", "openai/gpt-5",
+            "anthropic/claude-opus-5", "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.7-flash", "deepseek/deepseek-reasoner",
+            "qwen/qwen3.8-max", "moonshotai/kimi-k3", "meta-llama/llama-4-maverick",
+        ]
+        case .openCode: [
+            "gpt-5.6-luna", "claude-opus-5", "claude-opus-4-6", "gpt-5.6-sol", "grok-4.5",
+        ]
+        case .openCodeGo: [
+            "kimi-k3", "grok-4.5", "glm-5.2", "minimax-m3", "qwen3.8-max",
+        ]
+        case .anthropic: [
+            "claude-opus-5", "claude-opus-4-8", "claude-opus-4-6",
+            "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5",
+        ]
         case .custom: []
         }
     }
@@ -196,6 +316,80 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable, Identifiable {
             RemoteAPIProtocol.inferred(providerID: rawValue == "openCodeGo" ? "opencode-go" : "opencode", model: model)
         default: remoteAPIProtocol
         }
+    }
+}
+
+/// Static capability hints for model ids whose `/models` response only
+/// contains an id. These are deliberately conservative: the live model
+/// profile can replace them, and an unknown custom model never gets a
+/// reasoning control unless its metadata or an explicit capability override
+/// says it supports reasoning.
+enum RemoteModelCatalog {
+    static func reasoningEfforts(
+        provider: LLMProvider,
+        providerKey: String? = nil,
+        model: String
+    ) -> [ReasoningEffort] {
+        let key = (providerKey ?? provider.rawValue).lowercased()
+        let modelID = model.lowercased()
+
+        if key == "tabitoken" {
+            return modelID.contains("claude") ? claudeEfforts : modelLooksReasoning(modelID) ? standardEfforts : []
+        }
+
+        switch provider {
+        case .openAI:
+            if modelID.contains("gpt-5-pro") { return options(["high"]) }
+            if modelID.contains("gpt-5.1") { return options(["none", "low", "medium", "high"]) }
+            if modelID.contains("gpt-5") || modelID.hasPrefix("o1") || modelID.hasPrefix("o3") || modelID.hasPrefix("o4") {
+                return standardEfforts
+            }
+            return []
+        case .deepSeek:
+            return modelID.contains("reasoner") ? standardEfforts : []
+        case .longCat:
+            return modelID.contains("thinking") ? standardEfforts : []
+        case .alibaba, .alibabaTokenPlan:
+            return modelLooksReasoning(modelID) ? standardEfforts : []
+        case .gemini:
+            return modelID.contains("gemini-2.5") || modelID.contains("gemini-3")
+                ? geminiEfforts
+                : []
+        case .anthropic:
+            if modelID.contains("opus-5") { return claudeEfforts }
+            return modelID.contains("claude") ? standardEfforts : []
+        case .openRouter, .openCode, .openCodeGo, .custom:
+            if modelID.contains("claude-opus-5") { return claudeEfforts }
+            return modelLooksReasoning(modelID) ? standardEfforts : []
+        }
+    }
+
+    static func defaultReasoningEffort(
+        provider: LLMProvider,
+        providerKey: String? = nil,
+        model: String
+    ) -> String? {
+        let efforts = reasoningEfforts(provider: provider, providerKey: providerKey, model: model)
+        if efforts.contains(where: { $0.rawValue == "high" }) {
+            let key = (providerKey ?? provider.rawValue).lowercased()
+            return key == "tabitoken" || model.lowercased().contains("claude-opus-5") ? "high" : "medium"
+        }
+        return efforts.first?.rawValue
+    }
+
+    private static let standardEfforts = options(["low", "medium", "high"])
+    private static let geminiEfforts = options(["minimal", "low", "medium", "high"])
+    private static let claudeEfforts = options(["low", "medium", "high", "xhigh", "max"])
+
+    private static func options(_ values: [String]) -> [ReasoningEffort] {
+        ReasoningEffort.options(from: values)
+    }
+
+    private static func modelLooksReasoning(_ model: String) -> Bool {
+        model.contains("reason") || model.contains("think") || model.contains("deepseek-r1")
+            || model.contains("deepseek-v4") || model.contains("qwen3") || model.contains("magistral")
+            || model.contains("gpt-5") || model.hasPrefix("o1") || model.hasPrefix("o3") || model.hasPrefix("o4")
+            || model.contains("gemini-2.5") || model.contains("gemini-3")
     }
 }
 
@@ -289,6 +483,8 @@ struct RemoteModelProfile: Codable, Sendable, Equatable, Identifiable {
     var supportsTools: Bool?
     var supportsReasoning: Bool?
     var supportsTemperature: Bool?
+    var supportedReasoningEfforts: [String]
+    var defaultReasoningEffort: String?
     /// Dynamic OpenCode provider identity. Built-in profiles leave this nil.
     var providerKey: String?
     var providerDisplayName: String?
@@ -301,11 +497,42 @@ struct RemoteModelProfile: Codable, Sendable, Equatable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case provider, model, displayName, contextWindow, maxOutputTokens,
              supportsVision, supportsTools, supportsReasoning, supportsTemperature,
+             supportedReasoningEfforts, defaultReasoningEffort,
              providerKey, providerDisplayName, apiProtocol, baseURL, headers
     }
 
     var id: String { "\(providerKey ?? provider.rawValue):\(model)" }
     var displayProviderName: String { providerDisplayName ?? provider.displayName }
+
+    var effectiveReasoningEfforts: [ReasoningEffort] {
+        // An explicit Off override wins over curated hints and gateway
+        // metadata, so the control and the wire payload stay in sync.
+        guard supportsReasoning != false else { return [] }
+        let declared = ReasoningEffort.options(from: supportedReasoningEfforts)
+        if !declared.isEmpty { return declared }
+        let curated = RemoteModelCatalog.reasoningEfforts(
+            provider: provider, providerKey: providerKey, model: model)
+        if !curated.isEmpty { return curated }
+        return supportsReasoning == true
+            ? ReasoningEffort.options(from: ReasoningEffort.standardRawValues)
+            : []
+    }
+
+    var effectiveDefaultReasoningEffort: String? {
+        if let defaultReasoningEffort,
+           effectiveReasoningEfforts.contains(where: { $0.rawValue == defaultReasoningEffort.lowercased() }) {
+            return defaultReasoningEffort.lowercased()
+        }
+        return RemoteModelCatalog.defaultReasoningEffort(
+            provider: provider, providerKey: providerKey, model: model)
+    }
+
+    func selectedReasoningEffort(using override: RemoteModelOverride?) -> String? {
+        guard let selected = override?.reasoningEffort?.lowercased(),
+              effectiveReasoningEfforts.contains(where: { $0.rawValue == selected })
+        else { return nil }
+        return selected
+    }
 
     init(
         provider: LLMProvider,
@@ -317,6 +544,8 @@ struct RemoteModelProfile: Codable, Sendable, Equatable, Identifiable {
         supportsTools: Bool? = nil,
         supportsReasoning: Bool? = nil,
         supportsTemperature: Bool? = nil,
+        supportedReasoningEfforts: [String] = [],
+        defaultReasoningEffort: String? = nil,
         providerKey: String? = nil,
         providerDisplayName: String? = nil,
         apiProtocol: RemoteAPIProtocol? = nil,
@@ -333,6 +562,8 @@ struct RemoteModelProfile: Codable, Sendable, Equatable, Identifiable {
         self.supportsTools = supportsTools
         self.supportsReasoning = supportsReasoning
         self.supportsTemperature = supportsTemperature
+        self.supportedReasoningEfforts = supportedReasoningEfforts
+        self.defaultReasoningEffort = defaultReasoningEffort
         self.providerKey = providerKey
         self.providerDisplayName = providerDisplayName
         self.apiProtocol = apiProtocol
@@ -352,6 +583,8 @@ struct RemoteModelProfile: Codable, Sendable, Equatable, Identifiable {
         supportsTools = try container.decodeIfPresent(Bool.self, forKey: .supportsTools)
         supportsReasoning = try container.decodeIfPresent(Bool.self, forKey: .supportsReasoning)
         supportsTemperature = try container.decodeIfPresent(Bool.self, forKey: .supportsTemperature)
+        supportedReasoningEfforts = try container.decodeIfPresent([String].self, forKey: .supportedReasoningEfforts) ?? []
+        defaultReasoningEffort = try container.decodeIfPresent(String.self, forKey: .defaultReasoningEffort)
         providerKey = try container.decodeIfPresent(String.self, forKey: .providerKey)
         providerDisplayName = try container.decodeIfPresent(String.self, forKey: .providerDisplayName)
         apiProtocol = try container.decodeIfPresent(RemoteAPIProtocol.self, forKey: .apiProtocol)
@@ -371,6 +604,8 @@ struct RemoteModelProfile: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(supportsTools, forKey: .supportsTools)
         try container.encodeIfPresent(supportsReasoning, forKey: .supportsReasoning)
         try container.encodeIfPresent(supportsTemperature, forKey: .supportsTemperature)
+        try container.encode(supportedReasoningEfforts, forKey: .supportedReasoningEfforts)
+        try container.encodeIfPresent(defaultReasoningEffort, forKey: .defaultReasoningEffort)
         try container.encodeIfPresent(providerKey, forKey: .providerKey)
         try container.encodeIfPresent(providerDisplayName, forKey: .providerDisplayName)
         try container.encodeIfPresent(apiProtocol, forKey: .apiProtocol)
@@ -412,6 +647,7 @@ struct RemoteModelOverride: Codable, Sendable, Equatable {
     var supportsTools: Bool?
     var supportsReasoning: Bool?
     var supportsTemperature: Bool?
+    var reasoningEffort: String?
 
     init(
         contextWindow: Int? = nil,
@@ -419,7 +655,8 @@ struct RemoteModelOverride: Codable, Sendable, Equatable {
         supportsVision: Bool? = nil,
         supportsTools: Bool? = nil,
         supportsReasoning: Bool? = nil,
-        supportsTemperature: Bool? = nil
+        supportsTemperature: Bool? = nil,
+        reasoningEffort: String? = nil
     ) {
         self.contextWindow = contextWindow
         self.maxOutputTokens = maxOutputTokens
@@ -427,12 +664,13 @@ struct RemoteModelOverride: Codable, Sendable, Equatable {
         self.supportsTools = supportsTools
         self.supportsReasoning = supportsReasoning
         self.supportsTemperature = supportsTemperature
+        self.reasoningEffort = reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     var isEmpty: Bool {
         contextWindow == nil && maxOutputTokens == nil && supportsVision == nil
             && supportsTools == nil && supportsReasoning == nil
-            && supportsTemperature == nil
+            && supportsTemperature == nil && reasoningEffort == nil
     }
 }
 

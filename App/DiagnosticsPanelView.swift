@@ -52,12 +52,7 @@ struct DiagnosticsPanelView: View {
             .controlSize(.small)
             .help("Export diagnostics log for a bug report")
             if let onClose {
-                Button { onClose() } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Close diagnostics")
+                PanelCloseButton(action: onClose)
             }
         }
         .padding(.horizontal, 10)

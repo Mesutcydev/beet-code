@@ -5,9 +5,9 @@ plugins, LSP, sessions/share) and **OpenClaude** (0xysh/openclaude — an
 OpenAI-compatible shim that exposes the full Claude Code toolchain — CLAUDE.md,
 hooks, subagents, permission modes, MCP — to any LLM).
 
-Updated 2026-08-19 against the current tree (v0.8 + computer use). Older
-rows that claimed Plan / MCP / hooks / slash / AGENTS.md / attachments were
-missing are **stale** — those shipped.
+Updated 2026-08-21 against the current tree (v0.9). Older rows that claimed
+Plan / MCP / hooks / slash / AGENTS.md / attachments / split diffs /
+keybinds / background_process were missing are **stale** — those shipped.
 
 ## Coverage matrix
 
@@ -53,20 +53,15 @@ missing are **stale** — those shipped.
 1. **Write-capable / specialist subagents** — today's `task` is read-only
    research. A child that can edit (with the same approval gate) is the
    remaining orchestration gap.
-2. **Side-by-side diff viewer** — expandable per-edit diff pane in the
-   transcript instead of unified text only.
 
 ### Medium value
-3. **Session share** — optional encrypted link on top of local Markdown/JSON
+2. **Session share** — optional encrypted link on top of local Markdown/JSON
    export.
-4. **Long-running dev servers** — a managed background-process tool that
-   keeps a server alive across turns and reattaches to its output.
 
 ### Lower value / polish
-5. **Keybind customization** — configurable shortcuts for send/stop/undo.
-6. **Declarative config file** — opencode.json-style overrides: model
+3. **Declarative config file** — opencode.json-style overrides: model
    defaults, permission allow/ask/deny rules, composer flow, theme.
-7. **Output styles** — concise/verbose presets applied to the system prompt.
+4. **Output styles** — concise/verbose presets applied to the system prompt.
 
 ## Where BeetCode is ahead
 
@@ -83,6 +78,6 @@ missing are **stale** — those shipped.
 ## Suggested order of implementation
 
 1. Write-capable / specialist subagents.
-2. Side-by-side diff viewer.
-3. Long-running dev servers.
-4. Declarative config + keybind customization.
+2. Session share (optional encrypted link).
+3. Declarative config file.
+4. Output styles.

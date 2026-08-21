@@ -327,7 +327,7 @@ private struct ModelPickerPopover: View {
             .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(loadingThis)
+        .disabled(loadingThis || (!isActive && !budget.verdict.fitsLoad))
         .help(isActive ? "Active model. Its memory was admitted safely when it loaded." : budget.helpText)
     }
 

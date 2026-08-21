@@ -33,6 +33,8 @@ struct SimBuildRunTool: AgentTool {
             projectDir = workspace.root
         }
 
+        try MacBuildRunTool.generateProjectIfNeeded(in: projectDir)
+
         // 2. Detect the project file / scheme.
         let projectFile = try Self.detectProject(in: projectDir)
         let scheme = call.string("scheme") ?? Self.detectScheme(projectFile, in: projectDir)

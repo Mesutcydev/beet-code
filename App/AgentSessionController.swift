@@ -46,6 +46,8 @@ final class AgentSessionController: ObservableObject {
     @Published private(set) var finishReason: AgentFinish?
     @Published private(set) var workspaceURL: URL?
     @Published private(set) var gitOutput: String?
+    /// True when the open folder has project MCP/hooks the user has not trusted.
+    @Published private(set) var workspaceTrustNeeded = false
     /// Selected OpenCode-compatible primary agent. Build is the native
     /// default; Plan is also available from the composer without changing
     /// the rest of the session surface.
@@ -72,6 +74,10 @@ final class AgentSessionController: ObservableObject {
     /// Unfiltered stream accumulator — the source for display filtering
     /// (think-block removal happens on the accumulated text, not deltas).
     private var rawStreamingText = ""
+    /// Exact-answer smoke prompts are rendered only from the agent's final
+    /// message, so a local finetune's conversational filler never flashes in
+    /// the transcript while it is generating.
+    private var exactAnswerOverride: String?
 
     // Account-backed OpenAI runs are hosted by Codex app-server rather than
     // AgentLoop. Keeping this state beside the existing loop lets the same
@@ -149,6 +155,9 @@ final class AgentSessionController: ObservableObject {
         pendingPlan = nil
         pendingPlanID = nil
         finishReason = nil
+        exactAnswerOverride = activeCodexModelIDHandler() == nil
+            ? PromptBuilder.exactRequestedAnswer(in: message)
+            : nil
 
         startTask = Task { [weak self] in
             guard let self else { return }
@@ -191,21 +200,24 @@ final class AgentSessionController: ObservableObject {
         }
 
         // MCP: connect configured servers, collect their tools. Failures are
-        // surfaced as notices but never block the run.
-        // A large in-process MLX model pays the full prompt-prefill cost for
-        // every tool schema. The global OpenCode config on this Mac exposes
-        // Argent's 75-tool surface; injecting all of it makes a 27B 2-bit
-        // model spend minutes before its first token and can push a 16 GB
-        // Mac into memory pressure. Keep the built-in BeetCode tools (file,
-        // shell, build, browser, and simulator) but leave the optional global
-        // MCP envelope out for this constrained local path. Remote engines,
-        // GGUF engines, smaller MLX models, and explicit workspace MCP config
-        // retain their existing behavior.
+        // surfaced as notices but never block the run. A constrained local
+        // model cannot afford the full tool/schema prefill on every turn, so
+        // it gets a compact core tool set and a lean prompt instead.
+        let constrainedLocalModel = Self.isConstrainedLocalModel(
+            engine: engine,
+            modelID: activeModelIDHandler())
+        let trusted = WorkspaceTrust.isTrusted(workspace)
+        if WorkspaceTrust.needsConsent(workspace) {
+            workspaceTrustNeeded = true
+            transcript.append(TranscriptItem(id: UUID(), kind: .notice(
+                "This project wants to run MCP servers or hooks. Trust the workspace to enable them.")))
+        } else {
+            workspaceTrustNeeded = false
+        }
         let mcpResult = await mcpRegistry.start(
             workspaceRoot: workspace,
-            includeOpenCode: !Self.isLargeLocalMLXModel(
-                engine: engine,
-                modelID: activeModelIDHandler()))
+            includeOpenCode: trusted && !constrainedLocalModel,
+            includeWorkspace: trusted && !constrainedLocalModel)
         guard isRunning, !Task.isCancelled else {
             isRunning = false
             return
@@ -217,15 +229,34 @@ final class AgentSessionController: ObservableObject {
             transcript.append(TranscriptItem(id: UUID(), kind: .notice(
                 "MCP servers connected: \(mcpResult.connectedServers.joined(separator: ", ")) (\(mcpResult.tools.count) tools)")))
         }
-        let tools = Self.defaultTools + mcpResult.tools
+        let tools = constrainedLocalModel
+            ? Self.constrainedLocalTools
+            : Self.defaultTools + mcpResult.tools
+
+        if constrainedLocalModel {
+            transcript.append(TranscriptItem(id: UUID(), kind: .notice(
+                "Memory-safe local mode: using a compact prompt and core coding tools so this model can answer without exhausting RAM.")))
+        }
 
         let autoApproveEdits = settings.autoApproveEdits
         let autoApproveCommands = settings.autoApproveCommands
         let maxTurns = settings.maxTurns
-        let maxTokensPerTurn = min(
+        let configuredMaxTokensPerTurn = min(
             settings.maxTokensPerTurn,
             maxTokensHandler() ?? settings.maxTokensPerTurn)
-        let temperature = settings.temperature
+        let maxTokensPerTurn = constrainedLocalModel
+            ? min(configuredMaxTokensPerTurn, 768)
+            : configuredMaxTokensPerTurn
+        let configuredContextWindow = contextWindowHandler() ?? 32_768
+        let contextWindowTokens = constrainedLocalModel
+            ? min(configuredContextWindow, 16_384)
+            : configuredContextWindow
+        // Smaller local models are more reliable with deterministic tool and
+        // short-answer behavior. Keep the user's setting for larger/remote
+        // models, but cap constrained local turns at a low sampling value.
+        let temperature = constrainedLocalModel
+            ? min(settings.temperature, 0.25)
+            : settings.temperature
         let checkpointingEnabled = settings.checkpointingEnabled
         let showReasoning = settings.showReasoning
         let catalog = openCodeCatalogHandler()
@@ -267,22 +298,27 @@ final class AgentSessionController: ObservableObject {
                 maxTokensPerTurn: maxTokensPerTurn,
                 temperature: temperature,
                 checkpointingEnabled: checkpointingEnabled,
-                contextWindowTokens: contextWindowHandler() ?? 32_768,
+                contextWindowTokens: contextWindowTokens,
                 thermalTokenCeiling: thermal.maxTokens(ceiling: maxTokensPerTurn),
                 verifyAfterEdits: settings.verifyAfterEdits,
                 showReasoning: showReasoning,
                 planMode: planMode,
                 goalMode: goalMode,
-                memoryMode: settings.memoryMode,
-                compressionLevel: settings.compressionLevel,
+                memoryMode: constrainedLocalModel ? .off : settings.memoryMode,
+                compressionLevel: constrainedLocalModel ? .aggressive : settings.compressionLevel,
                 outputStyle: outputStyle,
-                agentName: selectedAgent?.name,
-                agentPrompt: selectedAgent?.prompt),
+                agentName: constrainedLocalModel ? nil : selectedAgent?.name,
+                agentPrompt: constrainedLocalModel ? nil : selectedAgent?.prompt,
+                intelligenceContext: !constrainedLocalModel,
+                allowSubagents: !constrainedLocalModel,
+                leanPrompt: constrainedLocalModel),
             modelID: activeModelIDHandler(),
             sessionID: sessionID,
             seedRecord: continuationSeed,
-            repoIndex: RepoIndexer.build(root: workspace, taskHint: modelText),
-            memory: settings.memoryMode == .off ? nil : AgentMemory(workspacePath: workspace.path),
+            repoIndex: constrainedLocalModel ? nil : RepoIndexer.build(root: workspace, taskHint: modelText),
+            memory: constrainedLocalModel || settings.memoryMode == .off
+                ? nil
+                : AgentMemory(workspacePath: workspace.path),
             taskHint: modelText)
         loop = agentLoop
         let runToken = runID
@@ -640,7 +676,8 @@ final class AgentSessionController: ObservableObject {
         guard token == runID else { return }
         flushTokens()
         if !codexStreamingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let prose = ToolParser.strippingCalls(from: codexStreamingText)
+            let prose = PromptBuilder.strippingModelControlTokens(
+                ToolParser.strippingCalls(from: codexStreamingText))
             if !prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 transcript.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
                 appendCodexMessage(role: .assistant, content: prose)
@@ -659,12 +696,14 @@ final class AgentSessionController: ObservableObject {
         if let record = codexRecord { SessionStore.shared.save(record) }
         streamingText = ""
         rawStreamingText = ""
+        exactAnswerOverride = nil
         isReasoningVisible = false
         liveReasoningText = ""
         isRunning = false
         finishReason = reason
         currentPhase = .finished
         clearPending()
+        eventTask?.cancel()
         eventTask = nil
         codexTurnID = nil
         codexLastError = nil
@@ -820,11 +859,12 @@ final class AgentSessionController: ObservableObject {
         startTask?.cancel()
         startTask = nil
         if loop == nil, let threadID = codexThreadID, let turnID = codexTurnID {
+            let token = runID
             let client = codexAccount.client
             Task {
                 try? await client.interrupt(threadID: threadID, turnID: turnID)
             }
-            cancelCodexState()
+            finishCodex(.cancelled, runID: token)
             return
         }
         guard let loop else {
@@ -858,7 +898,7 @@ final class AgentSessionController: ObservableObject {
     /// workspace's most recent session (if any) is restored. Undo and git
     /// controls then target the new project — never a stale checkpoint from
     /// the old one.
-    func switchWorkspace(to url: URL) async {
+    func switchWorkspace(to url: URL, sessionID: UUID? = nil) async {
         await stopAndWait()
         workspaceURL = url
         activeSessionID = nil
@@ -867,18 +907,31 @@ final class AgentSessionController: ObservableObject {
         finishReason = nil
         streamingText = ""
         rawStreamingText = ""
+        exactAnswerOverride = nil
         isReasoningVisible = false
         liveReasoningText = ""
+        workspaceTrustNeeded = WorkspaceTrust.needsConsent(url)
         // Background intelligence index: incremental when a baseline exists,
         // full on first open. Silent on failure — the agent loop degrades to
         // no injected context, never to a blocked session.
         Task.detached(priority: .utility) {
             _ = try? await WorkspaceIntelligence(workspaceRoot: url).update()
         }
-        if let latest = SessionStore.shared.loadAll()
+        if let sessionID,
+           let record = SessionStore.shared.load(id: sessionID),
+           record.workspacePath == url.path {
+            _ = restore(record)
+        } else if let latest = SessionStore.shared.loadAll()
             .first(where: { $0.workspacePath == url.path }) {
             _ = restore(latest)
         }
+    }
+
+    func trustCurrentWorkspace() {
+        guard let url = workspaceURL else { return }
+        WorkspaceTrust.trust(url)
+        workspaceTrustNeeded = false
+        notice("Trusted this workspace. Project MCP servers and hooks will run on the next message.")
     }
 
     /// Starts a fresh chat in the current workspace: the transcript clears
@@ -905,6 +958,7 @@ final class AgentSessionController: ObservableObject {
         dropTokenBuffer()
         streamingText = ""
         rawStreamingText = ""
+        exactAnswerOverride = nil
         isReasoningVisible = false
         liveReasoningText = ""
         activeSessionID = nil
@@ -932,10 +986,11 @@ final class AgentSessionController: ObservableObject {
         }
         guard let loop else {
             runID = UUID()
-            isRunning = false
-            currentPhase = .finished
-            clearPending()
-            return
+        isRunning = false
+        currentPhase = .finished
+        clearPending()
+        exactAnswerOverride = nil
+        return
         }
         self.loop = nil
         runID = UUID()
@@ -953,6 +1008,7 @@ final class AgentSessionController: ObservableObject {
         dropTokenBuffer()
         streamingText = ""
         rawStreamingText = ""
+        exactAnswerOverride = nil
         isReasoningVisible = false
         liveReasoningText = ""
     }
@@ -967,6 +1023,7 @@ final class AgentSessionController: ObservableObject {
         dropTokenBuffer()
         streamingText = ""
         rawStreamingText = ""
+        exactAnswerOverride = nil
         isReasoningVisible = false
         liveReasoningText = ""
         clearPending()
@@ -1020,6 +1077,14 @@ final class AgentSessionController: ObservableObject {
         guard !pendingTokenBuffer.isEmpty else { return }
         rawStreamingText += pendingTokenBuffer
         pendingTokenBuffer = ""
+        if exactAnswerOverride != nil {
+            // The final assistant event publishes the exact requested text.
+            // Suppress the raw generation path so filler cannot appear first.
+            streamingText = ""
+            isReasoningVisible = false
+            liveReasoningText = ""
+            return
+        }
         // Display filtering: hide raw `…` blocks and repetition
         // filler ("thinking thinking thinking…") — show a proper
         // Reasoning indicator instead of the model's raw noise.
@@ -1498,7 +1563,8 @@ final class AgentSessionController: ObservableObject {
             liveReasoningText = ""
             // Wire format never reaches the transcript: strip tool-call
             // syntax, and drop the bubble entirely if nothing else remains.
-            let prose = ToolParser.strippingCalls(from: text)
+            let prose = PromptBuilder.strippingModelControlTokens(
+                ToolParser.strippingCalls(from: text))
             if !prose.isEmpty {
                 transcript.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
             }
@@ -1614,6 +1680,8 @@ final class AgentSessionController: ObservableObject {
         RunCommandTool(),
         BuildDiagnosticsTool(),
         CreateMacAppTool(),
+        CreateIOSAppTool(),
+        MacBuildRunTool(),
         SimListDevicesTool(),
         SimBootDeviceTool(),
         SimLaunchAppTool(),
@@ -1644,19 +1712,36 @@ final class AgentSessionController: ObservableObject {
         ComputerScrollTool(),
     ]
 
-    private static func isLargeLocalMLXModel(
+    /// The compact registry used when a local model is close to the machine's
+    /// RAM ceiling. These tools preserve the core coding workflow while
+    /// avoiding browser, simulator, computer-use, and app-scaffolding schemas
+    /// in every model prefill.
+    static let constrainedLocalTools: [any AgentTool] = [
+        ReadFileTool(),
+        WriteFileTool(),
+        ListDirectoryTool(),
+        SearchTool(),
+        FindFilesTool(),
+        ApplyPatchTool(),
+        RunCommandTool(),
+    ]
+
+    private static func isConstrainedLocalModel(
         engine: any LLMEngine,
         modelID: String
     ) -> Bool {
         guard let router = engine as? EngineRouter,
-              router.source == .localMLX,
-              let model = ModelCatalog.model(id: modelID),
-              model.format == .mlx
+            router.source == .localMLX,
+            let model = ModelCatalog.model(id: modelID),
+            model.role == .chat
         else { return false }
 
-        // At this size, tool-schema prefill is a larger UX cost than the
-        // optional global MCP capability on a typical 16 GB Apple Silicon Mac.
-        return model.diskBytes >= 8_000_000_000
+        // On a 16 GB Apple Silicon Mac, even a smaller local model can spend
+        // most of a turn prefilling thousands of tool-schema tokens. Keep the
+        // full agent surface on machines with more headroom and use the core
+        // coding surface below 24 GB of physical RAM.
+        let constrainedMachine = MemoryAdvisor.physicalMemory < 24 * 1024 * 1024 * 1024
+        return constrainedMachine
     }
     /// Turns attachments into part of the user message: files are quoted
     /// (bounded), images are described through the active vision-capable

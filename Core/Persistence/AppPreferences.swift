@@ -27,11 +27,15 @@ struct AppPreferences: Codable, Sendable, Equatable {
     /// rather than a copy of session data, so deleting a chat cannot leave a
     /// second stale task record behind.
     var pinnedSessionIDs: [UUID] = []
+    /// Canonical workspace paths the user has trusted to run project-local
+    /// MCP servers and hooks. User-global `~/.beetcode/` config is always on.
+    var trustedWorkspacePaths: [String] = []
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, lastWorkspacePath, workspaceBookmarkData, lastModelID,
              lastSessionID, autoResumeDownloads, remoteModel, customBaseURL,
-             remoteModelOverrides, remoteModelProfiles, pinnedSessionIDs
+             remoteModelOverrides, remoteModelProfiles, pinnedSessionIDs,
+             trustedWorkspacePaths
     }
 
     init() {}
@@ -51,6 +55,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         remoteModelProfiles = try container.decodeIfPresent(
             [String: RemoteModelProfile].self, forKey: .remoteModelProfiles) ?? [:]
         pinnedSessionIDs = try container.decodeIfPresent([UUID].self, forKey: .pinnedSessionIDs) ?? []
+        trustedWorkspacePaths = try container.decodeIfPresent([String].self, forKey: .trustedWorkspacePaths) ?? []
     }
 }
 

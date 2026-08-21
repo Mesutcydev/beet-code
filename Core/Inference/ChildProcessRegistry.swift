@@ -17,13 +17,22 @@ enum ChildProcessRegistry {
     // All access under `lock` — `nonisolated(unsafe)` is how this codebase
     // marks lock-guarded statics (same pattern as VisionProvider's seams).
     nonisolated(unsafe) private static var processes: [pid_t: Process] = [:]
+    nonisolated(unsafe) private static var pids: Set<pid_t> = []
 
     static func register(_ process: Process) {
         lock.withLock { processes[process.processIdentifier] = process }
     }
 
+    static func register(pid: pid_t) {
+        lock.withLock { pids.insert(pid) }
+    }
+
     static func unregister(_ process: Process) {
         lock.withLock { processes[process.processIdentifier] = nil }
+    }
+
+    static func unregister(pid: pid_t) {
+        lock.withLock { pids.remove(pid) }
     }
 
     /// Best-effort SIGTERM to every registered child still running.
@@ -32,6 +41,10 @@ enum ChildProcessRegistry {
         let running = lock.withLock { Array(processes.values) }
         for process in running where process.isRunning {
             process.terminate()
+        }
+        let extra = lock.withLock { Array(pids) }
+        for pid in extra {
+            kill(-pid, SIGTERM)
         }
     }
 

@@ -89,6 +89,39 @@ final class SessionStoreTests: XCTestCase {
     }
 }
 
+@MainActor
+final class SettingsStoreTests: XCTestCase {
+
+    private func isolatedDefaults() -> (UserDefaults, String) {
+        let suite = "com.beetcode.tests.appearance.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return (defaults, suite)
+    }
+
+    func testNewStoreDefaultsToDark() {
+        let (defaults, suite) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = SettingsStore(defaults: defaults)
+
+        XCTAssertEqual(store.appearance, .dark)
+    }
+
+    func testLegacyBeetAppearanceMigratesToDarkOnce() {
+        let (defaults, suite) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(AppAppearance.beet.rawValue, forKey: "appearance")
+
+        let migrated = SettingsStore(defaults: defaults)
+        XCTAssertEqual(migrated.appearance, .dark)
+
+        migrated.appearance = .beet
+        let reopened = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reopened.appearance, .beet)
+    }
+}
+
 final class AppPreferencesTests: XCTestCase {
 
     func testPreferencesRoundTripAndValidation() throws {

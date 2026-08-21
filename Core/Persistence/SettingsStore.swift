@@ -3,7 +3,7 @@ import Foundation
 /// App color appearance. `system` follows macOS; `light`/`dark` force it;
 /// `beet` is the identity theme — a dark appearance whose neutrals are
 /// tinted from Beet Red (Pantone 19-2030 TCX) instead of cool slate.
-/// Light is the default. Kept Foundation-only (no SwiftUI) so the CLI target
+/// Dark is the default. Kept Foundation-only (no SwiftUI) so the CLI target
 /// can compile this file; the SwiftUI `ColorScheme` mapping lives in the app.
 enum AppAppearance: String, CaseIterable, Codable, Identifiable, Sendable {
     case system
@@ -118,9 +118,14 @@ final class SettingsStore: ObservableObject {
 
     static let shared = SettingsStore()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let storedAppearance = defaults.string(forKey: DefaultsKeys.appearance)
+        let appearanceMigrationApplied =
+            defaults.object(forKey: DefaultsKeys.appearanceDefaultMigration) != nil
+
         // Register defaults so first read is well-defined.
         defaults.register(defaults: [
             DefaultsKeys.autoApproveEdits: false,
@@ -139,7 +144,7 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.showReasoning: true,
             DefaultsKeys.planMode: false,
             DefaultsKeys.agentMode: AgentMode.auto.rawValue,
-            DefaultsKeys.appearance: AppAppearance.light.rawValue,
+            DefaultsKeys.appearance: AppAppearance.dark.rawValue,
             DefaultsKeys.accentPalette: AccentPalette.beetRed.rawValue,
             DefaultsKeys.composerBorderAnimation: true,
             DefaultsKeys.apiServerEnabled: false,
@@ -161,14 +166,24 @@ final class SettingsStore: ObservableObject {
             defaults.set(true, forKey: DefaultsKeys.showReasoning)
             defaults.set(true, forKey: DefaultsKeys.reasoningVisibilityMigration)
         }
+
+        // A previous build could leave Beet as the saved launch appearance.
+        // Move that legacy default to native Dark once; after this migration,
+        // later explicit selections—including Beet—are preserved.
+        if !appearanceMigrationApplied {
+            if storedAppearance == AppAppearance.beet.rawValue {
+                defaults.set(AppAppearance.dark.rawValue, forKey: DefaultsKeys.appearance)
+            }
+            defaults.set(true, forKey: DefaultsKeys.appearanceDefaultMigration)
+        }
     }
 
-    /// Color appearance. Defaults to light; `system` follows macOS.
+    /// Color appearance. Defaults to native Dark; `system` follows macOS.
     var appearance: AppAppearance {
         get {
             AppAppearance(
                 rawValue: defaults.string(forKey: DefaultsKeys.appearance)
-                    ?? AppAppearance.light.rawValue) ?? .light
+                    ?? AppAppearance.dark.rawValue) ?? .dark
         }
         set {
             defaults.set(newValue.rawValue, forKey: DefaultsKeys.appearance)
@@ -464,6 +479,7 @@ final class SettingsStore: ObservableObject {
         static let planMode = "planMode"
         static let agentMode = "agentMode"
         static let appearance = "appearance"
+        static let appearanceDefaultMigration = "appearanceDefaultMigration.v1"
         static let accentPalette = "accentPalette"
         static let composerBorderAnimation = "composerBorderAnimation"
         static let apiServerEnabled = "apiServerEnabled"

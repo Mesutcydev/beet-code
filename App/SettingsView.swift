@@ -297,7 +297,7 @@ private struct GeneralTab: View {
                 }
             }
 
-            SettingsCard(title: "Appearance", icon: "paintbrush", footer: "Light is the default. Choose System to follow macOS, or Dark to force dark mode.") {
+            SettingsCard(title: "Appearance", icon: "paintbrush", footer: "Dark is the default. Choose System to follow macOS, Light for a bright theme, or Beet for Beet Red surfaces.") {
                 SettingRow(label: "Appearance") {
                     Picker("Appearance", selection: $settings.appearance) {
                         ForEach(AppAppearance.allCases) { appearance in

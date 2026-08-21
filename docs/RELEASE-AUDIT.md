@@ -1,6 +1,6 @@
 # Beet Code — Release Audit (v0.9.1 / build 14)
 
-Generated 2026-08-21. This audit covers the v0.9.1 release candidate built
+Generated 2026-08-21. This audit covers the v0.9.1 release built
 from this checkout. The release updates the local-model path, transcript
 rendering, model metadata/import handling, and the public download links.
 
@@ -11,8 +11,9 @@ for publication. The app is signed with the existing Apple Development identity;
 Developer ID, hardened runtime, notarization, and Gatekeeper-clean delivery
 remain intentionally out of scope for this release.
 
-The final release record will be filled with the commit, tag, artifact
-checksums, and GitHub Actions result after publication.
+Release source commit: `9b8f5ba` (`release: BeetCode 0.9.1 local model reliability`).
+The source commit is immutable; this audit entry records the packaged app
+artifacts built from it.
 
 ## 1. Release identity
 
@@ -58,15 +59,22 @@ when no tool call is produced; ordinary prose is left untouched.
 | `git diff --check` | PASS | Clean before staging |
 | Public links | PASS | README, release page, and GitHub Pages buttons target `BeetCode-0.9.1.zip` |
 
+### Packaged artifacts
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `BeetCode-0.9.1.zip` | `5c00b885bef3d388ca4a73bd821a9402ef2e2d48183a9bd0d11780598a1b7489` |
+| `BeetCode-0.9.1.dmg` | `cabc10c146a7e2169d43220cedfd51a4501232596a153d1cfb438c4e9f39be7b` |
+
 ## 4. Release gates
 
-1. Commit the intended source, tests, and release documentation; keep derived
-   build directories out of git.
+1. **PASS** — Commit the intended source, tests, and release documentation;
+   keep derived build directories out of git.
 2. Push `release/v0.9.1`, fast-forward `main`, and create tag `v0.9.1`.
-3. Package the signed Release app as ZIP/DMG and write SHA-256 sidecars.
+3. **PASS** — Package the signed Release app as ZIP/DMG and write SHA-256
+   sidecars.
 4. Publish the assets to the GitHub release and wait for the Pages workflow.
-5. Replace this candidate audit's pending fields with the final commit,
-   artifact checksums, release URL, and workflow result.
+5. Record the release URL and workflow result after publication.
 
 ## 5. Distribution signing
 

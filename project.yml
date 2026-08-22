@@ -52,8 +52,8 @@ targets:
       properties:
         CFBundleDisplayName: "Beet Code"
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "0.9.7"
-        CFBundleVersion: "20"
+        CFBundleShortVersionString: "0.9.8"
+        CFBundleVersion: "21"
         LSApplicationCategoryType: public.app-category.developer-tools
         LSMinimumSystemVersion: "15.0"
         NSHumanReadableCopyright: "Copyright © 2026 BeetCode contributors"

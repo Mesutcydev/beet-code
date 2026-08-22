@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXNN
 import MLXVLM
 
 /// MLX-backed engine. Runs in-process on the app's own GPU context.
@@ -26,6 +27,9 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
     // that the gate — not the type system — guarantees exclusive access.
     private nonisolated(unsafe) var session: ChatSession?
     private nonisolated(unsafe) var loadedID: String?
+    /// Lightweight symlink snapshot used only for custom Qwen3.5 conversions
+    /// whose text weights retain the unified `language_model.*` namespace.
+    private nonisolated(unsafe) var compatibilityDirectory: URL?
     private nonisolated(unsafe) var statsState = EngineStats()
     private nonisolated(unsafe) var loading = false
     /// The active stream task. Retaining it lets Stop cancel the running
@@ -64,15 +68,30 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
                 Log.engine.info("Loading model \(modelID, privacy: .public)")
                 let started = Date()
 
+                let loadDirectory: URL
+                if let compatibilityDirectory = try Qwen35CheckpointCompatibility
+                    .makeLoadDirectoryIfNeeded(for: directory)
+                {
+                    self.compatibilityDirectory = compatibilityDirectory
+                    loadDirectory = compatibilityDirectory
+                    await LLMTypeRegistry.shared.registerModelType(
+                        Qwen35CheckpointCompatibility.modelType,
+                        creator: Qwen35CheckpointCompatibility.makeModel)
+                    Log.engine.info(
+                        "Using tied-output compatibility for unified Qwen3.5 text weights")
+                } else {
+                    loadDirectory = directory
+                }
+
                 let container: ModelContainer
-                if MLXModelInspector.isVisionLanguageModel(at: directory) {
+                if MLXModelInspector.isVisionLanguageModel(at: loadDirectory) {
                     Log.engine.info("Detected multimodal MLX checkpoint; loading through the VLM factory")
                     container = try await VLMModelFactory.shared.loadContainer(
-                        from: directory,
+                        from: loadDirectory,
                         using: HFTokenizerLoader())
                 } else {
                     container = try await LLMModelFactory.shared.loadContainer(
-                        from: directory,
+                        from: loadDirectory,
                         using: HFTokenizerLoader())
                 }
 
@@ -104,6 +123,7 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
             } catch {
                 self.session = nil
                 self.loadedID = nil
+                self.removeCompatibilityDirectory()
                 throw EngineError.loadFailed(String(describing: error))
             }
         }
@@ -114,6 +134,7 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
             self.session = nil
             self.loadedID = nil
             self.statsState = EngineStats()
+            self.removeCompatibilityDirectory()
         }
         await gate.clearCacheWhenIdle {
             MLX.Memory.clearCache()
@@ -259,6 +280,12 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
         }
     }
 
+    private func removeCompatibilityDirectory() {
+        guard let directory = compatibilityDirectory else { return }
+        compatibilityDirectory = nil
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     /// Emergency unload path used by the memory-pressure coordinator. Returns
     /// true when a model was actually resident and got dumped.
     @discardableResult
@@ -268,6 +295,7 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
             self.session = nil
             self.loadedID = nil
             self.statsState = EngineStats()
+            self.removeCompatibilityDirectory()
             return id
         }) ?? nil
         if wasLoaded != nil {
@@ -301,5 +329,121 @@ public final class MLXEngine: LLMEngine, @unchecked Sendable {
         let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         let argumentsJSON = data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         return ToolCallText.serialize(name: call.function.name, argumentsJSON: argumentsJSON)
+    }
+}
+
+/// Adapts third-party Qwen3.5 text conversions that retain the unified
+/// `language_model.*` namespace. The upstream text loader expects bare
+/// `model.*`/`lm_head.*` keys and otherwise reports apparently missing layers.
+enum Qwen35CheckpointCompatibility {
+    static let modelType = "beetcode_qwen3_5_text_tied_unified"
+
+    static func makeLoadDirectoryIfNeeded(for source: URL) throws -> URL? {
+        let fileManager = FileManager.default
+        let configURL = source.appendingPathComponent("config.json")
+        let indexURL = source.appendingPathComponent("model.safetensors.index.json")
+
+        guard let configData = try? Data(contentsOf: configURL),
+              var config = try JSONSerialization.jsonObject(with: configData) as? [String: Any],
+              config["model_type"] as? String == "qwen3_5_text",
+              config["tie_word_embeddings"] as? Bool == false,
+              let indexData = try? Data(contentsOf: indexURL),
+              let index = try JSONSerialization.jsonObject(with: indexData) as? [String: Any],
+              let weightMap = index["weight_map"] as? [String: Any]
+        else { return nil }
+
+        let keys = weightMap.keys
+        let hasUnifiedEmbedding = keys.contains {
+            $0.hasPrefix("language_model.model.embed_tokens.")
+        }
+        let hasOutputHead = keys.contains {
+            $0.hasPrefix("lm_head.") || $0.contains(".lm_head.")
+        }
+        guard hasUnifiedEmbedding else { return nil }
+
+        let loadDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("beetcode-qwen35-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: loadDirectory, withIntermediateDirectories: true)
+
+        do {
+            for item in try fileManager.contentsOfDirectory(
+                at: source,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles])
+            where item.lastPathComponent != "config.json" {
+                try fileManager.createSymbolicLink(
+                    at: loadDirectory.appendingPathComponent(item.lastPathComponent),
+                    withDestinationURL: item)
+            }
+
+            config["model_type"] = modelType
+            // A few community conversions omit lm_head while leaving the flag
+            // false; those truly need tied logits. Preserve the separate head
+            // whenever it is present, as in the 9B abliterated checkpoint.
+            if !hasOutputHead {
+                config["tie_word_embeddings"] = true
+            }
+            let compatibleConfig = try JSONSerialization.data(
+                withJSONObject: config,
+                options: [.prettyPrinted, .sortedKeys])
+            try compatibleConfig.write(
+                to: loadDirectory.appendingPathComponent("config.json"),
+                options: .atomic)
+            return loadDirectory
+        } catch {
+            try? fileManager.removeItem(at: loadDirectory)
+            throw error
+        }
+    }
+
+    static func makeModel(_ data: Data) throws -> LanguageModel {
+        let configuration = try JSONDecoder().decode(Qwen35TextConfiguration.self, from: data)
+        return UnifiedTiedQwen35TextModel(configuration)
+    }
+}
+
+/// Wraps the upstream Qwen3.5 text model so its module paths match unified
+/// checkpoints. Quantized weights remain memory-mapped; this adapter only
+/// changes their logical names and does not duplicate the 4.7 GB model file.
+private final class UnifiedTiedQwen35TextModel: Module, LLMModel {
+    @ModuleInfo(key: "base") private var base: Qwen35TextModel
+
+    init(_ configuration: Qwen35TextConfiguration) {
+        _base.wrappedValue = Qwen35TextModel(configuration)
+        super.init()
+    }
+
+    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+        base(inputs, cache: cache)
+    }
+
+    func newCache(parameters: GenerateParameters?) -> [KVCache] {
+        base.newCache(parameters: parameters)
+    }
+
+    var loraLayers: [Module] { base.loraLayers }
+
+    func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var normalized = [String: MLXArray]()
+        normalized.reserveCapacity(weights.count)
+
+        for (originalKey, value) in weights {
+            if originalKey.hasPrefix("vision_tower.") || originalKey.hasPrefix("model.visual.") {
+                continue
+            }
+
+            let key: String
+            if originalKey.hasPrefix("language_model.") {
+                key = String(originalKey.dropFirst("language_model.".count))
+            } else if originalKey.hasPrefix("model.language_model.") {
+                key = "model." + String(originalKey.dropFirst("model.language_model.".count))
+            } else {
+                key = originalKey
+            }
+            normalized[key] = value
+        }
+
+        let sanitized = base.sanitize(weights: normalized)
+        return Dictionary(uniqueKeysWithValues: sanitized.map { ("base.\($0.key)", $0.value) })
     }
 }

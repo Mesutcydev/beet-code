@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.9.7](https://img.shields.io/badge/Download-Beet%20Code%200.9.7%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.7.zip)
+[![Download Beet Code 0.9.8](https://img.shields.io/badge/Download-Beet%20Code%200.9.8%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.8.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.7.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.8.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -302,6 +302,13 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   and `api_key=…` without storing the wrapper.
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
+
+## v0.9.8 — Qwen3.5 9B compatibility
+
+- Unified Qwen3.5 MLX checkpoints now load correctly when their tensors retain the `language_model.*` namespace.
+- The compatibility adapter remaps tensor names through lightweight temporary links; it does not duplicate the 4.7 GB model file.
+- Verified on an M4 Mac with 16 GB by loading the installed Qwen3.5 9B abliterated 4-bit checkpoint and completing a real generation in 5.3 seconds.
+- The compatibility behavior is covered by 744 unit tests plus 3 UI tests, including an opt-in live-model smoke test.
 
 ## v0.9.7 — Readable answers and faster follow-up
 

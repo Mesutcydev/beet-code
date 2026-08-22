@@ -78,6 +78,13 @@
 > classified as tight but allowed on an M4 Mac with 16 GB. The verified suite
 > executes 743 unit tests with 2 intentional skips plus 3 UI tests.
 >
+> **Addendum (2026-08-22, v0.9.8 Qwen3.5 compatibility):** unified
+> Qwen3.5 text checkpoints whose tensors retain the `language_model.*`
+> namespace are adapted at load time without copying their multi-gigabyte
+> weights. The installed 9B abliterated 4-bit checkpoint was verified with a
+> real load-and-generation smoke test on an M4 Mac with 16 GB. The suite now
+> contains 744 unit tests plus 3 UI tests.
+>
 |> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
 |> (README v0.6) and the simulator tools were registered but the system prompt
 |> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now

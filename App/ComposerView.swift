@@ -275,12 +275,12 @@ private struct ComposerIntentChip: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: glyph)
-                .font(.system(size: 10, weight: .medium))
+                .font(.caption2.weight(.medium))
             Text(label)
                 .font(.caption.weight(.medium))
             Button(action: onRemove) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(tint)
                     .frame(width: 14, height: 14)
                     .contentShape(Circle())
@@ -936,10 +936,10 @@ private struct AgentSetupMenu: View {
                 Text(settings.agentMode.label)
                 if settings.planMode {
                     Image(systemName: "list.bullet.clipboard")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                 }
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(Theme.textTertiary)
             }
             .lfComposerPill(active: settings.planMode)
@@ -964,14 +964,14 @@ private struct ContextMeter: View {
             if estimate.requestTokens > 0 {
                 HStack(spacing: 6) {
                     Image(systemName: icon)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(tint)
                     Text(text)
                         .foregroundStyle(tint)
                     if estimate.shouldCompact && canCompact {
                         Button(action: compact) {
                             Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(tint)
                                 .frame(width: 20, height: 20)
                                 .contentShape(Rectangle())
@@ -1054,7 +1054,7 @@ private struct SendStopButton: View {
             controller.stop()
         } label: {
             Image(systemName: "stop.fill")
-                .font(.system(size: 10, weight: .bold))
+                .font(.caption2.weight(.bold))
         }
         .buttonStyle(LFIconButtonStyle(tone: .destructive, size: 38))
         .lfHoverLift()
@@ -1096,7 +1096,7 @@ struct AttachmentChip: View {
                 .lineLimit(1)
             Button(action: onRemove) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.caption2.weight(.bold))
                     .frame(width: 14, height: 14)
                     .contentShape(Circle())
             }

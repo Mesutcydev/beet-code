@@ -79,7 +79,7 @@ struct DiagnosticsPanelView: View {
     private func snapshotItem(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label.uppercased())
-                .font(.system(size: 8.5, weight: .bold))
+                .font(.caption2.weight(.bold))
                 .foregroundStyle(Theme.textTertiary)
             Text(value)
                 .font(.caption2.monospacedDigit())
@@ -119,7 +119,7 @@ struct DiagnosticsPanelView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.caption2.weight(.bold))
                 Text(label)
                     .font(.caption2.weight(.semibold))
                 Text("\(count)")
@@ -176,7 +176,7 @@ struct DiagnosticsPanelView: View {
                 .foregroundStyle(Theme.textTertiary)
                 .frame(width: 62, alignment: .leading)
             Image(systemName: crumb.category.icon)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(tint(for: crumb.level))
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 2) {

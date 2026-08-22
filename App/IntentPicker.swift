@@ -167,8 +167,8 @@ struct IntentPicker: View {
     }
 
     private func sectionLabel(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 10, weight: .semibold))
+        Text(text)
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(Theme.textTertiary)
     }
 }

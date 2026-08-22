@@ -305,7 +305,7 @@ private struct ModelPickerPopover: View {
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
                     Text("\(model.parameters) · \(model.quantization) · \(isActive ? "active" : budgetHint(budget))")
-                        .font(.system(size: 10.5))
+                        .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
@@ -315,7 +315,7 @@ private struct ModelPickerPopover: View {
                     ProgressView().controlSize(.small)
                 } else if isActive {
                     Text("Active")
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(Theme.success)
                 }
             }
@@ -430,13 +430,13 @@ private struct ModelPickerPopover: View {
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
                     Text(model.id)
-                        .font(.system(size: 10.5).monospaced())
+                        .font(.caption2.monospaced())
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if !model.description.isEmpty {
                         Text(model.description)
-                            .font(.system(size: 9.5))
+                            .font(.caption2)
                             .foregroundStyle(Theme.textTertiary)
                             .lineLimit(1)
                     }
@@ -444,7 +444,7 @@ private struct ModelPickerPopover: View {
                 Spacer()
                 if isActive {
                     Text("Active")
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(Theme.success)
                 }
             }
@@ -483,19 +483,19 @@ private struct ModelPickerPopover: View {
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
                     Text("\(profile.displayProviderName) · \(profile.model)")
-                        .font(.system(size: 10.5).monospaced())
+                        .font(.caption2.monospaced())
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text(profileMetadataSummary(profile))
-                        .font(.system(size: 9.5))
+                        .font(.caption2)
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(1)
                 }
                 Spacer()
                 if isActive {
                     Text("Active")
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(Theme.success)
                 }
             }
@@ -562,8 +562,8 @@ private struct ModelPickerPopover: View {
     }
 
     private func sectionLabel(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 10.5, weight: .semibold))
+        Text(text)
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(Theme.textTertiary)
             .padding(.bottom, 4)
     }

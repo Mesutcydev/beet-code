@@ -4,6 +4,7 @@ import SwiftUI
 /// generous spacing — scannable at a glance instead of a run-on sentence.
 struct StatusBarView: View {
     @EnvironmentObject private var appState: AppState
+    @ObservedObject private var settings = SettingsStore.shared
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -44,7 +45,9 @@ struct StatusBarView: View {
             cpuChip
             runPhaseChip
 
-            IntelligenceInspectorButton()
+            if settings.intelligenceInspectorEnabled {
+                IntelligenceInspectorButton()
+            }
 
             Spacer(minLength: 0)
 
@@ -158,7 +161,7 @@ struct StatusBarView: View {
     ) -> some View {
         HStack(spacing: 5) {
             Image(systemName: icon)
-                .font(.system(size: 10, weight: .medium))
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(tint)
             content()
         }

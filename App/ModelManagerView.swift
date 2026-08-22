@@ -11,10 +11,13 @@ struct ModelManagerView: View {
     /// True while an import validation/copy runs off-main — multi-GB copies
     /// must never block the UI.
     @State private var importInProgress = false
+    private let device = DeviceProfile.current()
 
     var body: some View {
         VStack(spacing: 0) {
             ManagerHeaderView(
+                device: device,
+                recommendedName: CatalogLibrary.recommendedChat(device: device)?.displayName,
                 freeBytes: appState.availableBudget,
                 totalBytes: MemoryAdvisor.physicalMemory,
                 importing: importInProgress,
@@ -136,7 +139,11 @@ struct ModelManagerView: View {
                 minRAMGB: max(6, Int(Double(size) / 1_000_000_000 * 1.5)),
                 recommendedRAMGB: max(8, Int(Double(size) / 1_000_000_000 * 2)),
                 notes: "Imported from \(url.path)",
-                format: .gguf)
+                format: .gguf,
+                kind: CatalogModel.Kind.inferred(
+                    family: sniffed?.architecture?.capitalized ?? "GGUF",
+                    role: .chat,
+                    id: stem))
         }
 
         // Folder import: MLX (config.json + .safetensors) or GGUF (a .gguf
@@ -214,7 +221,10 @@ struct ModelManagerView: View {
             notes: mlxMetadata?.isVisionLanguage == true
                 ? "Imported multimodal MLX model (text + vision weights) from \(url.path)"
                 : "Imported from \(url.path)",
-            format: format)
+            format: format,
+            kind: mlxMetadata?.isVisionLanguage == true
+                ? .vision
+                : CatalogModel.Kind.inferred(family: family, role: .chat, id: dirName))
     }
 
     /// "qwen3-4b-4bit" → "Qwen3 4b 4bit".
@@ -254,6 +264,8 @@ struct ModelManagerView: View {
 /// Title row + a live RAM-budget gauge, so the user sees headroom at a
 /// glance instead of parsing a caption.
 private struct ManagerHeaderView: View {
+    let device: DeviceProfile
+    let recommendedName: String?
     let freeBytes: UInt64
     let totalBytes: UInt64
     var importing: Bool = false
@@ -286,6 +298,18 @@ private struct ManagerHeaderView: View {
             }
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
+                HStack(alignment: .firstTextBaseline) {
+                    Label(device.summary, systemImage: "cpu")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                    if let recommendedName {
+                        Text("Daily pick: \(recommendedName)")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                    }
+                }
                 HStack {
                     Label("RAM budget", systemImage: "memorychip")
                         .font(.caption.weight(.medium))
@@ -318,11 +342,18 @@ private struct ManagerHeaderView: View {
 // MARK: - Local models
 
 private struct LocalModelsSection: View {
+    private let device = DeviceProfile.current()
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            SectionHeader(title: "On this Mac", systemImage: "cpu")
-            ForEach(ModelCatalog.all) { model in
-                ModelCard(model: model)
+        let recommended = CatalogLibrary.recommendedIDs(device: device)
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            ForEach(CatalogLibrary.sections(device: device)) { section in
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    SectionHeader(title: section.title, systemImage: section.systemImage)
+                    ForEach(section.models) { model in
+                        ModelCard(model: model, isRecommended: recommended.contains(model.id))
+                    }
+                }
             }
         }
     }
@@ -347,6 +378,7 @@ private struct SectionHeader: View {
 private struct ModelCard: View {
     @EnvironmentObject private var appState: AppState
     let model: CatalogModel
+    var isRecommended: Bool = false
 
     private var downloadState: ModelDownloadManager.State {
         appState.downloadManager.state(for: model.id)
@@ -401,8 +433,28 @@ private struct ModelCard: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Theme.wash(Theme.accent), in: Capsule())
+            if model.kind == .coding {
+                Text("Coding")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.surfaceInset, in: Capsule())
+            } else if model.kind == .vision {
+                Text("Vision")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.surfaceInset, in: Capsule())
+            }
             VerdictBadge(verdict: isActive ? .fits : budget.verdict,
                          projectedFootprint: budget.projectedFootprint)
+            if isRecommended, !isActive {
+                Label("Daily pick", systemImage: "star.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.accent)
+            }
             if isActive {
                 Label("Active", systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.medium))

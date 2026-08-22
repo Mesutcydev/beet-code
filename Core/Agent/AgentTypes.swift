@@ -27,6 +27,10 @@ enum AgentEvent: Sendable, Equatable {
     /// The checkpoint could not be taken before an approved mutation; the
     /// mutation was NOT executed.
     case checkpointFailed(String)
+    /// Durable session persistence failed. The in-memory record remains
+    /// retryable, but the user must be told that this conversation is not yet
+    /// safely stored on disk.
+    case persistenceFailed(String)
     /// The model violated the tool protocol (e.g. multiple calls per reply);
     /// the observation was fed back and the loop continues.
     case protocolError(String)

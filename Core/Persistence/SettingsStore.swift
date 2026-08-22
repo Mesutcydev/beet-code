@@ -152,6 +152,8 @@ final class SettingsStore: ObservableObject {
             DefaultsKeys.remoteSessionEnabled: false,
             DefaultsKeys.remoteSessionPort: 9475,
             DefaultsKeys.remoteSessionAllowLAN: false,
+            DefaultsKeys.computerControlEnabled: false,
+            DefaultsKeys.intelligenceInspectorEnabled: false,
             DefaultsKeys.enterSends: true,
             DefaultsKeys.outputStyle: ProjectPolicy.OutputStyle.normal.rawValue,
             DefaultsKeys.sendShortcut: "cmd+return",
@@ -401,6 +403,27 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// When false (the default), computer-use tools are omitted from the
+    /// agent registry. Accessibility and Screen Recording grants still sit
+    /// behind this switch so a coding session never drives other Mac apps.
+    var computerControlEnabled: Bool {
+        get { defaults.bool(forKey: DefaultsKeys.computerControlEnabled) }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.computerControlEnabled)
+            objectWillChange.send()
+        }
+    }
+
+    /// Status-bar workspace inspector. Indexing still runs for the agent;
+    /// this only shows the debug chrome.
+    var intelligenceInspectorEnabled: Bool {
+        get { defaults.bool(forKey: DefaultsKeys.intelligenceInspectorEnabled) }
+        set {
+            defaults.set(newValue, forKey: DefaultsKeys.intelligenceInspectorEnabled)
+            objectWillChange.send()
+        }
+    }
+
     /// LAN fallback is opt-in. Tailscale is the safer default because its
     /// direct interface is encrypted; enabling this is useful only when both
     /// devices are on a trusted private Wi-Fi network.
@@ -488,6 +511,8 @@ final class SettingsStore: ObservableObject {
         static let remoteSessionEnabled = "remoteSessionEnabled"
         static let remoteSessionPort = "remoteSessionPort"
         static let remoteSessionAllowLAN = "remoteSessionAllowLAN"
+        static let computerControlEnabled = "computerControlEnabled"
+        static let intelligenceInspectorEnabled = "intelligenceInspectorEnabled"
         static let enterSends = "enterSends"
         static let outputStyle = "outputStyle"
         static let sendShortcut = "sendShortcut"

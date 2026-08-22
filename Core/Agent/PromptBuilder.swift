@@ -67,6 +67,15 @@ enum PromptBuilder {
             sections.append("# Active agent profile\n\n\(bounded(agentPrompt, characters: 12_000))")
         }
 
+        // Put the small, exact capability map before the much larger schema
+        // catalog. On a tight context window, fitPrompt may shorten the
+        // catalog; the model must still know which app surfaces exist and
+        // which verification loop to choose. This is useful in lean mode too,
+        // where only the compact coding registry is actually enabled.
+        if let guidance = capabilityGuidance(tools: tools) {
+            sections.append(guidance)
+        }
+
         sections.append("""
         # Tool protocol
 
@@ -85,67 +94,58 @@ enum PromptBuilder {
         - If you need information only the user can provide, call `ask_user`.
         """)
 
+        if !leanPrompt {
+            // Project conventions and durable facts outrank bulky argument
+            // schemas. Keep them ahead of the catalog so a constrained prompt
+            // cannot silently discard the user's operating rules.
+            if let projectInstructions, !projectInstructions.isEmpty {
+                sections.append("# Project instructions (AGENTS.md / CLAUDE.md)\n\n\(bounded(projectInstructions, characters: 8_000))")
+            }
+
+            if let projectPolicy, !projectPolicy.isEmpty {
+                sections.append("# Project policy\n\n\(bounded(projectPolicy, characters: 4_000))")
+            }
+
+            if let memorySection {
+                sections.append("# Memory\n\n\(bounded(memorySection, characters: 6_000))")
+            }
+
+            sections.append("""
+            # Conventions for editing files
+
+            Prefer `apply_patch` with SEARCH/REPLACE blocks for edits. SEARCH text \
+            must match the file exactly, character-for-character, including \
+            indentation. Include just enough surrounding lines to make the match \
+            unique. Use `write_file` only for new files or complete rewrites. You \
+            must read a file before editing it.
+            """)
+        }
+
         var toolDocs: [String] = []
         for tool in tools.sorted(by: { $0.name < $1.name }) {
             toolDocs.append("## \(tool.name) — \(tool.summary)\n\(tool.schemaText)")
         }
-        sections.append("# Available tools\n\n" + toolDocs.joined(separator: "\n\n"))
+        sections.append("# Tool argument schemas\n\n" + toolDocs.joined(separator: "\n\n"))
 
         if !leanPrompt {
-        // Capability guidance: the tool list alone doesn't teach the model
-        // WHEN to reach for the in-app browser or the simulator. Derived from
-        // the actual tool list so it never advertises something absent.
-        if let guidance = capabilityGuidance(tools: tools) {
-            sections.append(guidance)
-        }
+            // Bounded repository context: the model sees the project shape and
+            // per-file summaries instead of raw file dumps. Summaries survive
+            // compaction because they live in the system prompt.
+            if let repoIndex, !repoIndex.entries.isEmpty {
+                sections.append(
+                    "# Workspace structure (bounded index)\n\n\(bounded(repoIndex.render, characters: 8_000))")
+            }
 
-        // Bounded repository context: the model sees the project shape and
-        // per-file summaries instead of raw file dumps. Summaries survive
-        // compaction because they live in the system prompt.
-        if let repoIndex, !repoIndex.entries.isEmpty {
-            sections.append(
-                "# Workspace structure (bounded index)\n\n\(bounded(repoIndex.render, characters: 8_000))")
-        }
-
-        // Long-term memory: durable facts and earlier-session summaries. Like
-        // the repo index, memory lives in the system prompt so compaction
-        // never evicts it.
-        if let memorySection {
-            sections.append("# Memory\n\n\(bounded(memorySection, characters: 6_000))")
-        }
-
-        // Project conventions (AGENTS.md / CLAUDE.md): the project's own
-        // instructions for agents — build commands, style rules, forbidden
-        // paths. Loaded verbatim, bounded; lives in the prompt so compaction
-        // never evicts it.
-        if let projectInstructions, !projectInstructions.isEmpty {
-            sections.append("# Project instructions (AGENTS.md / CLAUDE.md)\n\n\(bounded(projectInstructions, characters: 8_000))")
-        }
-
-        if let projectPolicy, !projectPolicy.isEmpty {
-            sections.append("# Project policy\n\n\(bounded(projectPolicy, characters: 4_000))")
-        }
-
-        // Workspace history: what earlier sessions in THIS folder were about
-        // — BeetCode's own and chats imported from Claude / Codex / Cursor.
-        // Bounded digest; like memory it survives compaction in the prompt.
-        if let workspaceHistory, !workspaceHistory.isEmpty {
-            sections.append("# Earlier work in this workspace\n\n\(bounded(workspaceHistory, characters: 4_000))")
-        }
-
-        sections.append("""
-        # Conventions for editing files
-
-        Prefer `apply_patch` with SEARCH/REPLACE blocks for edits. SEARCH text \
-        must match the file exactly, character-for-character, including \
-        indentation. Include just enough surrounding lines to make the match \
-        unique. Use `write_file` only for new files or complete rewrites. You \
-        must read a file before editing it.
-        """)
+            // Workspace history: what earlier sessions in THIS folder were about
+            // — BeetCode's own and chats imported from Claude / Codex / Cursor.
+            // Bounded digest; like memory it survives compaction in the prompt.
+            if let workspaceHistory, !workspaceHistory.isEmpty {
+                sections.append("# Earlier work in this workspace\n\n\(bounded(workspaceHistory, characters: 4_000))")
+            }
         } else {
             // Large local models on a memory-constrained Mac cannot afford a
-            // full workspace index, project history, or capability catalog in
-            // every prefill. Keep the direct-answer path explicit.
+            // full workspace index, project history, or broad tool registry
+            // in every prefill. Keep the direct-answer path explicit.
             sections.append("""
             # Lightweight local mode
 
@@ -234,153 +234,108 @@ enum PromptBuilder {
         return kept.joined(separator: "\n\n")
     }
 
-    /// Teaches the model when to use the in-app browser and the built-in
-    /// simulator. Sections are included only when the matching tools are
-    /// actually registered, so the prompt never advertises a capability the
-    /// current session doesn't have.
+    /// A compact, task-oriented map of the exact capabilities enabled for
+    /// this run. It deliberately precedes the larger schema catalog so it
+    /// survives prompt fitting on smaller context windows. Every tool name in
+    /// the map is filtered through the registry; unavailable sibling tools
+    /// are never advertised by implication.
     static func capabilityGuidance(tools: [any AgentTool]) -> String? {
         let names = Set(tools.map(\.name))
-        var blocks: [String] = []
+        guard !names.isEmpty else { return nil }
 
-        if names.contains("browser_navigate") {
-            blocks.append("""
-            ## In-app browser (browser_*)
-
-            The app embeds a real browser you control with the `browser_*` tools. \
-            Use it whenever the task involves a web page or web app:
-            - `browser_navigate` to open a URL (including a local dev server you \
-            started with `run_command`, e.g. http://localhost:3000).
-            - `browser_read` for the page's visible text/links, `browser_click` and \
-            `browser_type` to interact, `browser_eval` for anything the other tools \
-            can't express.
-            - `browser_screenshot` saves a PNG of the page into the workspace; pass \
-            it to `describe_image` to SEE the rendered result.
-            After building or changing web UI, verify it: serve it, navigate, \
-            screenshot, inspect — don't claim it works from code alone.
-            """)
+        func enabled(_ candidates: [String]) -> [String] {
+            candidates.filter { names.contains($0) }
         }
 
-        if names.contains("sim_build_run") || names.contains("sim_list_devices") {
-            blocks.append("""
-            ## Built-in iOS simulator (sim_*)
-
-            The app embeds an iOS simulator surface you control with the `sim_*` \
-            tools. For iOS/tvOS work, verify on a real simulator instead of only \
-            compiling:
-            - `sim_build_run` is the one-shot loop: build → install → launch → \
-            screenshot → describe. Prefer it for end-to-end verification.
-            - For finer control: `sim_list_devices` → `sim_boot_device` → \
-            `sim_launch_app`, then `sim_tap` / `sim_swipe` / `sim_type` to drive \
-            the UI and `sim_describe` (accessibility tree) or `sim_screenshot` \
-            (then `describe_image`) to observe it.
-            Typical verify loop: change UI code → `sim_build_run` → read the \
-            screenshot description → fix → repeat.
-            """)
+        func toolList(_ tools: [String]) -> String {
+            tools.map { "`\($0)`" }.joined(separator: ", ")
         }
 
-        if names.contains("computer_ui_tree") {
-            blocks.append("""
-            ## Computer control (computer_*)
+        var lines: [String] = [
+            "This map is generated from the tools enabled for this run. Use these capabilities when the task calls for them; do not assume an unlisted sibling tool exists. Detailed argument schemas follow."
+        ]
+        var classified: Set<String> = []
 
-            You can observe and drive ANY Mac app with the `computer_*` tools \
-            (Claude-style computer use). The discipline is ALWAYS \
-            observe → act → re-observe; never act blind:
-            - `computer_status` first: it reports whether Accessibility and \
-            Screen Recording permissions are granted and which app is focused. \
-            If a permission is missing, tell the user to grant it in \
-            Settings → Agent → Computer control instead of retrying.
-            - `computer_ui_tree` is your PRIMARY observation: the focused \
-            app's accessibility tree as text, with each element's label and \
-            screen coordinates (top-left origin). Prefer it — it is exact, \
-            cheap, and needs no vision model.
-            - `computer_screenshot` saves a PNG into the workspace; pass it to \
-            `describe_image` when you need pixels (layout, colors, images).
-            - Act with `computer_click` (coordinates straight from the ui_tree \
-            line), `computer_type` (types into whatever has focus — click the \
-            field first), `computer_key` (shortcuts like cmd+s), and \
-            `computer_scroll`. Logout, lock screen, force-quit, and cmd+q \
-            are blocked and will error if you try them.
-            - After EVERY action, re-run `computer_ui_tree` to confirm the \
-            result before the next step. Coordinates go stale after scrolling \
-            or window moves.
-            """)
+        func add(_ label: String, tools candidates: [String], guidance: String) {
+            let available = enabled(candidates)
+            guard !available.isEmpty else { return }
+            classified.formUnion(available)
+            lines.append("- **\(label)** — \(toolList(available)). \(guidance)")
         }
 
-        if names.contains("web_fetch") {
-            blocks.append("""
-            ## Web fetch (web_fetch)
+        add("Inspect the workspace",
+            tools: ["read_file", "list_directory", "search", "find_files", "glob"],
+            guidance: "Read and search before editing; use file discovery instead of guessing paths.")
+        add("Edit the workspace",
+            tools: ["apply_patch", "write_file", "move_file"],
+            guidance: "Prefer exact patches for existing files and verify the result.")
+        add("Run and verify",
+            tools: ["run_command", "background_process", "background_status", "build_diagnostics"],
+            guidance: names.contains("background_process")
+                ? "Use detected checks for code changes; put long-running dev servers in `background_process`."
+                : "Use the listed command/check surface after code changes and inspect its result.")
+        add("Read the public web",
+            tools: ["web_fetch"],
+            guidance: names.contains("browser_navigate")
+                ? "Use for bounded page text or API output; use `browser_navigate` when interaction or layout matters."
+                : "Use for bounded page text or API output.")
+        add("In-app browser",
+            tools: ["browser_navigate", "browser_read", "browser_click", "browser_type", "browser_eval", "browser_screenshot"],
+            guidance: names.contains("browser_navigate") && names.contains("browser_read")
+                ? "For web UI, navigate → observe → act → re-observe; after changes, verify the rendered page rather than trusting code alone."
+                : "Use only the listed browser operations and observe again after any interaction.")
+        add("Built-in iOS Simulator",
+            tools: ["sim_build_run", "sim_list_devices", "sim_boot_device", "sim_launch_app", "sim_tap", "sim_swipe", "sim_type", "sim_describe", "sim_screenshot"],
+            guidance: names.contains("sim_build_run")
+                ? "Prefer `sim_build_run` for build → install → launch → screenshot → describe, then fix and repeat."
+                : "Use only the listed simulator controls and re-observe after interaction.")
+        add("Mac computer control",
+            tools: ["computer_status", "computer_ui_tree", "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_scroll"],
+            guidance: names.contains("computer_status")
+                ? "Always observe → act → re-observe. Check permissions first with `computer_status`; coordinates go stale after UI changes."
+                : "Always observe → act → re-observe; coordinates go stale after UI changes.")
+        add("Vision",
+            tools: ["describe_image"],
+            guidance: "Use for screenshots and visual assets when pixel appearance matters.")
+        add("Create and deliver Apple apps",
+            tools: ["create_macos_app", "create_ios_app", "macos_build_run", "apple_ship"],
+            guidance: names.contains("apple_ship")
+                ? "Scaffold only when needed, get the app launching, inspect it, and use `apple_ship` only after verification. Never invent signing secrets."
+                : "Scaffold only when needed, get the app launching when that tool is listed, and inspect the result.")
+        add("Delegate focused work",
+            tools: ["task"],
+            guidance: "Choose research, implement, verify, or review; implementation is isolated by default. Do not nest subagents.")
+        add("Durable project memory",
+            tools: ["memory_add", "memory_delete"],
+            guidance: "Store only stable project facts that will help future sessions.")
+        add("Finish or ask",
+            tools: ["ask_user", "attempt_completion"],
+            guidance: "Ask only for information the user must supply; complete only after requested verification succeeds or a concrete blocker is reported.")
 
-            `web_fetch` retrieves a public http(s) URL and returns visible text \
-            (HTML stripped, bounded). Use it to read documentation or a raw \
-            API response without opening the in-app browser. It needs approval. \
-            Prefer `browser_*` when you must click or see layout.
-            """)
+        // MCP and future tools still become discoverable immediately, even
+        // before Beet Code gains a purpose-built routing sentence for them.
+        let extensions = tools
+            .filter { !classified.contains($0.name) }
+            .sorted { $0.name < $1.name }
+        if !extensions.isEmpty {
+            let visible = extensions.prefix(12).map { tool -> String in
+                let summary = tool.summary
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let compactSummary = summary.count > 120
+                    ? String(summary.prefix(120)) + "…"
+                    : summary
+                return "`\(tool.name)` — \(compactSummary)"
+            }
+            let remainder = extensions.count - visible.count
+            let suffix = remainder > 0
+                ? "; plus \(remainder) more in the argument schemas"
+                : ""
+            lines.append("- **Connected extensions** — \(visible.joined(separator: "; "))\(suffix).")
         }
 
-        if names.contains("task") {
-            blocks.append("""
-            ## Subagents (task)
-
-            task runs one bounded nested agent (up to 8 turns) through this \
-            session's approval gate. Pick a role explicitly:
-            - research: read/search/list only; use it to map the codebase.
-            - implement: write/apply/build tools; use it for a focused change.
-            - verify: read plus the detected build/test checker; never edits.
-            - review: read/diff/checks; report regressions and missing coverage.
-            The agent field accepts OpenCode aliases such as reviewer or tester.
-            Implementation children use an isolated linked Git worktree by \
-            default and merge their checked result back as one patch. Use \
-            isolation=shared only when the user explicitly wants direct edits.
-            Do not nest task calls. Child writes and commands still ask unless
-            auto-approve is on, and implementation checks use the same
-            verification setting as the parent.
-            """)
-        }
-
-        if names.contains("create_macos_app") || names.contains("create_ios_app")
-            || names.contains("build_diagnostics") || names.contains("macos_build_run")
-            || names.contains("apple_ship") {
-            blocks.append("""
-            ## Delivering a native iOS or macOS app
-
-            When the user asks you to create, build, run, or ship an Apple app, \
-            stay in this loop until the app actually launches. Do not stop at \
-            writing files.
-
-            macOS:
-            - Empty folder: `create_macos_app` (XcodeGen `project.yml` + SwiftUI skeleton).
-            - After adding or removing Swift files: `run_command` `xcodegen generate`.
-            - Deliver with `macos_build_run` (build + launch the .app). \
-            `build_diagnostics` is the compile-only check.
-            - If the window looks wrong, use `computer_ui_tree` / \
-            `computer_screenshot` then `describe_image`.
-            - When the app is verified, finish with `apple_ship` to produce a \
-            Release archive, packaged artifact, checksum, logs, and Ship Report.
-
-            iOS:
-            - Empty folder: `create_ios_app`.
-            - After adding or removing Swift files: `xcodegen generate`.
-            - Deliver with `sim_build_run` (build → install → launch → \
-            screenshot → describe). Fix from diagnostics or the screenshot \
-            and repeat until the screen is correct.
-            - For finer control: `sim_list_devices` → `sim_boot_device` → \
-            `sim_launch_app`, then `sim_tap` / `sim_describe`.
-            - When the simulator result is verified, finish with `apple_ship`. \
-            It creates an unsigned archive by default. When the user explicitly \
-            asks for a signed IPA, set `allowSigning`, choose a valid Keychain \
-            `signingIdentity`, and use a current `exportMethod`. Set \
-            `installDevice` to a connected physical device identifier (or `auto`) \
-            when they also want installation. Let macOS Keychain handle certificate \
-            imports and passwords; never ask for, store, or print a .p12 password.
-
-            Do not invent a pbxproj by hand. Stay in the workspace. Prefer \
-            `apply_patch` for edits. Read before write. Never claim an app is \
-            ready to ship unless `apple_ship` reports the artifact and report paths.
-            """)
-        }
-
-        guard !blocks.isEmpty else { return nil }
-        return "# Built-in browser, simulator & computer control\n\n" + blocks.joined(separator: "\n\n")
+        lines.append("Writes, commands, and UI/network actions may pause for approval. Request them normally and let Beet Code enforce the boundary; never claim success without observing the result.")
+        return "# Runtime capability map\n\n" + lines.joined(separator: "\n")
     }
 
     /// Extracts the concatenated reasoning blocks from raw generation. Local

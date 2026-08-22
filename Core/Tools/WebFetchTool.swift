@@ -108,7 +108,7 @@ struct WebFetchTool: AgentTool {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 20
-        config.httpAdditionalHeaders = ["User-Agent": "BeetCode/0.8 (agent web_fetch)"]
+        config.httpAdditionalHeaders = ["User-Agent": AppIdentity.userAgent]
         let delegate = WebFetchRedirectGuard()
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }

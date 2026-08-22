@@ -32,18 +32,18 @@ struct AtmosphereBackground: View {
 
     private var artOpacity: Double {
         switch settings.appearance {
-        case .light: 0.07
-        case .dark: 0.09
-        case .beet: 0.10
-        case .system: 0.08
+        case .light: 0.05
+        case .dark: 0.04
+        case .beet: 0.08
+        case .system: 0.04
         }
     }
 
     private var washOpacity: Double {
         switch settings.appearance {
-        case .light: 0.55
-        case .beet: 0.45
-        case .dark, .system: 0.50
+        case .light: 0.62
+        case .beet: 0.50
+        case .dark, .system: 0.62
         }
     }
 

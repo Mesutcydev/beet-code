@@ -12,6 +12,10 @@ silently changing the runtime model.
 - `GCC_WARN_UNINITIALIZED_AUTOS` to `YES_AGGRESSIVE`: active in the generated Xcode project.
 - `GCC_WARN_64_TO_32_BIT_CONVERSION` to `YES`: active in the generated Xcode project.
 - `CLANG_WARN_EMPTY_BODY` to `YES`: active in the generated Xcode project.
+- `ENABLE_HARDENED_RUNTIME` to `YES`: signed builds opt into hardened runtime
+  protections even while public notarization remains unavailable.
+- `SWIFT_STRICT_CONCURRENCY` to `complete`: the app and CLI are checked under
+  the full Swift concurrency model.
 
 The app, CLI, and tests contain Swift sources only. Clang analyzer settings
 for project-owned C, C++, and Objective-C sources are therefore not applicable.
@@ -19,9 +23,10 @@ Third-party Swift packages compile from their own upstream settings.
 
 ## Disabled settings
 
-No security setting is explicitly disabled in `project.yml`. Xcode currently
-resolves Enhanced Security, pointer authentication, and hardened runtime to
-their default `NO` values because the project does not opt in.
+- `ENABLE_APP_SANDBOX`: intentionally disabled. A coding agent must launch
+  developer tools and read/write the project folders the user explicitly
+  selects. Workspace realpath confinement, per-action approval, sanitized
+  child environments, and git checkpoints are the compensating controls.
 
 ## Deferred
 
@@ -33,9 +38,8 @@ their default `NO` values because the project does not opt in.
 - `ENABLE_POINTER_AUTHENTICATION`: Deferred with Enhanced Security. The
   current product contract is arm64 and every dependency must first be
   confirmed to ship compatible arm64e slices.
-- `ENABLE_HARDENED_RUNTIME`: The current public package is Apple
-  Development-signed because the available Developer ID identities are
-  revoked. Enable, sign, notarize, and Gatekeeper-test this together when a
-  valid Developer ID Application identity is installed.
+- Developer ID signing and notarization: the current public package remains
+  Apple Development-signed because no valid Developer ID identity is
+  installed. Re-sign, notarize, and Gatekeeper-test when one is available.
 - `com.apple.security.hardened-process.checked-allocations`: Hardware memory
   tagging is a later opt-in after Enhanced Security compatibility is proven.

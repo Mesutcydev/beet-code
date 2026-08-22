@@ -99,7 +99,7 @@ final class ComputerToolsTests: XCTestCase {
     @MainActor
     func testComputerToolsRegisteredWithCorrectRiskClasses() {
         let tools = Dictionary(
-            uniqueKeysWithValues: AgentSessionController.defaultTools.map { ($0.name, $0.risk) })
+            uniqueKeysWithValues: AgentSessionController.computerControlTools.map { ($0.name, $0.risk) })
         // Observation: auto-approved reads.
         XCTAssertEqual(tools["computer_status"], .read)
         XCTAssertEqual(tools["computer_ui_tree"], .read)
@@ -112,8 +112,21 @@ final class ComputerToolsTests: XCTestCase {
     }
 
     @MainActor
+    func testComputerToolsAreOptInNotDefault() {
+        let defaultNames = Set(AgentSessionController.defaultTools.map(\.name))
+        XCTAssertFalse(defaultNames.contains("computer_click"))
+        XCTAssertFalse(defaultNames.contains("computer_ui_tree"))
+
+        let optedIn = Set(
+            AgentSessionController.sessionTools(computerControlEnabled: true).map(\.name))
+        XCTAssertTrue(optedIn.contains("computer_click"))
+        XCTAssertTrue(optedIn.contains("sim_build_run"))
+        XCTAssertTrue(optedIn.contains("read_file"))
+    }
+
+    @MainActor
     func testComputerToolSchemasAreValidJSON() {
-        for tool in AgentSessionController.defaultTools where tool.name.hasPrefix("computer_") {
+        for tool in AgentSessionController.computerControlTools {
             let data = Data(tool.schemaText.utf8)
             XCTAssertNoThrow(try JSONSerialization.jsonObject(with: data),
                              "\(tool.name) schemaText must be valid JSON")

@@ -1,0 +1,1157 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%arg" : {
+
+    },
+    "%arg Replaces the current roles." : {
+
+    },
+    "%arg chats" : {
+
+    },
+    "%arg error%arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg error%2$arg"
+          }
+        }
+      }
+    },
+    "%arg errors, %arg warnings, %arg notes" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg errors, %2$arg warnings, %3$arg notes"
+          }
+        }
+      }
+    },
+    "%arg files · %arg hunks" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg files · %2$arg hunks"
+          }
+        }
+      }
+    },
+    "%arg free of %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg free of %2$arg"
+          }
+        }
+      }
+    },
+    "%arg messages" : {
+
+    },
+    "%arg modes" : {
+
+    },
+    "%arg of %arg — %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg of %2$arg — %3$arg"
+          }
+        }
+      }
+    },
+    "%arg paired %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg paired %2$arg"
+          }
+        }
+      }
+    },
+    "%arg palette" : {
+
+    },
+    "%arg queued tasks" : {
+
+    },
+    "%arg rejected · checkpoint available" : {
+
+    },
+    "%arg warnings or errors recorded" : {
+
+    },
+    "%arg · %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg · %2$arg"
+          }
+        }
+      }
+    },
+    "%arg · %arg · %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg · %2$arg · %3$arg"
+          }
+        }
+      }
+    },
+    "%arg — %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg — %2$arg"
+          }
+        }
+      }
+    },
+    "%arg%arg. Workspace: %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg%2$arg. Workspace: %3$arg"
+          }
+        }
+      }
+    },
+    "%arg, %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg, %2$arg"
+          }
+        }
+      }
+    },
+    "%arg, %arg chats" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg, %2$arg chats"
+          }
+        }
+      }
+    },
+    "%arg, %arg%arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg, %2$arg%3$arg"
+          }
+        }
+      }
+    },
+    "%arg: %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$arg: %2$arg"
+          }
+        }
+      }
+    },
+    "+%arg" : {
+
+    },
+    "/" : {
+
+    },
+    "1234" : {
+
+    },
+    "9475" : {
+
+    },
+    "Accept" : {
+
+    },
+    "Accept keeps a hunk. Reject edits the working copy after creating an undo checkpoint." : {
+
+    },
+    "Accepted" : {
+
+    },
+    "Access token (hf_…)" : {
+
+    },
+    "Active" : {
+
+    },
+    "Active model: %arg" : {
+
+    },
+    "Ad Hoc testing" : {
+
+    },
+    "Add IDE folder" : {
+
+    },
+    "Add a model id to make this OpenCode provider available in the composer." : {
+
+    },
+    "Add an API key in Settings → Providers to run the agent on a remote model." : {
+
+    },
+    "Add provider…" : {
+
+    },
+    "Add to composer" : {
+
+    },
+    "Advanced" : {
+
+    },
+    "Agent" : {
+
+    },
+    "Agent mode" : {
+
+    },
+    "Agent phase: %arg" : {
+
+    },
+    "Agent setup" : {
+
+    },
+    "App Store Connect" : {
+
+    },
+    "Appearance" : {
+
+    },
+    "Applied to your next message only. Unavailable sources stay disabled." : {
+
+    },
+    "Approve" : {
+
+    },
+    "Approve & Execute ⌘↩" : {
+
+    },
+    "Ask Beet Code to build, fix, or explain…" : {
+
+    },
+    "Attach files" : {
+
+    },
+    "Attach files or images — files are quoted into the message, images are described by the vision provider" : {
+
+    },
+    "Attached files and turn context" : {
+
+    },
+    "BEET CODE" : {
+
+    },
+    "Back" : {
+
+    },
+    "Base URL — e.g. http://127.0.0.1:11434/v1" : {
+
+    },
+    "Beet Code never reads, copies, or stores your private key or certificate password." : {
+
+    },
+    "Beet Code remote pairing QR code" : {
+
+    },
+    "Beet Code will listen only when you turn this on. The browser surface is session-aware and never exposes the terminal CLI or the local model API." : {
+
+    },
+    "Binary changes can be reviewed as a file, but not accepted or rejected by hunk." : {
+
+    },
+    "Binary file" : {
+
+    },
+    "Boot" : {
+
+    },
+    "Boot a device to stream its screen." : {
+
+    },
+    "Build a signed iPhone or iPad app with credentials already on this Mac." : {
+
+    },
+    "Build for" : {
+
+    },
+    "CONTEXT FOR CURRENT REQUEST" : {
+
+    },
+    "CPU" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Cancel Download" : {
+
+    },
+    "Certificate" : {
+
+    },
+    "Changed files" : {
+
+    },
+    "Chat phase" : {
+
+    },
+    "Chats" : {
+
+    },
+    "Chats are saved locally and grouped by project as soon as you start a task." : {
+
+    },
+    "Check Readiness" : {
+
+    },
+    "Checking Keychain…" : {
+
+    },
+    "Checkpoint saved — %arg" : {
+
+    },
+    "Choose a Coding Model" : {
+
+    },
+    "Choose a project folder" : {
+
+    },
+    "Choose a skill, plugin, commands, prompts or workflows folder" : {
+
+    },
+    "Choose roles and workspace context for this turn" : {
+
+    },
+    "Choose the simulated device" : {
+
+    },
+    "Clear" : {
+
+    },
+    "Clear all breadcrumbs" : {
+
+    },
+    "Clear context" : {
+
+    },
+    "Clear prompt" : {
+
+    },
+    "Clear search" : {
+
+    },
+    "Clear turn setup" : {
+
+    },
+    "Close panel" : {
+
+    },
+    "Close remote sessions" : {
+
+    },
+    "Codex CLI is not available on this Mac. Install Codex, then reopen Beet Code." : {
+
+    },
+    "Command preview" : {
+
+    },
+    "Common" : {
+
+    },
+    "Compact conversation context" : {
+
+    },
+    "Compact older tool output before the next run" : {
+
+    },
+    "Composer commands" : {
+
+    },
+    "Composer style" : {
+
+    },
+    "Configured" : {
+
+    },
+    "Connect and unlock an iPhone or iPad, trust this Mac, and enable Developer Mode." : {
+
+    },
+    "Connected through Tailscale. Traffic stays on your tailnet." : {
+
+    },
+    "Contacting %arg…" : {
+
+    },
+    "Contacting Hugging Face…" : {
+
+    },
+    "Contacting provider…" : {
+
+    },
+    "Context" : {
+
+    },
+    "Context compression" : {
+
+    },
+    "Context for this turn" : {
+
+    },
+    "Context window" : {
+
+    },
+    "Continue Later" : {
+
+    },
+    "Continue work from other tools" : {
+
+    },
+    "Copy curl example" : {
+
+    },
+    "Decline" : {
+
+    },
+    "Developer Team ID (optional)" : {
+
+    },
+    "Development" : {
+
+    },
+    "Device" : {
+
+    },
+    "Diagnostics" : {
+
+    },
+    "Diff layout" : {
+
+    },
+    "Disconnect %arg" : {
+
+    },
+    "Disconnect this folder" : {
+
+    },
+    "Dismiss" : {
+
+    },
+    "Done" : {
+
+    },
+    "Download" : {
+
+    },
+    "Downloaded. Beet Code uses this model automatically to describe image attachments and screenshots." : {
+
+    },
+    "Drop files to attach" : {
+
+    },
+    "Edit %arg" : {
+
+    },
+    "Enable remote access" : {
+
+    },
+    "Enabled" : {
+
+    },
+    "Enter a URL or let the agent open one…" : {
+
+    },
+    "Enter this code in the browser" : {
+
+    },
+    "Enterprise" : {
+
+    },
+    "Error" : {
+
+    },
+    "Expires %arg" : {
+
+    },
+    "Export as JSON…" : {
+
+    },
+    "Export as Markdown…" : {
+
+    },
+    "Export current chat…" : {
+
+    },
+    "Export diagnostics log for a bug report" : {
+
+    },
+    "Export task bundle…" : {
+
+    },
+    "Fetch the provider's live model list" : {
+
+    },
+    "Filter by source" : {
+
+    },
+    "Find Claude, Codex, and Cursor chats, then organize them by project. Everything stays on this Mac." : {
+
+    },
+    "Finish sign-in in your browser, then return to Beet Code." : {
+
+    },
+    "Focus prompt" : {
+
+    },
+    "Forward" : {
+
+    },
+    "From project folder to a signed Apple app, in one workspace." : {
+
+    },
+    "General" : {
+
+    },
+    "Grant…" : {
+
+    },
+    "History is locked" : {
+
+    },
+    "ITEMS" : {
+
+    },
+    "Import a local model — an MLX folder (config.json + .safetensors) or a .gguf file" : {
+
+    },
+    "Import certificate…" : {
+
+    },
+    "Import chats…" : {
+
+    },
+    "Import or refresh chats from Claude, Codex and Cursor" : {
+
+    },
+    "Import task bundle…" : {
+
+    },
+    "Importing model…" : {
+
+    },
+    "Import…" : {
+
+    },
+    "Install after signing" : {
+
+    },
+    "Install and launch an .app on the selected device" : {
+
+    },
+    "Installed on %arg" : {
+
+    },
+    "Install…" : {
+
+    },
+    "Intelligence" : {
+
+    },
+    "Jump to latest" : {
+
+    },
+    "Keys from LocalForge found" : {
+
+    },
+    "Leave these blank to use the team embedded in the selected certificate and the project’s signing settings." : {
+
+    },
+    "Let Xcode manage provisioning profiles" : {
+
+    },
+    "Live" : {
+
+    },
+    "Live from %arg" : {
+
+    },
+    "Load" : {
+
+    },
+    "Load failed" : {
+
+    },
+    "Loading %arg…" : {
+
+    },
+    "Loading account models…" : {
+
+    },
+    "Loading changes…" : {
+
+    },
+    "Local-network fallback is enabled. Use only on trusted private Wi‑Fi." : {
+
+    },
+    "Mac app" : {
+
+    },
+    "Manage queued tasks…" : {
+
+    },
+    "Max output" : {
+
+    },
+    "Memory" : {
+
+    },
+    "Model" : {
+
+    },
+    "Model Manager…" : {
+
+    },
+    "Model capability overrides" : {
+
+    },
+    "Model id" : {
+
+    },
+    "Model list fetched live from %arg — %arg available." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Model list fetched live from %1$arg — %2$arg available."
+          }
+        }
+      }
+    },
+    "Model source" : {
+
+    },
+    "Models" : {
+
+    },
+    "More" : {
+
+    },
+    "More actions" : {
+
+    },
+    "More chat actions" : {
+
+    },
+    "More tools and app actions" : {
+
+    },
+    "More workspace actions" : {
+
+    },
+    "New Chat" : {
+
+    },
+    "New chat" : {
+
+    },
+    "New code" : {
+
+    },
+    "No API models configured yet." : {
+
+    },
+    "No changes to review" : {
+
+    },
+    "No external commands discovered yet." : {
+
+    },
+    "No extra folders connected." : {
+
+    },
+    "No local models yet — download one in the Model Manager." : {
+
+    },
+    "No model loaded" : {
+
+    },
+    "No network address found" : {
+
+    },
+    "No providers configured" : {
+
+    },
+    "No simulators found — create one in Xcode." : {
+
+    },
+    "No valid Apple signing certificate was found." : {
+
+    },
+    "Not running" : {
+
+    },
+    "OPTIONAL" : {
+
+    },
+    "Only this provider/model is changed. API keys stay in Keychain." : {
+
+    },
+    "Open" : {
+
+    },
+    "Open Model Manager" : {
+
+    },
+    "Open Project Folder" : {
+
+    },
+    "Open Ship Report" : {
+
+    },
+    "Open composer commands and guidance presets" : {
+
+    },
+    "Open pairing" : {
+
+    },
+    "Open workspace…" : {
+
+    },
+    "OpenAI-compatible · %arg" : {
+
+    },
+    "Overrides apply to this provider/model only and never store API keys." : {
+
+    },
+    "PROJECT INTELLIGENCE" : {
+
+    },
+    "Pairing code" : {
+
+    },
+    "Pause" : {
+
+    },
+    "Paused at %arg — resumes from here" : {
+
+    },
+    "Pending approval" : {
+
+    },
+    "Pinned" : {
+
+    },
+    "Plan before running" : {
+
+    },
+    "Plugins" : {
+
+    },
+    "Process footprint vs. remaining model budget." : {
+
+    },
+    "Projected peak: %arg" : {
+
+    },
+    "Providers" : {
+
+    },
+    "Provisioning profile name or UUID (optional)" : {
+
+    },
+    "RAM budget" : {
+
+    },
+    "Raw output" : {
+
+    },
+    "Ready to pair" : {
+
+    },
+    "Reasoning reactor" : {
+
+    },
+    "Refresh" : {
+
+    },
+    "Refresh %arg model list" : {
+
+    },
+    "Refresh Apple delivery readiness" : {
+
+    },
+    "Refresh chat list" : {
+
+    },
+    "Refresh models" : {
+
+    },
+    "Refresh the device list" : {
+
+    },
+    "Reject" : {
+
+    },
+    "Reject changes the working copy only; the staged snapshot is preserved." : {
+
+    },
+    "Reload" : {
+
+    },
+    "Remote Beetcode sessions" : {
+
+    },
+    "Remote access is off" : {
+
+    },
+    "Remote host could not start" : {
+
+    },
+    "Remote sessions…" : {
+
+    },
+    "Remove" : {
+
+    },
+    "Remove %arg" : {
+
+    },
+    "Remove all roles and context sources" : {
+
+    },
+    "Remove all roles and focus sources" : {
+
+    },
+    "Remove key" : {
+
+    },
+    "Remove…" : {
+
+    },
+    "Required" : {
+
+    },
+    "Rescan" : {
+
+    },
+    "Reset" : {
+
+    },
+    "Response style" : {
+
+    },
+    "Restore Keys…" : {
+
+    },
+    "Restore review checkpoint" : {
+
+    },
+    "Resumable download with integrity checks" : {
+
+    },
+    "Resume" : {
+
+    },
+    "Retry" : {
+
+    },
+    "Reveal artifact" : {
+
+    },
+    "Review" : {
+
+    },
+    "Review by hunk" : {
+
+    },
+    "Review changed files" : {
+
+    },
+    "Revise" : {
+
+    },
+    "Revise: feedback…" : {
+
+    },
+    "Revoke all browsers" : {
+
+    },
+    "Run mode" : {
+
+    },
+    "Run next" : {
+
+    },
+    "Save" : {
+
+    },
+    "Save URL" : {
+
+    },
+    "Save overrides" : {
+
+    },
+    "Scan connected coding tools again" : {
+
+    },
+    "Scan for chats" : {
+
+    },
+    "Scan once, then continue the same coding sessions from a phone or tablet." : {
+
+    },
+    "Scan with your phone camera" : {
+
+    },
+    "Search all history" : {
+
+    },
+    "Search chat history" : {
+
+    },
+    "Selected" : {
+
+    },
+    "Send" : {
+
+    },
+    "Serving at %arg" : {
+
+    },
+    "Set context, output, and feature support for %arg." : {
+
+    },
+    "Ship current Apple app" : {
+
+    },
+    "Show %arg slash commands" : {
+
+    },
+    "Show reasoning details" : {
+
+    },
+    "Shutdown" : {
+
+    },
+    "Sign & install on device…" : {
+
+    },
+    "Sign in with ChatGPT…" : {
+
+    },
+    "Sign out" : {
+
+    },
+    "Signing & Device Delivery" : {
+
+    },
+    "Split" : {
+
+    },
+    "Staged" : {
+
+    },
+    "Start a new chat in this workspace" : {
+
+    },
+    "Start an Apple app" : {
+
+    },
+    "Start the next queued task when a model is ready" : {
+
+    },
+    "Starting the remote session host…" : {
+
+    },
+    "Stop Agent" : {
+
+    },
+    "Stop the agent" : {
+
+    },
+    "Stop the agent (Esc)" : {
+
+    },
+    "Switch workspace" : {
+
+    },
+    "System Readiness…" : {
+
+    },
+    "Task description" : {
+
+    },
+    "Test" : {
+
+    },
+    "The list below is a static fallback — press ⟳ to fetch %arg's current models." : {
+
+    },
+    "The model is working" : {
+
+    },
+    "The working copy matches the current commit." : {
+
+    },
+    "Thermal state merges the kernel thermal state with a sustained-CPU-load proxy (sustained load escalates even when the kernel reports nominal). Serious caps tokens per turn; critical blocks model loads." : {
+
+    },
+    "This chat: %arg prompt + %arg completion tokens across %arg generation(s). Cost is a published-rate estimate, not a bill." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This chat: %1$arg prompt + %2$arg completion tokens across %3$arg generation(s). Cost is a published-rate estimate, not a bill."
+          }
+        }
+      }
+    },
+    "This command runs in the workspace only after you approve it." : {
+
+    },
+    "This project contains MCP servers or hooks. Trust it before they can run." : {
+
+    },
+    "Toggle Plan Mode" : {
+
+    },
+    "Tokens per second from the last generation" : {
+
+    },
+    "Total" : {
+
+    },
+    "Trust workspace" : {
+
+    },
+    "Turn context" : {
+
+    },
+    "Undo every rejection made in this review" : {
+
+    },
+    "Unified" : {
+
+    },
+    "Unload" : {
+
+    },
+    "Unload the current model and free its memory" : {
+
+    },
+    "Unlock" : {
+
+    },
+    "Upload to App Store Connect after validation" : {
+
+    },
+    "Use %arg / %arg" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Use %1$arg / %2$arg"
+          }
+        }
+      }
+    },
+    "Use OpenAI account model (model.id)" : {
+
+    },
+    "Use OpenAI models with your ChatGPT account. API keys are not required for this mode." : {
+
+    },
+    "Use a guidance preset" : {
+
+    },
+    "Use cmd, shift, option, or control followed by a key, for example %arg" : {
+
+    },
+    "Use device code" : {
+
+    },
+    "Use local" : {
+
+    },
+    "Use remote" : {
+
+    },
+    "Use this only on a private Wi‑Fi network. Tailscale remains preferred when connected." : {
+
+    },
+    "Validate" : {
+
+    },
+    "Vision — runs automatically" : {
+
+    },
+    "Waiting for a reachable network address…" : {
+
+    },
+    "Whole-machine CPU load averaged over the last ~30 seconds." : {
+
+    },
+    "Working…" : {
+
+    },
+    "Works with any OpenAI-compatible server: Ollama, LM Studio, vLLM, llama.cpp, Groq, Together, corporate proxies. Key is optional for local servers." : {
+
+    },
+    "Workspace intelligence status and context inspector" : {
+
+    },
+    "Xcode uses the developer account already configured on this Mac and records the upload result in the Ship Report." : {
+
+    },
+    "Your answer…" : {
+
+    },
+    "Your saved API keys are still in the Keychain under the old LocalForge app, but macOS requires one authorization to move them. Your keys were never deleted." : {
+
+    },
+    "Your work will stay close" : {
+
+    },
+    "browser_* tools" : {
+
+    },
+    "bundle id" : {
+
+    },
+    "iOS Simulator" : {
+
+    },
+    "iPhone & iPad app" : {
+
+    },
+    "tok/s" : {
+
+    },
+    "·" : {
+
+    },
+    "−%arg" : {
+
+    }
+  },
+  "version" : "1.2"
+}

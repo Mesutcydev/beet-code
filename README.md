@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.9.4](https://img.shields.io/badge/Download-Beet%20Code%200.9.4%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.4.zip)
+[![Download Beet Code 0.9.5](https://img.shields.io/badge/Download-Beet%20Code%200.9.5%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.5.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.4.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.5.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -303,6 +303,15 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
 
+## v0.9.5 — Safer sessions and focused native surfaces
+
+- The agent receives an exact runtime capability map before large tool schemas, keeping project instructions, policy, memory, and available verification paths visible on constrained context windows.
+- Failed encrypted-session saves are reported to the user and retained in memory for retry after Keychain or storage access recovers.
+- Computer control is now explicitly opt-in, and the workspace intelligence inspector can be hidden without disabling the agent's index.
+- Model Manager detects the Mac's Apple-silicon generation and unified-memory tier, recommends a daily chat and vision model, and groups MLX and GGUF options by fit.
+- Chat, sidebar, and settings screens are split into focused native components, with localized strings and stricter Swift concurrency checks.
+- Three launch-level UI smoke tests now cover the composer and history navigation alongside the 735-test deterministic unit suite.
+
 ## v0.9.4 — Native setup, delivery, and chat polish
 
 - A one-screen welcome and readiness assistant takes users directly from a project folder to a working local, Codex, or API-backed coding model.
@@ -464,19 +473,25 @@ The parser is engine-independent and accepts fenced tool JSON, Qwen `<tool_call>
 
 ## Models
 
-The bundled catalog currently includes:
+The bundled catalog is ranked against this Mac's chip and unified memory
+(`DeviceProfile` + `CatalogLibrary`). The Model Manager leads with a daily
+pick, then groups everything else as fits / tight / needs more memory.
 
-- `qwen3-1.7b-4bit` — recommended for 8 GB
-- `qwen3-4b-4bit` — 8–12 GB (marginal on 8 GB)
-- `qwen2.5-coder-7b-4bit` — 16 GB
-- `qwen3-8b-4bit` — 16 GB
-- `qwen3-coder-14b-4bit` — 24 GB
-- `qwen3-coder-30b-a3b-4bit` — 32 GB+
-- `qwen2.5-coder-7b-gguf-q4`, `qwen3-4b-gguf-q4`, `qwen3-8b-gguf-q4` — GGUF
-  builds served through the embedded llama.cpp engine (needs
-  `brew install llama.cpp`)
-- `smolvlm2-500m-mlx`, `smolvlm2-2.2b-mlx` — local vision models backing the
-  `describe_image` tool without a BYOK provider
+Daily-driver line (MLX 4-bit):
+
+- `qwen3-1.7b-4bit` — 8 GB starter
+- `qwen3.5-4b-4bit` — 8–16 GB (M1 16 GB daily pick)
+- `qwen3.5-9b-4bit` — 16 GB on M2 and later
+- `qwen2.5-coder-14b` (`qwen3-coder-14b-4bit`) — 24 GB Pro
+- `qwen3.5-27b-4bit` / `qwen3-coder-30b-a3b-4bit` — 32 GB
+- `qwen3.5-35b-a3b-4bit` — 36 GB+ Pro/Max
+
+Previous-generation Qwen3 4B/8B and Qwen2.5 Coder 7B stay in the catalog
+for already-downloaded weights. GGUF twins (`qwen3.5-4b-gguf-q4`,
+`qwen3.5-9b-gguf-q4`, plus the older Qwen3/Qwen2.5 GGUF entries) run
+through the embedded llama.cpp engine (`brew install llama.cpp`).
+`smolvlm2-500m-mlx` (8–16 GB) and `smolvlm2-2.2b-mlx` (24 GB+) are local
+vision sidecars for `describe_image`.
 
 Catalog entries are ordinary Swift values; adding a user model later does not require changing the engine.
 

@@ -44,6 +44,7 @@ final class AgentSessionController: ObservableObject {
     private var pendingPlanID: UUID?
     @Published private(set) var currentPhase: AgentPhase = .idle
     @Published private(set) var finishReason: AgentFinish?
+    @Published private(set) var persistenceError: String?
     @Published private(set) var workspaceURL: URL?
     @Published private(set) var gitOutput: String?
     /// True when the open folder has project MCP/hooks the user has not trusted.
@@ -231,7 +232,8 @@ final class AgentSessionController: ObservableObject {
         }
         let tools = constrainedLocalModel
             ? Self.constrainedLocalTools
-            : Self.defaultTools + mcpResult.tools
+            : Self.sessionTools(computerControlEnabled: settings.computerControlEnabled)
+                + mcpResult.tools
 
         if constrainedLocalModel {
             transcript.append(TranscriptItem(id: UUID(), kind: .notice(
@@ -377,7 +379,7 @@ final class AgentSessionController: ObservableObject {
         codexRecord = record
         activeSessionID = record.id
         SessionStore.shared.currentSessionID = record.id
-        SessionStore.shared.save(record)
+        persistSessionRecord(record)
 
         let threadInput = Self.codexPrompt(seed: seed, current: modelText)
         let stream = await codexAccount.client.events()
@@ -397,7 +399,7 @@ final class AgentSessionController: ObservableObject {
             guard isRunning, !Task.isCancelled else { return }
             record.codexThreadID = threadID
             codexRecord = record
-            SessionStore.shared.save(record)
+            persistSessionRecord(record)
 
             let turnID = try await codexAccount.client.startTurn(
                 threadID: threadID,
@@ -692,7 +694,7 @@ final class AgentSessionController: ObservableObject {
             appendCodexMessage(role: .reasoning, content: codexReasoningText)
         }
         codexRecord?.updatedAt = Date()
-        if let record = codexRecord { SessionStore.shared.save(record) }
+        if let record = codexRecord { persistSessionRecord(record) }
         streamingText = ""
         rawStreamingText = ""
         exactAnswerOverride = nil
@@ -1377,8 +1379,9 @@ final class AgentSessionController: ObservableObject {
         var updated = record
         updated.messages = compacted
         updated.updatedAt = Date()
-        SessionStore.shared.save(updated)
-        notice("Compacted history: \(before) → \(compacted.count) messages (level: \(settings.compressionLevel.rawValue)).")
+        if persistSessionRecord(updated) {
+            notice("Compacted history: \(before) → \(compacted.count) messages (level: \(settings.compressionLevel.rawValue)).")
+        }
     }
 
     private func compactSessionNow() {
@@ -1392,6 +1395,27 @@ final class AgentSessionController: ObservableObject {
 
     private func notice(_ text: String) {
         transcript.append(TranscriptItem(id: UUID(), kind: .notice(text)))
+    }
+
+    @discardableResult
+    private func persistSessionRecord(_ record: SessionRecord) -> Bool {
+        switch SessionStore.shared.save(record) {
+        case .success:
+            persistenceError = nil
+            return true
+        case .failure(let error):
+            let detail = error.localizedDescription
+            if persistenceError != detail {
+                notice("This conversation is still in memory but is not saved yet: \(detail)")
+            }
+            persistenceError = detail
+            DiagnosticsCenter.shared.record(
+                .session,
+                "Conversation save failed",
+                detail: detail,
+                level: .error)
+            return false
+        }
     }
 
     /// Restores the workspace to the most recent checkpoint. Surfaces the
@@ -1624,6 +1648,14 @@ final class AgentSessionController: ObservableObject {
             diagnostics.record(.tool, "Checkpoint failed — action not executed",
                                detail: reason, level: .error)
 
+        case .persistenceFailed(let reason):
+            persistenceError = reason
+            transcript.append(
+                TranscriptItem(
+                    id: UUID(),
+                    kind: .notice("This conversation is still in memory but is not saved yet: \(reason)")))
+            diagnostics.record(.session, "Conversation save failed", detail: reason, level: .error)
+
         case .protocolError(let message):
             transcript.append(
                 TranscriptItem(
@@ -1677,6 +1709,8 @@ final class AgentSessionController: ObservableObject {
 
     // MARK: Tool registry
 
+    /// Coding, browser, simulator, and Apple-delivery tools. Computer-use is
+    /// opt-in via `sessionTools(computerControlEnabled:)`.
     static let defaultTools: [any AgentTool] = [
         ReadFileTool(),
         WriteFileTool(),
@@ -1713,9 +1747,11 @@ final class AgentSessionController: ObservableObject {
         BrowserTools.ClickTool(),
         BrowserTools.TypeTool(),
         BrowserTools.EvalTool(),
-        // Computer use: drive ANY Mac app. Observation (status/ui tree/
-        // screenshot) is auto-approved; input actions go through the
-        // approval card like every other mutation.
+    ]
+
+    /// Drive other Mac apps. Off the default coding path; Settings → Agent
+    /// → Computer control must be on before these enter the registry.
+    static let computerControlTools: [any AgentTool] = [
         ComputerStatusTool(),
         ComputerUITreeTool(),
         ComputerScreenshotTool(),
@@ -1724,6 +1760,12 @@ final class AgentSessionController: ObservableObject {
         ComputerKeyTool(),
         ComputerScrollTool(),
     ]
+
+    static func sessionTools(computerControlEnabled: Bool) -> [any AgentTool] {
+        computerControlEnabled
+            ? defaultTools + computerControlTools
+            : defaultTools
+    }
 
     /// The compact registry used when a local model is close to the machine's
     /// RAM ceiling. These tools preserve the core coding workflow while

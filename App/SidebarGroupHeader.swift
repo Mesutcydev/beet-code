@@ -15,7 +15,7 @@ struct SidebarGroupHeader: View {
     var body: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "chevron.right")
-                .font(.system(size: 8, weight: .bold))
+                .font(.caption2.weight(.bold))
                 .foregroundStyle(Theme.textTertiary)
                 .rotationEffect(.degrees(expanded ? 90 : 0))
                 .frame(width: 10)
@@ -28,7 +28,7 @@ struct SidebarGroupHeader: View {
             Spacer(minLength: 4)
             if let count {
                 Text("\(count)")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .font(.caption2.weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -60,7 +60,7 @@ struct SidebarGroupHeader: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         } else {
             Image(systemName: icon)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(Theme.textSecondary)
                 .frame(width: 18, height: 18)
                 .background(Theme.surfaceInset.opacity(0.72), in: RoundedRectangle(cornerRadius: 5, style: .continuous))

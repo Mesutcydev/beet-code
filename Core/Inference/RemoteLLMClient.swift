@@ -244,7 +244,7 @@ enum RemoteLLMClient {
 
     // MARK: Public API
 
-    static let userAgent = "BeetCode/0.8.5 (macOS coding agent)"
+    static var userAgent: String { AppIdentity.userAgent }
 
     // MARK: Message preparation (P2/P7 — provider-safe role mapping)
 
@@ -1394,7 +1394,7 @@ enum RemoteLLMClient {
     /// when the connection goes silent (a stalled proxy otherwise hangs the
     /// agent forever — `timeoutInterval` only bounds the first byte).
     static func consumeSSE(
-        bytes: some AsyncSequence<UInt8, any Error>,
+        bytes: some AsyncSequence<UInt8, any Error> & Sendable,
         inactivityTimeout: TimeInterval = 90,
         onText: @escaping @Sendable (String) -> Void,
         onUsage: (@Sendable (UsageInfo) -> Void)? = nil

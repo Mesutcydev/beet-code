@@ -309,7 +309,9 @@ actor AgentLoop {
         }
         // Terminal snapshot: durable task state, never disposable cache.
         saveTaskCapsule()
-        persist()
+        if let persistenceError = persist() {
+            eventContinuation?.yield(.persistenceFailed(persistenceError))
+        }
         hooks.runStop(reason: reason.hookReason)
         eventContinuation?.yield(.finished(reason))
         eventContinuation?.finish()
@@ -1171,14 +1173,18 @@ actor AgentLoop {
         return nil
     }
 
-    private func persist() {
-        guard configuration.persistSessions else { return }
+    private func persist() -> String? {
+        guard configuration.persistSessions else { return nil }
         record.updatedAt = Date()
         if record.title == "Session", let first = record.messages.first {
             record.title = String(first.content.prefix(60))
         }
-        SessionStore.shared.save(record)
+        let result = SessionStore.shared.save(record)
         SessionStore.shared.currentSessionID = record.id
+        if case .failure(let error) = result {
+            return error.localizedDescription
+        }
+        return nil
     }
 
     /// Nested agent. Shares the parent's engine through IsolatedReplayEngine

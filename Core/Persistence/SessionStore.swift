@@ -203,6 +203,7 @@ enum SessionCrypto {
     static func unlockInteractively() -> Bool {
         if (try? key(interactionAllowed: true)) != nil {
             setNeedsInteractiveUnlock(false)
+            SessionStore.shared.retryPendingSaves()
             return true
         }
         return false
@@ -309,9 +310,33 @@ enum SessionCrypto {
 /// is additionally chmod 0700 as defense in depth.
 final class SessionStore: @unchecked Sendable {
 
+    enum SaveError: Error, LocalizedError, Sendable, Equatable {
+        case encodingFailed(String)
+        case encryptionUnavailable
+        case writeFailed(String)
+        case permissionsFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .encodingFailed(let detail):
+                "The conversation could not be encoded: \(detail)"
+            case .encryptionUnavailable:
+                "The conversation encryption key is unavailable. Unlock Beet Code's Keychain item and retry."
+            case .writeFailed(let detail):
+                "The encrypted conversation could not be written: \(detail)"
+            case .permissionsFailed(let detail):
+                "The conversation was written, but its private file permissions could not be secured: \(detail)"
+            }
+        }
+    }
+
     static let shared = SessionStore()
 
     private let lock = NSLock()
+    /// Failed saves remain in memory so a successful Keychain unlock or a
+    /// later explicit retry can persist them without ever falling back to
+    /// plaintext on disk.
+    private var pendingSaves: [UUID: SessionRecord] = [:]
 
     /// Test seam: redirects the sessions directory away from the real
     /// Application Support folder.
@@ -346,7 +371,8 @@ final class SessionStore: @unchecked Sendable {
 
     // MARK: Persistence
 
-    func save(_ record: SessionRecord) {
+    @discardableResult
+    func save(_ record: SessionRecord) -> Result<Void, SaveError> {
         var record = record
         record.schemaVersion = SessionRecord.currentSchemaVersion
         // Bounded retention: sensitive command output and arguments are
@@ -356,11 +382,56 @@ final class SessionStore: @unchecked Sendable {
         // Encrypt + write OUTSIDE the store lock: encryption can block on
         // Keychain/securityd IPC, and holding the lock across it deadlocks
         // every concurrent load().
-        guard let data = try? JSONEncoder().encode(record) else { return }
-        guard let payload = SessionCrypto.encrypt(data) else { return }
-        try? payload.write(to: target, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(record)
+        } catch {
+            return rememberFailedSave(record, error: .encodingFailed(error.localizedDescription))
+        }
+        guard let payload = SessionCrypto.encrypt(data) else {
+            return rememberFailedSave(record, error: .encryptionUnavailable)
+        }
+        do {
+            try payload.write(to: target, options: .atomic)
+        } catch {
+            return rememberFailedSave(record, error: .writeFailed(error.localizedDescription))
+        }
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        } catch {
+            return rememberFailedSave(record, error: .permissionsFailed(error.localizedDescription))
+        }
+        lock.lock()
+        pendingSaves.removeValue(forKey: record.id)
+        lock.unlock()
         invalidateCache()
+        return .success(())
+    }
+
+    var pendingSaveCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingSaves.count
+    }
+
+    /// Retries the latest in-memory version of every failed record. Successful
+    /// writes remove themselves from the queue; failures remain retryable.
+    @discardableResult
+    func retryPendingSaves() -> [UUID: Result<Void, SaveError>] {
+        lock.lock()
+        let snapshot = pendingSaves
+        lock.unlock()
+        return snapshot.mapValues { save($0) }
+    }
+
+    private func rememberFailedSave(
+        _ record: SessionRecord,
+        error: SaveError
+    ) -> Result<Void, SaveError> {
+        lock.lock()
+        pendingSaves[record.id] = record
+        lock.unlock()
+        return .failure(error)
     }
 
     func load(id: UUID) -> SessionRecord? {

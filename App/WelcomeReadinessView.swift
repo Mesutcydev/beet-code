@@ -111,7 +111,7 @@ struct WelcomeReadinessView: View {
                 Text(isOnboarding ? "Welcome to Beet Code" : "System Readiness")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
-                Text("From project folder to a signed Apple app, in one workspace.")
+                Text("Open a project, pick a coding model, then describe the task. Signing can wait.")
                     .font(.callout)
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -127,7 +127,7 @@ struct WelcomeReadinessView: View {
 
     private var essentialCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionTitle("Start coding", subtitle: "Two choices, then describe what you want built.")
+            sectionTitle("Start coding", subtitle: "Project folder, then a model. Everything else is optional.")
             readinessRow(
                 title: "Project workspace",
                 detail: workspaceReady ? appState.sessions.workspaceURL?.path ?? "Ready" : "Choose the folder the agent may work inside.",
@@ -222,7 +222,7 @@ struct WelcomeReadinessView: View {
                     Text(title).font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimary)
                     if optional && !ready {
                         Text("OPTIONAL")
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .font(.caption2.weight(.bold))
                             .foregroundStyle(Theme.textTertiary)
                     }
                 }

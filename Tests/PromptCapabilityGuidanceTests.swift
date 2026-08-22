@@ -11,9 +11,16 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
     /// Minimal stand-in: capability detection keys off tool names only.
     private struct StubTool: AgentTool {
         let name: String
-        let summary = "stub"
+        let summary: String
         let risk = ToolRisk.read
-        let schemaText = "{}"
+        let schemaText: String
+
+        init(name: String, summary: String = "stub", schemaText: String = "{}") {
+            self.name = name
+            self.summary = summary
+            self.schemaText = schemaText
+        }
+
         func execute(_ call: ParsedToolCall, in context: ToolContext) async throws -> String { "" }
     }
 
@@ -34,48 +41,62 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
     }
 
     func testBrowserGuidanceAppearsWithBrowserTools() {
-        let text = prompt(tools: [StubTool(name: "browser_navigate")])
-        XCTAssertTrue(text.contains("Built-in browser, simulator & computer control"))
+        let text = PromptBuilder.capabilityGuidance(
+            tools: [StubTool(name: "browser_navigate")]) ?? ""
+        XCTAssertTrue(text.contains("Runtime capability map"))
         XCTAssertTrue(text.contains("In-app browser"))
-        XCTAssertFalse(text.contains("sim_build_run is the one-shot loop"))
+        XCTAssertTrue(text.contains("`browser_navigate`"))
+        XCTAssertFalse(text.contains("`browser_read`"))
+        XCTAssertFalse(text.contains("`describe_image`"))
     }
 
     func testSimulatorGuidanceAppearsWithSimTools() {
-        let text = prompt(tools: [StubTool(name: "sim_build_run")])
-        XCTAssertTrue(text.contains("Built-in iOS simulator"))
+        let text = PromptBuilder.capabilityGuidance(
+            tools: [StubTool(name: "sim_build_run")]) ?? ""
+        XCTAssertTrue(text.contains("Built-in iOS Simulator"))
+        XCTAssertTrue(text.contains("build → install → launch → screenshot → describe"))
         XCTAssertFalse(text.contains("In-app browser"))
     }
 
     func testBothSectionsAppearWithFullToolset() {
-        let text = prompt(tools: [
+        let text = PromptBuilder.capabilityGuidance(tools: [
             StubTool(name: "browser_navigate"),
             StubTool(name: "sim_list_devices"),
-        ])
+        ]) ?? ""
         XCTAssertTrue(text.contains("In-app browser"))
-        XCTAssertTrue(text.contains("Built-in iOS simulator"))
+        XCTAssertTrue(text.contains("Built-in iOS Simulator"))
+        XCTAssertFalse(text.contains("`sim_build_run`"))
     }
 
-    func testNoGuidanceWithoutMatchingTools() {
+    func testCoreCodingToolsAlsoReceiveCapabilityGuidance() {
         let text = prompt(tools: [StubTool(name: "read_file")])
-        XCTAssertFalse(text.contains("Built-in browser, simulator & computer control"))
+        XCTAssertTrue(text.contains("Runtime capability map"))
+        XCTAssertTrue(text.contains("Inspect the workspace"))
+        XCTAssertTrue(text.contains("`read_file`"))
+    }
+
+    func testNoCapabilityMapWithoutAnyTools() {
+        XCTAssertNil(PromptBuilder.capabilityGuidance(tools: []))
     }
 
     func testComputerGuidanceAppearsWithComputerTools() {
-        let text = prompt(tools: [StubTool(name: "computer_ui_tree")])
-        XCTAssertTrue(text.contains("Computer control (computer_*)"))
+        let text = PromptBuilder.capabilityGuidance(
+            tools: [StubTool(name: "computer_ui_tree")]) ?? ""
+        XCTAssertTrue(text.contains("Mac computer control"))
         XCTAssertTrue(text.contains("observe → act → re-observe"))
+        XCTAssertFalse(text.contains("`computer_status`"))
     }
 
-    /// The real default registry includes both tool families, so a real
-    /// session's prompt always carries the full guidance.
+    /// The default coding registry includes browser, simulator, and Apple
+    /// delivery tools. Computer-use stays opt-in.
     @MainActor
     func testDefaultToolsTriggerFullGuidance() {
         let names = Set(AgentSessionController.defaultTools.map(\.name))
         XCTAssertTrue(names.contains("browser_navigate"))
         XCTAssertTrue(names.contains("sim_build_run"))
         XCTAssertTrue(names.contains("describe_image"))
-        XCTAssertTrue(names.contains("computer_ui_tree"))
-        XCTAssertTrue(names.contains("computer_click"))
+        XCTAssertFalse(names.contains("computer_ui_tree"))
+        XCTAssertFalse(names.contains("computer_click"))
         XCTAssertTrue(names.contains("glob"))
         XCTAssertTrue(names.contains("web_fetch"))
         XCTAssertTrue(names.contains("create_macos_app"))
@@ -84,22 +105,40 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(names.contains("apple_ship"))
     }
 
+    @MainActor
+    func testComputerToolsJoinSessionWhenEnabled() {
+        let names = Set(
+            AgentSessionController.sessionTools(computerControlEnabled: true).map(\.name))
+        XCTAssertTrue(names.contains("computer_ui_tree"))
+        XCTAssertTrue(names.contains("computer_click"))
+        XCTAssertTrue(names.contains("sim_build_run"))
+    }
+
     func testAppBuildGuidanceAppearsWithScaffoldTools() {
         let text = prompt(tools: [
             StubTool(name: "create_macos_app"),
             StubTool(name: "build_diagnostics"),
             StubTool(name: "apple_ship"),
         ])
-        XCTAssertTrue(text.contains("Delivering a native iOS or macOS app"))
+        XCTAssertTrue(text.contains("Create and deliver Apple apps"))
         XCTAssertTrue(text.contains("create_macos_app"))
-        XCTAssertTrue(text.contains("Release archive"))
-        XCTAssertTrue(text.contains("Ship Report"))
+        XCTAssertTrue(text.contains("apple_ship"))
+        XCTAssertTrue(text.contains("only after verification"))
     }
 
     func testWebFetchAndTaskGuidanceAppearWhenRegistered() {
         let text = prompt(tools: [StubTool(name: "web_fetch"), StubTool(name: "task")])
-        XCTAssertTrue(text.contains("Web fetch (web_fetch)"))
-        XCTAssertTrue(text.contains("Subagents (task)"))
+        XCTAssertTrue(text.contains("Read the public web"))
+        XCTAssertTrue(text.contains("Delegate focused work"))
+    }
+
+    func testUnknownExtensionToolIsDiscoverableWithItsSummary() {
+        let text = PromptBuilder.capabilityGuidance(tools: [
+            StubTool(name: "mcp__design__inspect", summary: "Inspect the current design document")
+        ]) ?? ""
+        XCTAssertTrue(text.contains("Connected extensions"))
+        XCTAssertTrue(text.contains("`mcp__design__inspect`"))
+        XCTAssertTrue(text.contains("Inspect the current design document"))
     }
 
     func testPlanModeInstructionsAreIncludedInTheModelPrompt() {
@@ -123,6 +162,48 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(text.contains("read_file"))
     }
 
+    func testCapabilityMapPrecedesAndSurvivesAShortenedSchemaCatalog() {
+        let oversizedSchema = "{\"type\":\"object\",\"padding\":\""
+            + String(repeating: "x", count: 20_000)
+            + "END_OF_SCHEMA\"}"
+        let text = PromptBuilder.systemPrompt(
+            tools: [StubTool(
+                name: "browser_navigate",
+                summary: "Open a URL",
+                schemaText: oversizedSchema)],
+            workspace: Workspace(root: tempRoot),
+            contextWindowTokens: 4_096,
+            responseReserveTokens: 2_048)
+
+        let map = text.range(of: "# Runtime capability map")
+        let schemas = text.range(of: "# Tool argument schemas")
+        XCTAssertNotNil(map)
+        XCTAssertNotNil(schemas)
+        if let map, let schemas {
+            XCTAssertLessThan(map.lowerBound, schemas.lowerBound)
+        }
+        XCTAssertTrue(text.contains("`browser_navigate`"))
+        XCTAssertFalse(text.contains("END_OF_SCHEMA"))
+    }
+
+    func testProjectInstructionsTakePriorityOverBulkySchemas() {
+        let oversizedSchema = String(repeating: "schema ", count: 4_000)
+        let text = PromptBuilder.systemPrompt(
+            tools: [StubTool(name: "read_file", schemaText: oversizedSchema)],
+            workspace: Workspace(root: tempRoot),
+            projectInstructions: "MUST_USE_PROJECT_RULES",
+            contextWindowTokens: 4_096,
+            responseReserveTokens: 2_048)
+
+        let instructions = text.range(of: "MUST_USE_PROJECT_RULES")
+        let schemas = text.range(of: "# Tool argument schemas")
+        XCTAssertNotNil(instructions)
+        XCTAssertNotNil(schemas)
+        if let instructions, let schemas {
+            XCTAssertLessThan(instructions.lowerBound, schemas.lowerBound)
+        }
+    }
+
     func testLeanPromptOmitsWorkspaceContextAndAddsDirectAnswerGuidance() {
         let text = PromptBuilder.systemPrompt(
             tools: [StubTool(name: "read_file")],
@@ -131,6 +212,7 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
             workspaceHistory: String(repeating: "history ", count: 2_000),
             leanPrompt: true)
         XCTAssertTrue(text.contains("Answer ordinary questions directly"))
+        XCTAssertTrue(text.contains("Runtime capability map"))
         XCTAssertFalse(text.contains("# Project instructions"))
         XCTAssertFalse(text.contains("# Earlier work in this workspace"))
     }

@@ -18,6 +18,25 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
         case vision
     }
 
+    /// How the catalog ranks a chat model for a given Mac. Vision sidecars
+    /// are always `.vision`; coding-tuned weights win the daily-driver pick.
+    enum Kind: String, Codable, Sendable {
+        case coding
+        case general
+        case vision
+
+        static func inferred(family: String, role: Role, id: String) -> Kind {
+            if role == .vision { return .vision }
+            let haystack = "\(family) \(id)".lowercased()
+            if haystack.contains("coder")
+                || haystack.contains("ornith")
+                || haystack.contains("devstral") {
+                return .coding
+            }
+            return .general
+        }
+    }
+
     var id: String
     var repo: String
     var displayName: String
@@ -33,9 +52,13 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
     /// in-process; GGUF runs through llama.cpp's `llama-server`.
     var format: Format = .mlx
     var role: Role = .chat
+    var kind: Kind = .general
+    /// Empty means "every Mac" (user imports). Bundled entries name the
+    /// device lanes that should see this checkpoint.
+    var lanes: [DeviceLane] = []
 
     /// Tolerant decoding: catalog files written by older builds lack
-    /// `format`/`role` — fill defaults instead of dropping the file.
+    /// `format`/`role`/`kind`/`lanes` — fill defaults instead of dropping the file.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
@@ -51,13 +74,18 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
         notes = try c.decode(String.self, forKey: .notes)
         format = try c.decodeIfPresent(Format.self, forKey: .format) ?? .mlx
         role = try c.decodeIfPresent(Role.self, forKey: .role) ?? .chat
+        kind = try c.decodeIfPresent(Kind.self, forKey: .kind)
+            ?? Kind.inferred(family: family, role: role, id: id)
+        lanes = try c.decodeIfPresent([DeviceLane].self, forKey: .lanes)
+            ?? DeviceLane.inferred(recommendedRAMGB: recommendedRAMGB, role: role)
     }
 
     init(
         id: String, repo: String, displayName: String, family: String,
         parameters: String, quantization: String, diskBytes: Int64,
         contextWindow: Int, minRAMGB: Int, recommendedRAMGB: Int,
-        notes: String, format: Format = .mlx, role: Role = .chat
+        notes: String, format: Format = .mlx, role: Role = .chat,
+        kind: Kind? = nil, lanes: [DeviceLane]? = nil
     ) {
         self.id = id
         self.repo = repo
@@ -72,6 +100,8 @@ struct CatalogModel: Codable, Identifiable, Sendable, Hashable {
         self.notes = notes
         self.format = format
         self.role = role
+        self.kind = kind ?? Kind.inferred(family: family, role: role, id: id)
+        self.lanes = lanes ?? DeviceLane.inferred(recommendedRAMGB: recommendedRAMGB, role: role)
     }
 
     var subtitle: String {
@@ -265,19 +295,42 @@ enum ModelCatalog {
         "*.safetensors", "*.json", "tokenizer*", "*.txt", "*.jinja", "*.gguf",
     ]
 
-    static let bundled: [CatalogModel] = [
+    private static func entry(
+        id: String, repo: String, name: String, family: String, params: String,
+        bytes: Int64, ctx: Int = 32_768, min: Int, rec: Int, notes: String,
+        quant: String = "4-bit", format: CatalogModel.Format = .mlx,
+        role: CatalogModel.Role = .chat, kind: CatalogModel.Kind? = nil,
+        lanes: [DeviceLane]
+    ) -> CatalogModel {
         CatalogModel(
-            id: "qwen3-1.7b-4bit",
-            repo: "mlx-community/Qwen3-1.7B-4bit",
-            displayName: "Qwen3 1.7B",
-            family: "Qwen3",
-            parameters: "1.7B",
+            id: id, repo: repo, displayName: name, family: family,
+            parameters: params, quantization: quant, diskBytes: bytes,
+            contextWindow: ctx, minRAMGB: min, recommendedRAMGB: rec,
+            notes: notes, format: format, role: role, kind: kind, lanes: lanes)
+    }
+
+    /// Curated by family and device lane. `CatalogLibrary` shows only the
+    /// lanes that match this Mac (M3 8 GB ≠ M5 16 GB ≠ Studio Ultra).
+    static let bundled: [CatalogModel] = [
+        // MARK: Qwen — coding agent line
+        entry(id: "qwen3-1.7b-4bit", repo: "mlx-community/Qwen3-1.7B-4bit",
+              name: "Qwen3 1.7B", family: "Qwen3", params: "1.7B",
+              bytes: 1_100_000_000, min: 6, rec: 8,
+              notes: "8 GB starter. Fast enough to try the agent; limited coding depth.",
+              kind: .coding, lanes: [.air8]),
+        CatalogModel(
+            id: "qwen3.5-4b-4bit",
+            repo: "mlx-community/Qwen3.5-4B-4bit",
+            displayName: "Qwen3.5 4B",
+            family: "Qwen3.5",
+            parameters: "4B",
             quantization: "4-bit",
-            diskBytes: 1_100_000_000,
-            contextWindow: 32_768,
-            minRAMGB: 6,
-            recommendedRAMGB: 8,
-            notes: "Fastest starter model for 8 GB Macs. Good for trying the agent; limited coding depth."),
+            diskBytes: 3_054_000_000,
+            contextWindow: 262_144,
+            minRAMGB: 8,
+            recommendedRAMGB: 12,
+            notes: "Current 8–16 GB daily driver. Stronger tool use than Qwen3 4B; multimodal weights load through the VLM factory.",
+            kind: .coding),
         CatalogModel(
             id: "qwen3-4b-4bit",
             repo: "mlx-community/Qwen3-4B-4bit",
@@ -289,7 +342,22 @@ enum ModelCatalog {
             contextWindow: 32_768,
             minRAMGB: 8,
             recommendedRAMGB: 12,
-            notes: "Best balance for 8–12 GB Macs. Solid tool use with the prompt protocol."),
+            notes: "Previous-generation 4B. Smaller download than Qwen3.5 4B if you only need a quick local model."),
+
+        // MARK: 16 GB — Air / 13–14\" Pro
+        CatalogModel(
+            id: "qwen3.5-9b-4bit",
+            repo: "mlx-community/Qwen3.5-9B-4bit",
+            displayName: "Qwen3.5 9B",
+            family: "Qwen3.5",
+            parameters: "9B",
+            quantization: "4-bit",
+            diskBytes: 5_970_000_000,
+            contextWindow: 262_144,
+            minRAMGB: 12,
+            recommendedRAMGB: 16,
+            notes: "Daily driver for 16 GB Macs (M2 and later). Best quality that stays comfortable on Air/Pro 16 GB.",
+            kind: .coding),
         CatalogModel(
             id: "qwen2.5-coder-7b-4bit",
             repo: "mlx-community/Qwen2.5-Coder-7B-4bit",
@@ -301,7 +369,7 @@ enum ModelCatalog {
             contextWindow: 32_768,
             minRAMGB: 12,
             recommendedRAMGB: 16,
-            notes: "Code-specialized. Strong edit accuracy for its size."),
+            notes: "Code-specialized 7B. Prefer Qwen3.5 9B on 16 GB unless you want the smaller coder checkpoint."),
         CatalogModel(
             id: "qwen3-8b-4bit",
             repo: "mlx-community/Qwen3-8B-4bit",
@@ -313,19 +381,36 @@ enum ModelCatalog {
             contextWindow: 32_768,
             minRAMGB: 12,
             recommendedRAMGB: 16,
-            notes: "Reasoning-capable generalist. Runs with thinking disabled for snappy tool turns."),
+            notes: "Previous-generation 8B generalist. Runs with thinking disabled for snappy tool turns."),
+
+        // MARK: 24 GB — 14/16\" Pro
         CatalogModel(
             id: "qwen3-coder-14b-4bit",
-            repo: "mlx-community/Qwen3-Coder-14B-4bit",
-            displayName: "Qwen3 Coder 14B",
-            family: "Qwen3 Coder",
+            repo: "mlx-community/Qwen2.5-Coder-14B-Instruct-4bit",
+            displayName: "Qwen2.5 Coder 14B",
+            family: "Qwen2.5 Coder",
             parameters: "14B",
             quantization: "4-bit",
             diskBytes: 9_000_000_000,
             contextWindow: 65_536,
             minRAMGB: 18,
             recommendedRAMGB: 24,
-            notes: "Serious coding model for 24 GB Macs."),
+            notes: "Serious coding model for 24 GB Pro machines. Replaces the retired Qwen3 Coder 14B Hub snapshot."),
+
+        // MARK: 32–36 GB — Pro / Max
+        CatalogModel(
+            id: "qwen3.5-27b-4bit",
+            repo: "mlx-community/Qwen3.5-27B-4bit",
+            displayName: "Qwen3.5 27B",
+            family: "Qwen3.5",
+            parameters: "27B",
+            quantization: "4-bit",
+            diskBytes: 16_075_000_000,
+            contextWindow: 262_144,
+            minRAMGB: 24,
+            recommendedRAMGB: 32,
+            notes: "Dense 27B for 32 GB Pro/Max. Tight on 24 GB; the quality step up from 9B/14B.",
+            kind: .coding),
         CatalogModel(
             id: "qwen3-coder-30b-a3b-4bit",
             repo: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
@@ -337,9 +422,50 @@ enum ModelCatalog {
             contextWindow: 65_536,
             minRAMGB: 24,
             recommendedRAMGB: 32,
-            notes: "Mixture-of-experts: 30B quality at near-8B speed. The pick for 24 GB+."),
+            notes: "Mixture-of-experts coder: 30B quality at near-8B decode. Strong 32 GB pick when you want a dedicated coder."),
+        CatalogModel(
+            id: "qwen3.5-35b-a3b-4bit",
+            repo: "mlx-community/Qwen3.5-35B-A3B-4bit",
+            displayName: "Qwen3.5 35B A3B",
+            family: "Qwen3.5",
+            parameters: "35B (3B active)",
+            quantization: "4-bit",
+            diskBytes: 20_412_000_000,
+            contextWindow: 262_144,
+            minRAMGB: 32,
+            recommendedRAMGB: 36,
+            notes: "MoE daily driver for 36 GB+ Pro/Max. 35B quality at ~3B active — the pick for M4 Pro 36 GB and M4 Max.",
+            kind: .coding),
 
-        // GGUF (llama.cpp) — the widest quantization/architecture coverage.
+        // MARK: GGUF fallbacks — llama-server, same RAM tiers
+        CatalogModel(
+            id: "qwen3.5-4b-gguf-q4",
+            repo: "unsloth/Qwen3.5-4B-GGUF",
+            displayName: "Qwen3.5 4B (GGUF)",
+            family: "Qwen3.5",
+            parameters: "4B",
+            quantization: "Q4_K_M",
+            diskBytes: 2_800_000_000,
+            contextWindow: 262_144,
+            minRAMGB: 8,
+            recommendedRAMGB: 12,
+            notes: "llama.cpp twin of Qwen3.5 4B. Needs llama-server (brew install llama.cpp).",
+            format: .gguf,
+            kind: .coding),
+        CatalogModel(
+            id: "qwen3.5-9b-gguf-q4",
+            repo: "unsloth/Qwen3.5-9B-GGUF",
+            displayName: "Qwen3.5 9B (GGUF)",
+            family: "Qwen3.5",
+            parameters: "9B",
+            quantization: "Q4_K_M",
+            diskBytes: 5_800_000_000,
+            contextWindow: 262_144,
+            minRAMGB: 12,
+            recommendedRAMGB: 16,
+            notes: "llama.cpp twin of Qwen3.5 9B for 16 GB Macs that prefer GGUF.",
+            format: .gguf,
+            kind: .coding),
         CatalogModel(
             id: "qwen2.5-coder-7b-gguf-q4",
             repo: "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
@@ -351,7 +477,7 @@ enum ModelCatalog {
             contextWindow: 32_768,
             minRAMGB: 12,
             recommendedRAMGB: 16,
-            notes: "llama.cpp build — needs llama-server installed (brew install llama.cpp). Broadest quantization choice.",
+            notes: "llama.cpp coder for 16 GB. Broadest quantization choice in the repo.",
             format: .gguf),
         CatalogModel(
             id: "qwen3-4b-gguf-q4",
@@ -364,7 +490,7 @@ enum ModelCatalog {
             contextWindow: 32_768,
             minRAMGB: 8,
             recommendedRAMGB: 12,
-            notes: "Fast GGUF generalist for 8–12 GB Macs. Runs via llama-server.",
+            notes: "Previous-generation GGUF generalist for 8–12 GB Macs.",
             format: .gguf),
         CatalogModel(
             id: "qwen3-8b-gguf-q4",
@@ -377,12 +503,10 @@ enum ModelCatalog {
             contextWindow: 32_768,
             minRAMGB: 12,
             recommendedRAMGB: 16,
-            notes: "GGUF variant of the Qwen3 8B generalist. Runs via llama-server.",
+            notes: "Previous-generation GGUF 8B generalist.",
             format: .gguf),
 
-        // Vision sidecars (SmolVLM2, MLX VLM) — never loadable as the chat
-        // engine; the app runs them automatically to describe image
-        // attachments and simulator screenshots.
+        // MARK: Vision sidecars — never the chat engine
         CatalogModel(
             id: "smolvlm2-500m-mlx",
             repo: "mlx-community/SmolVLM2-500M-Video-Instruct-mlx",
@@ -394,7 +518,7 @@ enum ModelCatalog {
             contextWindow: 16_384,
             minRAMGB: 4,
             recommendedRAMGB: 6,
-            notes: "Tiny vision sidecar. Describes screenshots and image attachments alongside any chat model.",
+            notes: "Tiny vision sidecar for 8–16 GB Macs. Describes screenshots and attachments beside any chat model.",
             role: .vision),
         CatalogModel(
             id: "smolvlm2-2.2b-mlx",
@@ -407,7 +531,7 @@ enum ModelCatalog {
             contextWindow: 16_384,
             minRAMGB: 8,
             recommendedRAMGB: 12,
-            notes: "Stronger vision sidecar — better UI/document reading. Needs real headroom next to a chat model.",
+            notes: "Stronger vision sidecar for 24 GB+. Better UI/document reading; needs headroom next to the chat model.",
             role: .vision),
     ]
 

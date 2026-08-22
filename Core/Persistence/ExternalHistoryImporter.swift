@@ -21,6 +21,9 @@ struct ImportReport: Sendable, Equatable {
     var upToDate = 0
     /// Files/workspaces that yielded no importable conversation.
     var skipped = 0
+    /// Records that were parsed but could not be durably encrypted/written.
+    var failed = 0
+    var lastSaveError: String?
     /// Per-source counts of written records, for the UI summary.
     var perSource: [SessionSource: Int] = [:]
 }
@@ -101,7 +104,11 @@ enum ExternalHistoryImporter {
                 messages: conversation.messages,
                 checkpoints: [],
                 source: conversation.source)
-            store.save(record)
+            if case .failure(let error) = store.save(record) {
+                report.failed += 1
+                report.lastSaveError = error.localizedDescription
+                continue
+            }
             report.imported += 1
             report.perSource[conversation.source, default: 0] += 1
         }

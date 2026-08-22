@@ -50,6 +50,17 @@
                ReferencedContainer = "container:BeetCode.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "10E75D7D018FE7F1E56FB0AB"
+               BuildableName = "BeetCodeUITests.xctest"
+               BlueprintName = "BeetCodeUITests"
+               ReferencedContainer = "container:BeetCode.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

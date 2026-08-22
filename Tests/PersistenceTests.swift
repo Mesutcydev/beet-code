@@ -87,6 +87,48 @@ final class SessionStoreTests: XCTestCase {
                       "sessions must be encrypted at rest")
         XCTAssertNotNil(SessionCrypto.decrypt(data), "payload must use the session cipher")
     }
+
+    func testFailedSaveIsReportedAndCanBeRetried() throws {
+        let store = SessionStore()
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lf-session-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let invalidDirectory = temp.appendingPathComponent("not-a-directory")
+        try Data("occupied".utf8).write(to: invalidDirectory)
+        store.overrideSessionsDir = invalidDirectory
+
+        let record = SessionRecord(
+            id: UUID(),
+            title: "retry me",
+            createdAt: Date(),
+            updatedAt: Date(),
+            workspacePath: "/tmp",
+            modelID: "m",
+            messages: [SessionMessage(
+                role: .user, content: "do not lose this", toolName: nil, timestamp: Date())],
+            checkpoints: [])
+
+        guard case .failure(let error) = store.save(record) else {
+            return XCTFail("a write beneath a regular file must fail")
+        }
+        if case .writeFailed = error {
+            // Expected typed failure.
+        } else {
+            XCTFail("unexpected save error: \(error)")
+        }
+        XCTAssertEqual(store.pendingSaveCount, 1)
+
+        let validDirectory = temp.appendingPathComponent("sessions", isDirectory: true)
+        store.overrideSessionsDir = validDirectory
+        let retry = store.retryPendingSaves()[record.id]
+        guard case .success? = retry else {
+            return XCTFail("pending save should succeed after storage recovers")
+        }
+        XCTAssertEqual(store.pendingSaveCount, 0)
+        XCTAssertEqual(store.load(id: record.id)?.messages.first?.content, "do not lose this")
+    }
 }
 
 @MainActor
@@ -106,6 +148,8 @@ final class SettingsStoreTests: XCTestCase {
         let store = SettingsStore(defaults: defaults)
 
         XCTAssertEqual(store.appearance, .dark)
+        XCTAssertFalse(store.computerControlEnabled)
+        XCTAssertFalse(store.intelligenceInspectorEnabled)
     }
 
     func testLegacyBeetAppearanceMigratesToDarkOnce() {

@@ -120,6 +120,7 @@ private struct BrowserWebViewHost: NSViewRepresentable {
         let container = context.coordinator.container
         let webView = BrowserController.shared.webView
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         if webView.superview !== container {
             webView.removeFromSuperview()
             webView.frame = container.bounds
@@ -143,7 +144,7 @@ private struct BrowserWebViewHost: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let container = NSView()
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -170,7 +171,7 @@ private struct BrowserWebViewHost: NSViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
         ) {
             guard let url = navigationAction.request.url else {
                 decisionHandler(.cancel)

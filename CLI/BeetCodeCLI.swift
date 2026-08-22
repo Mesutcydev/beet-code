@@ -211,14 +211,22 @@ struct CLI {
     }
 
     static func status() {
+        let device = DeviceProfile.current()
         let budget = MemoryAdvisor.budget(diskBytes: 0)
+        print("this Mac:      \(device.summary)")
+        if let pick = CatalogLibrary.recommendedChat(from: ModelCatalog.bundled, device: device) {
+            print("daily pick:    \(pick.displayName) (\(pick.id))")
+        }
         print("physical:      \(ByteFormatter.bytes(budget.physicalTotal))")
         print("usable budget: \(ByteFormatter.bytes(budget.usableBudget)) (30% OS reserve)")
         print("footprint:     \(ByteFormatter.bytes(budget.currentFootprint))")
         print("thermal:       \(ProcessInfo.processInfo.thermalState.description)")
-        for model in ModelCatalog.all {
-            let verdict = MemoryAdvisor.budget(diskBytes: model.diskBytes).verdict
-            print("\(model.id): \(verdict.label) — \(model.subtitle)")
+        for section in CatalogLibrary.sections(from: ModelCatalog.all, device: device) {
+            print("— \(section.title)")
+            for model in section.models {
+                let verdict = MemoryAdvisor.budget(diskBytes: model.diskBytes).verdict
+                print("  \(model.id): \(verdict.label) — \(model.subtitle)")
+            }
         }
     }
 

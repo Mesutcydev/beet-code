@@ -104,7 +104,7 @@ struct SimBuildRunTool: AgentTool {
 
     // MARK: Helpers
 
-    private static func detectProject(in dir: URL) throws -> URL {
+    static func detectProject(in dir: URL) throws -> URL {
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         if let xcodeproj = contents.first(where: { $0.hasSuffix(".xcodeproj") }) {
             return dir.appendingPathComponent(xcodeproj)
@@ -115,14 +115,14 @@ struct SimBuildRunTool: AgentTool {
         throw ToolError.missingArgument("project — no .xcodeproj or Package.swift found in \(dir.path)")
     }
 
-    private static func detectScheme(_ projectFile: URL, in dir: URL) -> String {
+    static func detectScheme(_ projectFile: URL, in dir: URL) -> String {
         if projectFile.pathExtension == "xcodeproj" {
             return projectFile.deletingPathExtension().lastPathComponent
         }
         return ""
     }
 
-    private static func buildArguments(projectFile: URL, scheme: String, derivedData: URL) -> [String] {
+    static func buildArguments(projectFile: URL, scheme: String, derivedData: URL) -> [String] {
         if projectFile.pathExtension == "xcodeproj" {
             return [
                 "-project", projectFile.path,
@@ -138,7 +138,7 @@ struct SimBuildRunTool: AgentTool {
         return ["build", "-c", "debug"]
     }
 
-    private static func findBuiltApp(in derivedData: URL) -> URL? {
+    static func findBuiltApp(in derivedData: URL) -> URL? {
         let products = derivedData.appendingPathComponent("Build/Products", isDirectory: true)
         guard let enumerator = FileManager.default.enumerator(
             at: products, includingPropertiesForKeys: nil)
@@ -151,7 +151,7 @@ struct SimBuildRunTool: AgentTool {
 
     /// Picks the preferred UDID, else a booted iPhone, else boots the first
     /// iPhone device. All via the off-main, time-bounded SimctlRunner.
-    private static func resolveSimulator(preferred: String?) async throws -> String {
+    static func resolveSimulator(preferred: String?) async throws -> String {
         if let preferred, !preferred.isEmpty { return preferred }
         let list = await SimctlRunner.run(["list", "devices", "-j"])
         guard let data = list.data(using: .utf8),

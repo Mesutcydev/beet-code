@@ -47,14 +47,31 @@
 > deterministic suite now executes 710 tests with 1 intentional skip and no
 > failures.
 >
+> **Addendum (2026-08-21, runtime capability map):** every agent prompt now
+> places a compact, task-oriented capability map before the large tool-schema
+> catalog. The map is generated from the exact per-session registry, includes
+> connected MCP tools, remains present in memory-safe local mode, and never
+> names unavailable sibling tools. Project instructions, policy, memory, and
+> edit rules also precede bulky schemas so prompt fitting cannot silently
+> discard them first. The full deterministic suite now executes 714 tests
+> with 1 intentional skip and no failures.
+>
+> **Addendum (2026-08-22, v0.9.5 release readiness):** encrypted session
+> save failures are now surfaced and retained for retry; computer control is
+> opt-in; Model Manager recommends chat and vision models for the Mac's chip
+> and unified-memory tier; chat, sidebar, and settings code is split into
+> focused components; and the app has launch-level accessibility smoke
+> coverage. The verified suite executes 735 unit tests with 2 intentional
+> opt-in skips plus 3 UI tests, with no failures.
+>
 |> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
 |> (README v0.6) and the simulator tools were registered but the system prompt
 |> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now
-|> derives a "Built-in browser & simulator" section from the registered tool
-|> list: browser tools teach the navigate → read/click/type → screenshot →
-|> `describe_image` visual-verify loop; sim tools teach `sim_build_run` as the
-|> one-shot build → install → launch → screenshot → describe loop plus the
-|> granular `sim_*` controls. Covered by `Tests/PromptCapabilityGuidanceTests.swift`.
+|> derives its runtime map from the registered tool list: browser tools teach
+|> an observe/action/verification loop; simulator tools teach `sim_build_run`
+|> as the one-shot build → install → launch → screenshot → describe loop plus
+|> the granular `sim_*` controls. Covered by
+|> `Tests/PromptCapabilityGuidanceTests.swift`.
 |>
 |> **Addendum (2026-08-19, remaining-audit pass):** `glob` is an alias of
 |> `find_files`; `web_fetch` is an approval-gated bounded HTTP GET; session
@@ -88,7 +105,7 @@ xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -destination 'platform=macOS' -derivedDataPath .derived test
 ```
 
-Current suite: **710 tests executed, 1 skipped, 0 failures**.
+Current suite: **735 unit tests executed, 2 intentionally skipped, plus 3 UI tests; 0 failures**.
 Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 
 ## 3. Directory map
@@ -111,7 +128,7 @@ Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 | Core/Agent/ToolParser.swift | Model text → ParsedToolCall (fenced/Qwen/OpenAI/bare JSON) |
 | Core/Agent/ToolExecutor.swift | Runs tools; typed outcomes; duplicate-registration guard |
 | Core/Agent/PermissionGate.swift | Auto/needsApproval decisions (reads auto; writes/commands ask) |
-| Core/Agent/PromptBuilder.swift | System prompt; repo index + memory + plan-mode sections; capabilityGuidance (browser/sim verify loops, derived from registered tools); think-block strip/extract |
+| Core/Agent/PromptBuilder.swift | System prompt; exact runtime capability map before schemas; repo index + memory + plan-mode sections; think-block strip/extract |
 | Core/Agent/ContextCompactor.swift | CompressionLevel (light/standard/aggressive) + token-aware compaction |
 | Core/Agent/GitCheckpointer.swift | Snapshot/restore with temp index, GC refs, index preservation, foreign-tree rejection |
 | Core/Agent/AgentMemory.swift / MemoryTools.swift | Per-workspace facts + summaries; memory_add/memory_delete |

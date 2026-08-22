@@ -61,7 +61,7 @@ final class BrowserController: ObservableObject {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         let view = WKWebView(frame: .zero, configuration: config)
-        view.customUserAgent = "BeetCode/0.8 (agent-controlled browser)"
+        view.customUserAgent = AppIdentity.browserUserAgent
         storedWebView = view
         return view
     }

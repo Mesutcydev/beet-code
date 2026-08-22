@@ -350,7 +350,8 @@ final class GGUFPlannerTests: XCTestCase {
         }
         // Default format is MLX for the historical chat entries (vision
         // sidecars are MLX too but counted by role, not format).
-        XCTAssertEqual(ModelCatalog.bundled.filter { $0.format == .mlx && $0.role == .chat }.count, 10)
+        XCTAssertGreaterThanOrEqual(
+            ModelCatalog.bundled.filter { $0.format == .mlx && $0.role == .chat }.count, 20)
     }
 }
 

@@ -310,7 +310,7 @@ Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
 - Computer control is now explicitly opt-in, and the workspace intelligence inspector can be hidden without disabling the agent's index.
 - Model Manager detects the Mac's Apple-silicon generation and unified-memory tier, recommends a daily chat and vision model, and groups MLX and GGUF options by fit.
 - Chat, sidebar, and settings screens are split into focused native components, with localized strings and stricter Swift concurrency checks.
-- Three launch-level UI smoke tests now cover the composer and history navigation alongside the 735-test deterministic unit suite.
+- Three launch-level UI smoke tests now cover the composer and history navigation alongside the 738-test deterministic unit suite.
 
 ## v0.9.4 — Native setup, delivery, and chat polish
 
@@ -473,25 +473,22 @@ The parser is engine-independent and accepts fenced tool JSON, Qwen `<tool_call>
 
 ## Models
 
-The bundled catalog is ranked against this Mac's chip and unified memory
-(`DeviceProfile` + `CatalogLibrary`). The Model Manager leads with a daily
-pick, then groups everything else as fits / tight / needs more memory.
+The bundled catalog is **per device**, not one global list. `DeviceProfile`
+reads chip generation, Pro/Max/Ultra, unified memory, and Mac Studio
+`hw.model` IDs. `CatalogLibrary` then shows only the matching lane:
 
-Daily-driver line (MLX 4-bit):
+- **8 GB** (M3/M4 Air) — Qwen3 1.7B, Nanbeige 4.1 3B, Nemotron 3 Nano 4B, Phi-4 mini, Llama 3.2 1B, Gemma 3 1B
+- **16 GB M3/M4** — adds Qwen3.5 9B, Ornith 1.5 9B, Llama 3.1 8B, DeepSeek R1 8B (no 14B Pro models)
+- **M5 Air 16 GB** — 16 GB set plus 24 GB Pro models; daily pick is Qwen2.5 Coder 14B
+- **M5 Air 24 GB / M5 Pro 24 GB** — adds 32 GB class (Qwen3.5 27B, Nemotron Lightning); daily pick is 27B
+- **M5 Air 32 GB / M5 Pro 36 GB** — adds Max-class 35B (Ornith 1.5 35B, Qwen3.5 35B)
+- **M5 Max 64 GB+** — Studio flagships (Llama 70B, Nemotron Super 120B, Qwen3.5 122B)
+- **24 GB Pro (M3/M4)** — Qwen2.5 Coder 14B, Phi-4, DeepSeek R1 14B, Ornith 9B
+- **32–36 GB Pro (M3/M4)** — Qwen3.5 27B/35B, Ornith 1.5 35B, Nemotron Lightning 30B, Devstral, Mistral Small
+- **Max (M3/M4)** — 35B/27B class plus Gemma 3 27B and Ornith 1.0 35B
+- **Studio / Ultra (64–96 GB+)** — Qwen3.5 122B, Nemotron Super 120B, Llama 3.3 70B, Ornith 1.0 35B (no 1.7B toys)
 
-- `qwen3-1.7b-4bit` — 8 GB starter
-- `qwen3.5-4b-4bit` — 8–16 GB (M1 16 GB daily pick)
-- `qwen3.5-9b-4bit` — 16 GB on M2 and later
-- `qwen2.5-coder-14b` (`qwen3-coder-14b-4bit`) — 24 GB Pro
-- `qwen3.5-27b-4bit` / `qwen3-coder-30b-a3b-4bit` — 32 GB
-- `qwen3.5-35b-a3b-4bit` — 36 GB+ Pro/Max
-
-Previous-generation Qwen3 4B/8B and Qwen2.5 Coder 7B stay in the catalog
-for already-downloaded weights. GGUF twins (`qwen3.5-4b-gguf-q4`,
-`qwen3.5-9b-gguf-q4`, plus the older Qwen3/Qwen2.5 GGUF entries) run
-through the embedded llama.cpp engine (`brew install llama.cpp`).
-`smolvlm2-500m-mlx` (8–16 GB) and `smolvlm2-2.2b-mlx` (24 GB+) are local
-vision sidecars for `describe_image`.
+Families: Qwen, Ornith, Nanbeige, NVIDIA Nemotron, Llama, Gemma 3, Phi, DeepSeek, Mistral/Devstral. GGUF twins still run through llama.cpp (`brew install llama.cpp`). Vision sidecars: SmolVLM2 500M on 8–16 GB, 2.2B on 24 GB+.
 
 Catalog entries are ordinary Swift values; adding a user model later does not require changing the engine.
 

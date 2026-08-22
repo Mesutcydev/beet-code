@@ -118,19 +118,32 @@ struct DeviceProfile: Equatable, Sendable, Hashable {
         }
     }
 
+    var isM5Series: Bool { generationNumber >= 5 }
+
     var catalogCaption: String {
-        if generationNumber >= 5, lane == .air16 {
-            return "M5 · 16 GB catalog (includes 24 GB Pro picks)"
+        if isM5Series {
+            let sku = "\(memoryGB) GB"
+            switch variant {
+            case .base: return "M5 Air · \(sku) catalog"
+            case .pro: return "M5 Pro · \(sku) catalog"
+            case .max: return "M5 Max · \(sku) catalog"
+            case .ultra: return "M5 Ultra · \(sku) catalog"
+            }
         }
         if productFamily == .studio { return DeviceLane.studio.catalogTitle }
         return lane.catalogTitle
     }
 
     /// RAM the catalog should treat as the comfortable daily-driver budget.
-    /// M1 base 16 GB is scored as 12 GB (bandwidth). M5 keeps its full RAM.
+    /// M1 base 16 GB is scored as 12 GB (bandwidth). M5 is the opposite:
+    /// higher bandwidth than M3/M4, so the daily pick is one RAM SKU larger
+    /// (16 GB M5 → 14B, 24 GB M5 → 27B).
     var recommendBudgetGB: Int {
         if variant == .base && generationNumber <= 1 && memoryGB >= 16 {
             return 12
+        }
+        if isM5Series {
+            return min(memoryGB + 8, 256)
         }
         return memoryGB
     }
@@ -147,16 +160,18 @@ struct DeviceProfile: Equatable, Sendable, Hashable {
 
     /// Lanes whose models appear in this Mac's list.
     ///
-    /// M5 16 GB also sees the 24 GB Pro set (higher bandwidth). M3 16 GB
-    /// does not. Studio also sees Max step-downs. Pro/Max see one class
-    /// smaller so a 36 GB Pro still has the 24 GB daily drivers.
+    /// Every machine sees its own lane plus one step down. M5 also sees
+    /// one step *up* because the 2026 Air/Pro/Max parts have more memory
+    /// bandwidth than M3/M4 at the same RAM:
+    /// 16 GB M5 Air → 24 GB Pro models; 24 GB M5 → 32 GB class;
+    /// 32–36 GB M5 → Max class; 64 GB+ M5 Max → Studio flagship.
     var visibleLanes: Set<DeviceLane> {
         var set: Set<DeviceLane> = [lane]
         switch lane {
         case .air8:
             break
         case .air16:
-            if generationNumber >= 5 { set.insert(.pro24) }
+            break
         case .pro24:
             set.insert(.air16)
         case .pro36:
@@ -165,6 +180,22 @@ struct DeviceProfile: Equatable, Sendable, Hashable {
             set.insert(.pro36)
         case .studio:
             set.insert(.max)
+        }
+        if isM5Series {
+            switch lane {
+            case .air8:
+                set.insert(.air16)
+            case .air16:
+                set.insert(.pro24)
+            case .pro24:
+                set.insert(.pro36)
+            case .pro36:
+                set.insert(.max)
+            case .max where memoryGB >= 64:
+                set.insert(.studio)
+            default:
+                break
+            }
         }
         return set
     }

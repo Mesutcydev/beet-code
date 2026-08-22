@@ -61,7 +61,7 @@
 > opt-in; Model Manager recommends chat and vision models for the Mac's chip
 > and unified-memory tier; chat, sidebar, and settings code is split into
 > focused components; and the app has launch-level accessibility smoke
-> coverage. The verified suite executes 735 unit tests with 2 intentional
+> coverage. The verified suite executes 738 unit tests with 2 intentional
 > opt-in skips plus 3 UI tests, with no failures.
 >
 |> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
@@ -105,7 +105,7 @@ xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -destination 'platform=macOS' -derivedDataPath .derived test
 ```
 
-Current suite: **735 unit tests executed, 2 intentionally skipped, plus 3 UI tests; 0 failures**.
+Current suite: **738 unit tests executed, 2 intentionally skipped, plus 3 UI tests; 0 failures**.
 Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 
 ## 3. Directory map

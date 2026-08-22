@@ -106,17 +106,104 @@ final class DeviceProfileTests: XCTestCase {
             "smolvlm2-2.2b-mlx")
     }
 
-    func testSectionsLeadWithRecommendedAndKeepEveryModel() {
-        let device = DeviceProfile.parse(brand: "Apple M4", memoryBytes: 16 * gb1024)
-        let sections = CatalogLibrary.sections(from: ModelCatalog.bundled, device: device)
-        XCTAssertEqual(sections.first?.id, .recommended)
-        XCTAssertTrue(sections.contains { $0.id == .oversized })
-        let listed = Set(sections.flatMap(\.models).map(\.id))
-        XCTAssertEqual(listed, Set(ModelCatalog.bundled.map(\.id)))
-        XCTAssertTrue(CatalogLibrary.recommendedIDs(from: ModelCatalog.bundled, device: device)
-            .contains("qwen3.5-9b-4bit"))
-        XCTAssertTrue(CatalogLibrary.recommendedIDs(from: ModelCatalog.bundled, device: device)
-            .contains("qwen3.5-9b-gguf-q4"))
+    func testCatalogsDifferByChipAndRAM() {
+        let catalog = ModelCatalog.bundled
+        func ids(_ brand: String, gb: UInt64, model: String = "") -> Set<String> {
+            let device = DeviceProfile.parse(
+                brand: brand, memoryBytes: gb * gb1024, modelIdentifier: model)
+            return Set(CatalogLibrary.offered(from: catalog, device: device).map(\.id))
+        }
+
+        let m3air8 = ids("Apple M3", gb: 8)
+        let m3air16 = ids("Apple M3", gb: 16)
+        let m5air16 = ids("Apple M5", gb: 16)
+        let m3pro36 = ids("Apple M3 Pro", gb: 36)
+        let studio96 = ids("Apple M3 Ultra", gb: 96, model: "Mac14,14")
+
+        XCTAssertNotEqual(m3air8, m3air16, "M3 8 GB and M3 16 GB must not share a list")
+        XCTAssertNotEqual(m3air16, m5air16, "M5 16 GB sees 24 GB Pro picks that M3 16 GB does not")
+        XCTAssertNotEqual(m3pro36, studio96, "Studio Ultra is not a 36 GB Pro list")
+
+        XCTAssertTrue(m3air8.contains("nanbeige-4.1-3b-4bit"))
+        XCTAssertTrue(m3air8.contains("nemotron-3-nano-4b-4bit"))
+        XCTAssertFalse(m3air8.contains("ornith-1.5-9b-4bit"))
+        XCTAssertFalse(m3air8.contains("llama-3.3-70b-4bit"))
+
+        XCTAssertTrue(m3air16.contains("ornith-1.5-9b-4bit"))
+        XCTAssertFalse(m3air16.contains("qwen3-coder-14b-4bit"))
+        XCTAssertTrue(m5air16.contains("qwen3-coder-14b-4bit"))
+
+        XCTAssertTrue(studio96.contains("ornith-1.0-35b-4bit"))
+        XCTAssertTrue(studio96.contains("nemotron-3-super-120b-4bit"))
+        XCTAssertTrue(studio96.contains("llama-3.3-70b-4bit"))
+        XCTAssertFalse(studio96.contains("qwen3-1.7b-4bit"))
+        XCTAssertFalse(studio96.contains("nanbeige-4.1-3b-4bit"))
+    }
+
+    func testBundledIncludesRequestedFamilies() {
+        let families = Set(ModelCatalog.bundled.map(\.family))
+        for family in ["Ornith", "Nanbeige", "NVIDIA Nemotron", "Llama", "Gemma 3", "Phi", "DeepSeek", "Mistral", "Qwen3.5"] {
+            XCTAssertTrue(families.contains(family), "missing family \(family)")
+        }
+    }
+
+    func testStudioIdentifierAndLane() {
+        let studio = DeviceProfile.parse(
+            brand: "Apple M2 Max", memoryBytes: 64 * gb1024, modelIdentifier: "Mac14,13")
+        XCTAssertEqual(studio.productFamily, .studio)
+        XCTAssertEqual(studio.lane, .studio)
+        XCTAssertTrue(studio.summary.contains("Mac Studio"))
+
+        let m3air = DeviceProfile.parse(brand: "Apple M3", memoryBytes: 16 * gb1024)
+        XCTAssertEqual(m3air.lane, .air16)
+        XCTAssertEqual(m3air.productFamily, .laptop)
+        XCTAssertFalse(m3air.visibleLanes.contains(.pro24))
+
+        let m5air = DeviceProfile.parse(brand: "Apple M5", memoryBytes: 16 * gb1024)
+        XCTAssertTrue(m5air.visibleLanes.contains(.pro24))
+    }
+
+    func testM5SeriesCatalogsBySKU() {
+        let catalog = ModelCatalog.bundled
+        func profile(_ brand: String, gb: UInt64) -> DeviceProfile {
+            DeviceProfile.parse(brand: brand, memoryBytes: gb * gb1024)
+        }
+        func ids(_ device: DeviceProfile) -> Set<String> {
+            Set(CatalogLibrary.offered(from: catalog, device: device).map(\.id))
+        }
+
+        let air16 = profile("Apple M5", gb: 16)
+        let air24 = profile("Apple M5", gb: 24)
+        let air32 = profile("Apple M5", gb: 32)
+        let pro24 = profile("Apple M5 Pro", gb: 24)
+        let max64 = profile("Apple M5 Max", gb: 64)
+        let m4air16 = profile("Apple M4", gb: 16)
+        let m3pro24 = profile("Apple M3 Pro", gb: 24)
+
+        XCTAssertEqual(air16.catalogCaption, "M5 Air · 16 GB catalog")
+        XCTAssertEqual(air24.catalogCaption, "M5 Air · 24 GB catalog")
+        XCTAssertEqual(air32.catalogCaption, "M5 Air · 32 GB catalog")
+        XCTAssertEqual(pro24.catalogCaption, "M5 Pro · 24 GB catalog")
+        XCTAssertEqual(max64.catalogCaption, "M5 Max · 64 GB catalog")
+        XCTAssertEqual(air16.recommendBudgetGB, 24)
+        XCTAssertEqual(air24.recommendBudgetGB, 32)
+
+        XCTAssertTrue(ids(air16).contains("qwen3-coder-14b-4bit"))
+        XCTAssertFalse(ids(m4air16).contains("qwen3-coder-14b-4bit"))
+        XCTAssertEqual(
+            CatalogLibrary.recommendedChat(from: catalog, device: air16)?.id,
+            "qwen3-coder-14b-4bit")
+
+        XCTAssertTrue(ids(air24).contains("qwen3.5-27b-4bit"))
+        XCTAssertFalse(ids(m3pro24).contains("qwen3.5-27b-4bit"))
+        XCTAssertEqual(
+            CatalogLibrary.recommendedChat(from: catalog, device: air24)?.id,
+            "qwen3.5-27b-4bit")
+
+        XCTAssertTrue(ids(air32).contains("qwen3.5-35b-a3b-4bit"))
+        XCTAssertTrue(ids(pro24).contains("qwen3.5-27b-4bit"))
+        XCTAssertTrue(ids(max64).contains("llama-3.3-70b-4bit"))
+        XCTAssertTrue(ids(max64).contains("nemotron-3-super-120b-4bit"))
     }
 
     func testBundledCatalogIsWellFormedForDeviceTiers() {

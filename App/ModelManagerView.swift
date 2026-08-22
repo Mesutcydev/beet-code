@@ -143,7 +143,8 @@ struct ModelManagerView: View {
                 kind: CatalogModel.Kind.inferred(
                     family: sniffed?.architecture?.capitalized ?? "GGUF",
                     role: .chat,
-                    id: stem))
+                    id: stem),
+                lanes: [])
         }
 
         // Folder import: MLX (config.json + .safetensors) or GGUF (a .gguf
@@ -224,7 +225,8 @@ struct ModelManagerView: View {
             format: format,
             kind: mlxMetadata?.isVisionLanguage == true
                 ? .vision
-                : CatalogModel.Kind.inferred(family: family, role: .chat, id: dirName))
+                : CatalogModel.Kind.inferred(family: family, role: .chat, id: dirName),
+            lanes: [])
     }
 
     /// "qwen3-4b-4bit" → "Qwen3 4b 4bit".
@@ -303,12 +305,16 @@ private struct ManagerHeaderView: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Theme.textSecondary)
                     Spacer()
-                    if let recommendedName {
-                        Text("Daily pick: \(recommendedName)")
-                            .font(.caption)
-                            .foregroundStyle(Theme.textTertiary)
-                            .lineLimit(1)
-                    }
+                    Text(device.catalogCaption)
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
+                }
+                if let recommendedName {
+                    Text("Daily pick: \(recommendedName)")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(1)
                 }
                 HStack {
                     Label("RAM budget", systemImage: "memorychip")
@@ -342,12 +348,14 @@ private struct ManagerHeaderView: View {
 // MARK: - Local models
 
 private struct LocalModelsSection: View {
+    @EnvironmentObject private var appState: AppState
     private let device = DeviceProfile.current()
 
     var body: some View {
+        let keepIDs = Set(appState.modelStore.installed.map(\.id))
         let recommended = CatalogLibrary.recommendedIDs(device: device)
         VStack(alignment: .leading, spacing: Spacing.lg) {
-            ForEach(CatalogLibrary.sections(device: device)) { section in
+            ForEach(CatalogLibrary.sections(device: device, keepIDs: keepIDs)) { section in
                 VStack(alignment: .leading, spacing: Spacing.sm) {
                     SectionHeader(title: section.title, systemImage: section.systemImage)
                     ForEach(section.models) { model in

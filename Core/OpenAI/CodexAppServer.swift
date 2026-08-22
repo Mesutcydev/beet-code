@@ -437,14 +437,18 @@ actor CodexAppServerClient {
         _ = try await request("account/logout")
     }
 
-    func startThread(modelID: String, workspace: URL) async throws -> String {
+    func startThread(
+        modelID: String,
+        workspace: URL,
+        chatOnly: Bool = false
+    ) async throws -> String {
         let response = try await request(
             "thread/start",
             params: .object([
                 "model": .string(modelID),
                 "cwd": .string(workspace.path),
-                "approvalPolicy": .string("on-request"),
-                "sandbox": .string("workspace-write"),
+                "approvalPolicy": .string(chatOnly ? "never" : "on-request"),
+                "sandbox": .string(chatOnly ? "read-only" : "workspace-write"),
                 "serviceName": .string("beetcode")
             ]))
         guard let thread = response.objectValue?["thread"]?.objectValue,
@@ -453,15 +457,20 @@ actor CodexAppServerClient {
         return id
     }
 
-    func resumeThread(threadID: String, modelID: String, workspace: URL) async throws -> String {
+    func resumeThread(
+        threadID: String,
+        modelID: String,
+        workspace: URL,
+        chatOnly: Bool = false
+    ) async throws -> String {
         let response = try await request(
             "thread/resume",
             params: .object([
                 "threadId": .string(threadID),
                 "model": .string(modelID),
                 "cwd": .string(workspace.path),
-                "approvalPolicy": .string("on-request"),
-                "sandbox": .string("workspace-write"),
+                "approvalPolicy": .string(chatOnly ? "never" : "on-request"),
+                "sandbox": .string(chatOnly ? "read-only" : "workspace-write"),
                 "serviceName": .string("beetcode")
             ]))
         guard let thread = response.objectValue?[
@@ -471,7 +480,13 @@ actor CodexAppServerClient {
         return id
     }
 
-    func startTurn(threadID: String, modelID: String, workspace: URL, text: String) async throws -> String {
+    func startTurn(
+        threadID: String,
+        modelID: String,
+        workspace: URL,
+        text: String,
+        chatOnly: Bool = false
+    ) async throws -> String {
         let response = try await request(
             "turn/start",
             params: .object([
@@ -484,11 +499,11 @@ actor CodexAppServerClient {
                 ]),
                 "cwd": .string(workspace.path),
                 "model": .string(modelID),
-                "approvalPolicy": .string("on-request"),
+                "approvalPolicy": .string(chatOnly ? "never" : "on-request"),
                 "sandboxPolicy": .object([
-                    "type": .string("workspaceWrite"),
-                    "writableRoots": .array([.string(workspace.path)]),
-                    "networkAccess": .bool(true)
+                    "type": .string(chatOnly ? "readOnly" : "workspaceWrite"),
+                    "writableRoots": chatOnly ? .array([]) : .array([.string(workspace.path)]),
+                    "networkAccess": .bool(!chatOnly)
                 ]),
                 "summary": .string("concise")
             ]))

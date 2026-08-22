@@ -55,6 +55,10 @@ actor AgentLoop {
         /// Omits large workspace/tool-context sections for local models that
         /// are running close to the Mac's memory ceiling.
         var leanPrompt: Bool = false
+        /// Runs a normal conversation without treating the runtime directory
+        /// as a user project. No tools, hooks, project context, memory,
+        /// checkpoints, or subagents enter a chat-only loop.
+        var chatOnly: Bool = false
     }
 
     // Dependencies
@@ -111,11 +115,15 @@ actor AgentLoop {
         self.workspace = workspace
         self.memory = memory
         self.taskHint = taskHint
-        self.hooks = hooks ?? HookRunner.load(
-            workspaceRoot: workspace.root,
-            includeWorkspace: WorkspaceTrust.isTrusted(workspace.root))
-        let projectPolicy = ProjectPolicy.load(workspaceRoot: workspace.root)
         var effectiveConfiguration = configuration
+        self.hooks = hooks ?? (configuration.chatOnly
+            ? HookRunner.disabled(workspaceRoot: workspace.root)
+            : HookRunner.load(
+                workspaceRoot: workspace.root,
+                includeWorkspace: WorkspaceTrust.isTrusted(workspace.root)))
+        let projectPolicy = configuration.chatOnly
+            ? nil
+            : ProjectPolicy.load(workspaceRoot: workspace.root)
         // Repo policy may only tighten safety. It must not turn off plan,
         // goal, or verification that the user enabled in Settings.
         if projectPolicy?.plan == true { effectiveConfiguration.planMode = true }
@@ -125,11 +133,13 @@ actor AgentLoop {
         }
         // Control tools are part of the prompt and the executor's registry,
         // but the loop intercepts them before execution ever happens.
-        var availableTools = tools
+        var availableTools = effectiveConfiguration.chatOnly ? [] : tools
         if let projectPolicy, projectPolicy.hasToolFilter {
             availableTools = availableTools.filter { projectPolicy.includesTool($0.name) }
         }
-        var allTools = availableTools + [ControlTools.askUser, ControlTools.attemptCompletion]
+        var allTools = effectiveConfiguration.chatOnly
+            ? []
+            : availableTools + [ControlTools.askUser, ControlTools.attemptCompletion]
         if effectiveConfiguration.allowSubagents,
            projectPolicy?.includesTool(ControlTools.task.name) ?? true {
             allTools.append(ControlTools.task)
@@ -152,11 +162,15 @@ actor AgentLoop {
         self.checkpointer = GitCheckpointer(workspace: workspace)
         self.configuration = effectiveConfiguration
         self.commandPolicy = commandPolicy
-        let memorySection = memory?.contextSection(
+        let memorySection = effectiveConfiguration.chatOnly ? nil : memory?.contextSection(
             mode: effectiveConfiguration.memoryMode,
             taskHint: taskHint)
-        let projectInstructions = ProjectInstructions.section(workspaceRoot: workspace.root)
-        let historySection = WorkspaceHistory.section(workspacePath: workspace.root.path)
+        let projectInstructions = effectiveConfiguration.chatOnly
+            ? nil
+            : ProjectInstructions.section(workspaceRoot: workspace.root)
+        let historySection = effectiveConfiguration.chatOnly
+            ? nil
+            : WorkspaceHistory.section(workspacePath: workspace.root.path)
         self.systemPrompt = PromptBuilder.systemPrompt(
             tools: allTools,
             workspace: workspace,
@@ -171,7 +185,8 @@ actor AgentLoop {
             outputStyle: effectiveConfiguration.outputStyle,
             contextWindowTokens: effectiveConfiguration.contextWindowTokens,
             responseReserveTokens: effectiveConfiguration.maxTokensPerTurn,
-            leanPrompt: effectiveConfiguration.leanPrompt)
+            leanPrompt: effectiveConfiguration.leanPrompt,
+            chatOnly: effectiveConfiguration.chatOnly)
         (engine as? any NativeToolConfigurable)?.configureNativeTools(
             allTools.map { NativeToolSpec(tool: $0) })
         if let seed = seedRecord {
@@ -195,7 +210,7 @@ actor AgentLoop {
                 title: "Session",
                 createdAt: Date(),
                 updatedAt: Date(),
-                workspacePath: workspace.root.path,
+                workspacePath: effectiveConfiguration.chatOnly ? "" : workspace.root.path,
                 modelID: modelID,
                 messages: [],
                 checkpoints: [])
@@ -1031,6 +1046,7 @@ actor AgentLoop {
     /// files, diagnostics, checks, objective) and persists it OUTSIDE the
     /// caches tree. Nothing here is disposable.
     private func saveTaskCapsule() {
+        guard !configuration.chatOnly else { return }
         var changed: [String] = []
         var diagnostics: [String] = []
         var checks: [String] = []

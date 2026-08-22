@@ -111,7 +111,7 @@ struct WelcomeReadinessView: View {
                 Text(isOnboarding ? "Welcome to Beet Code" : "System Readiness")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
-                Text("Open a project, pick a coding model, then describe the task. Signing can wait.")
+                Text("Pick a model to chat. Open a project only when you want coding tools.")
                     .font(.callout)
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -127,12 +127,13 @@ struct WelcomeReadinessView: View {
 
     private var essentialCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            sectionTitle("Start coding", subtitle: "Project folder, then a model. Everything else is optional.")
+            sectionTitle("Start chatting", subtitle: "A model is required. A project folder is optional.")
             readinessRow(
                 title: "Project workspace",
-                detail: workspaceReady ? appState.sessions.workspaceURL?.path ?? "Ready" : "Choose the folder the agent may work inside.",
+                detail: workspaceReady ? appState.sessions.workspaceURL?.path ?? "Ready" : "Optional — chat without files, commands, or coding tools.",
                 systemImage: "folder.fill",
                 ready: workspaceReady,
+                optional: true,
                 actionTitle: workspaceReady ? nil : "Choose Folder",
                 action: onOpenWorkspace)
             Divider().padding(.leading, 46)
@@ -256,7 +257,7 @@ struct WelcomeReadinessView: View {
                 .buttonStyle(LFCapsuleButtonStyle())
             }
             Spacer()
-            Button(workspaceReady && agentReady ? "Start Coding" : "Done") {
+            Button(agentReady ? (workspaceReady ? "Start Coding" : "Start Chatting") : "Done") {
                 onComplete()
                 dismiss()
             }

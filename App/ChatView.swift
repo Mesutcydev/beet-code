@@ -233,16 +233,18 @@ struct ChatView: View {
 
             if controller.workspaceURL == nil {
                 HStack(spacing: 10) {
+                    if !hasRunnableModel {
+                        Button {
+                            NotificationCenter.default.post(name: .openModelManager, object: nil)
+                        } label: {
+                            Label("Choose a Model", systemImage: "cpu")
+                        }
+                        .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+                    }
                     Button {
                         NotificationCenter.default.post(name: .openWorkspace, object: nil)
                     } label: {
                         Label("Open Project Folder", systemImage: "folder.badge.plus")
-                    }
-                    .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
-                    Button {
-                        NotificationCenter.default.post(name: .openSystemReadiness, object: nil)
-                    } label: {
-                        Label("Check Readiness", systemImage: "checklist")
                     }
                     .buttonStyle(LFCapsuleButtonStyle())
                 }
@@ -293,6 +295,26 @@ struct ChatView: View {
     }
 
     private var suggestions: [[Suggestion]] {
+        if controller.workspaceURL == nil {
+            return [
+                [
+                    Suggestion(label: "Explain a concept",
+                               prompt: "Explain a concept to me clearly, with a short example.",
+                               glyph: "lightbulb"),
+                    Suggestion(label: "Brainstorm ideas",
+                               prompt: "Help me brainstorm ideas. Start by asking what outcome I want.",
+                               glyph: "sparkles"),
+                ],
+                [
+                    Suggestion(label: "Improve my writing",
+                               prompt: "Help me improve a piece of writing while keeping my voice.",
+                               glyph: "text.badge.checkmark"),
+                    Suggestion(label: "Ask anything",
+                               prompt: "I have a question I would like to think through with you.",
+                               glyph: "bubble.left.and.questionmark.bubble.right"),
+                ],
+            ]
+        }
         if looksLikeAppleProject {
             return [
                 [
@@ -352,7 +374,7 @@ struct ChatView: View {
     }
 
     private var canSuggestPrompts: Bool {
-        guard controller.workspaceURL != nil, hasRunnableModel else { return false }
+        guard hasRunnableModel else { return false }
         switch appState.enginePhase {
         case .ready, .idle: return true
         case .loading, .failed: return false
@@ -360,17 +382,14 @@ struct ChatView: View {
     }
 
     private var emptyHeadline: LocalizedStringKey {
-        if controller.workspaceURL == nil { return "Choose a workspace" }
         if case .failed = appState.enginePhase { return "Model failed to load" }
         if case .loading = appState.enginePhase { return "Loading model…" }
-        if !hasRunnableModel { return "Choose a coding model" }
+        if !hasRunnableModel { return "Choose a model" }
+        if controller.workspaceURL == nil { return "Chat without a project" }
         return "Describe a task"
     }
 
     private var emptyBody: LocalizedStringKey {
-        if controller.workspaceURL == nil {
-            return "Open a project folder from the sidebar. Tools stay confined to that folder."
-        }
         if case .failed = appState.enginePhase {
             return "Check the model file or pick another engine in the composer, then try again."
         }
@@ -378,7 +397,10 @@ struct ChatView: View {
             return "The composer unlocks when the engine is ready."
         }
         if !hasRunnableModel {
-            return "Pick an API key, Codex, or a downloaded local model. Small local models are for light tasks; use a frontier provider for real coding."
+            return "Pick an API key, Codex, or a downloaded local model to begin chatting."
+        }
+        if controller.workspaceURL == nil {
+            return "Ask anything. Project files, commands, builds, and coding tools stay off until you open a folder."
         }
         return "Reads run automatically; every edit and command shows up here for approval."
     }

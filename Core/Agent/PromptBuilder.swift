@@ -19,8 +19,16 @@ enum PromptBuilder {
         outputStyle: ProjectPolicy.OutputStyle = .normal,
         contextWindowTokens: Int? = nil,
         responseReserveTokens: Int = 4096,
-        leanPrompt: Bool = false
+        leanPrompt: Bool = false,
+        chatOnly: Bool = false
     ) -> String {
+        if chatOnly {
+            return chatOnlyPrompt(
+                outputStyle: outputStyle,
+                contextWindowTokens: contextWindowTokens,
+                responseReserveTokens: responseReserveTokens)
+        }
+
         var sections: [String] = []
         sections.append("""
         You are Beet Code, an autonomous coding agent working inside the user's \
@@ -166,6 +174,32 @@ enum PromptBuilder {
         // A model's context contains both this system prompt and the next
         // reply. Keep a response reserve so a large repository index cannot
         // make the first request fail before a tool or plan is produced.
+        let promptBudget = max(
+            8_000,
+            (contextWindowTokens - max(1_024, responseReserveTokens) - 512) * 3)
+        return fitPrompt(sections, maxCharacters: promptBudget)
+    }
+
+    /// A project-free conversation has no workspace context or callable
+    /// tools. Keep that boundary explicit in the prompt so the model answers
+    /// directly instead of inventing file access, command output, or edits.
+    private static func chatOnlyPrompt(
+        outputStyle: ProjectPolicy.OutputStyle,
+        contextWindowTokens: Int?,
+        responseReserveTokens: Int
+    ) -> String {
+        let sections = [
+            """
+            You are Beet Code in chat-only mode. Have a helpful, direct
+            conversation with the user. No project folder is connected and no
+            tools are available. Do not claim to inspect files, run commands,
+            change code, browse, or perform actions. If the user asks for
+            project work, explain that they need to open a project folder.
+            """,
+            outputStylePrompt(outputStyle),
+        ]
+        let prompt = sections.joined(separator: "\n\n")
+        guard let contextWindowTokens else { return prompt }
         let promptBudget = max(
             8_000,
             (contextWindowTokens - max(1_024, responseReserveTokens) - 512) * 3)

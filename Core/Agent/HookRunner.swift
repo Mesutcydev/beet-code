@@ -72,6 +72,10 @@ struct HookRunner: Sendable {
         return HookRunner(preToolUse: pre, postToolUse: post, stop: stop, workspaceRoot: workspaceRoot)
     }
 
+    static func disabled(workspaceRoot: URL) -> HookRunner {
+        HookRunner(preToolUse: [], postToolUse: [], stop: [], workspaceRoot: workspaceRoot)
+    }
+
     func runPreToolUse(tool: String, arguments: LFJSONValue) -> HookDecision {
         var current = arguments
         for hook in preToolUse {

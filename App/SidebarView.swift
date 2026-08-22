@@ -56,6 +56,7 @@ struct SidebarView: View {
                 isImportingBundle: isImportingBundle,
                 showsCloseButton: showsCloseButton,
                 onChooseWorkspace: chooseWorkspace,
+                onChatOnly: startChatOnly,
                 onImport: runImport,
                 onImportTaskBundle: runTaskBundleImport,
                 onRefresh: { Task { await reloadSessions() } },
@@ -366,7 +367,7 @@ struct SidebarView: View {
     }
 
     private func workspacePathLabel(_ path: String) -> String {
-        guard !path.isEmpty else { return "No workspace" }
+        guard !path.isEmpty else { return "Chat only" }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if path == home { return "Home" }
         return path
@@ -657,11 +658,14 @@ struct SidebarView: View {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return byPath.map { path, group in
             let sorted = sortedTasks(group)
-            let unknown = path.isEmpty || path == home
+            let chatOnly = path.isEmpty
+            let unknown = chatOnly || path == home
             return ProjectGroup(
                 key: path,
-                name: unknown ? "No project folder" : URL(fileURLWithPath: path).lastPathComponent,
-                icon: unknown ? "tray" : "folder.fill",
+                name: chatOnly
+                    ? "Chat only"
+                    : unknown ? "No project folder" : URL(fileURLWithPath: path).lastPathComponent,
+                icon: chatOnly ? "bubble.left.and.bubble.right.fill" : unknown ? "tray" : "folder.fill",
                 latest: sorted.first?.updatedAt ?? .distantPast,
                 records: sorted)
         }
@@ -888,7 +892,10 @@ struct SidebarView: View {
             // Persist so a relaunch lands back on this session too.
             var preferences = AppPreferencesStore.shared.current
             preferences.lastSessionID = record.id
-            preferences.lastWorkspacePath = record.workspacePath
+            preferences.lastWorkspacePath = record.workspacePath.isEmpty ? nil : record.workspacePath
+            if record.workspacePath.isEmpty {
+                preferences.workspaceBookmarkData = nil
+            }
             AppPreferencesStore.shared.save(preferences)
             // A stale load error from the previous workspace is not this one's.
             if case .failed = appState.enginePhase {
@@ -966,6 +973,18 @@ struct SidebarView: View {
                 preferences.workspaceBookmarkData = AppPreferencesStore.shared.bookmarkData(for: url)
                 AppPreferencesStore.shared.save(preferences)
             }
+        }
+    }
+
+    private func startChatOnly() {
+        Task {
+            await sessions.switchToChatOnly()
+            selectedSessionID = nil
+            sidebarTab = .sessions
+            var preferences = AppPreferencesStore.shared.current
+            preferences.lastWorkspacePath = nil
+            preferences.workspaceBookmarkData = nil
+            AppPreferencesStore.shared.save(preferences)
         }
     }
 }
@@ -1063,7 +1082,9 @@ struct SessionHistoryRow: View {
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .disabled(!workspaceAvailable)
-        .help(workspaceAvailable ? "Restore this session" : "Project folder missing: \(record.workspacePath)")
+        .help(workspaceAvailable
+            ? "Restore this session"
+            : "Project folder missing: \(record.workspacePath)")
         .accessibilityValue(
             "\(pinned ? "Pinned. " : "")\(statusTitle ?? "Completed"). Workspace: \(workspaceLabel)")
     }
@@ -1082,6 +1103,7 @@ struct SidebarHeaderView: View {
     let isImportingBundle: Bool
     let showsCloseButton: Bool
     let onChooseWorkspace: () -> Void
+    let onChatOnly: () -> Void
     let onImport: () -> Void
     let onImportTaskBundle: () -> Void
     let onRefresh: () -> Void
@@ -1118,12 +1140,12 @@ struct SidebarHeaderView: View {
                     .font(.caption2.weight(.bold))
                     .tracking(1.1)
                     .foregroundStyle(Theme.textTertiary)
-                Text(workspaceURL?.lastPathComponent ?? "Choose a workspace")
+                Text(workspaceURL?.lastPathComponent ?? "Chat only")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(workspaceURL == nil ? "Open a folder to begin" : "Current workspace")
+                Text(workspaceURL == nil ? "No project connected" : "Current workspace")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
@@ -1156,13 +1178,13 @@ struct SidebarHeaderView: View {
                 .disabled(isImporting)
                 .help("Import or refresh chats from Claude, Codex and Cursor")
             } else if workspaceURL == nil {
-                Button(action: onChooseWorkspace) {
-                    Label("Open workspace…", systemImage: "folder.badge.plus")
+                Button(action: onNewSession) {
+                    Label("New chat", systemImage: "square.and.pencil")
                         .font(.system(size: 12, weight: .semibold))
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
-                .help("Choose a project folder")
+                .help("Start a new chat without a project")
             } else {
                 Button(action: onNewSession) {
                     Label("New chat", systemImage: "square.and.pencil")
@@ -1175,6 +1197,8 @@ struct SidebarHeaderView: View {
 
             Menu {
                 Button("Open workspace…", action: onChooseWorkspace)
+                Button("Chat without a project", action: onChatOnly)
+                    .disabled(workspaceURL == nil)
                 Divider()
                 Button("Import chats…", action: onImport)
                     .disabled(isImporting)
@@ -1204,7 +1228,7 @@ struct SidebarHeaderView: View {
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
             } else {
-                Image(systemName: workspaceURL == nil ? "folder.badge.plus" : "folder.fill")
+                Image(systemName: workspaceURL == nil ? "bubble.left.and.bubble.right.fill" : "folder.fill")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Theme.accent)
             }

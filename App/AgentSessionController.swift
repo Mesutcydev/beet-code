@@ -80,6 +80,11 @@ final class AgentSessionController: ObservableObject {
     /// the transcript while it is generating.
     private var exactAnswerOverride: String?
 
+    /// Test seam for the otherwise private project-free runtime directory.
+    /// The directory exists only because engines require a working directory;
+    /// chat-only prompts never expose it as a workspace or register tools.
+    static var overrideChatRuntimeDirectory: URL?
+
     // Account-backed OpenAI runs are hosted by Codex app-server rather than
     // AgentLoop. Keeping this state beside the existing loop lets the same
     // transcript, approval card, reasoning surface, and Stop button work for
@@ -134,7 +139,7 @@ final class AgentSessionController: ObservableObject {
     // MARK: Task lifecycle
 
     func send(_ message: String, attachments: [ComposerAttachment] = [], seed: SessionRecord? = nil) {
-        guard workspaceURL != nil, !isRunning else { return }
+        guard !isRunning else { return }
 
         // Reserve the run synchronously. Without this reservation two remote
         // HTTP requests can both pass the guard before the async MCP/model
@@ -170,8 +175,19 @@ final class AgentSessionController: ObservableObject {
     /// The async half of `send`: connects MCP servers (bounded, best-effort)
     /// and then starts the loop with built-in + MCP tools merged.
     private func startRun(message: String, attachments: [ComposerAttachment], seed: SessionRecord?) async {
-        guard let workspace = workspaceURL, isRunning, !Task.isCancelled else {
+        guard isRunning, !Task.isCancelled else {
             isRunning = false
+            return
+        }
+        let projectWorkspace = workspaceURL
+        let chatOnly = projectWorkspace == nil
+        let workspace: URL
+        do {
+            workspace = try projectWorkspace ?? Self.chatRuntimeDirectory()
+        } catch {
+            isRunning = false
+            currentPhase = .finished
+            finishReason = .engineError("Could not prepare chat storage: \(error.localizedDescription)")
             return
         }
         let workspaceScope = Workspace(root: workspace)
@@ -185,7 +201,10 @@ final class AgentSessionController: ObservableObject {
         // Continuation seed: an explicit seed wins; otherwise the persisted
         // record for the ACTIVE session is resumed so restored and continued
         // sessions keep their history and checkpoints.
-        let continuationSeed = seed ?? Self.persistedSeed(sessionID: activeSessionID, workspacePath: workspace.path)
+        let persistenceScope = projectWorkspace?.path ?? ""
+        let continuationSeed = seed ?? Self.persistedSeed(
+            sessionID: activeSessionID,
+            workspacePath: persistenceScope)
 
         // Account-backed OpenAI runs use Codex's own agent harness. It owns
         // command execution, file changes, MCP, and sandbox decisions; Beet
@@ -196,7 +215,8 @@ final class AgentSessionController: ObservableObject {
                 workspace: workspace,
                 modelText: modelText,
                 displayText: displayText,
-                seed: continuationSeed)
+                seed: continuationSeed,
+                chatOnly: chatOnly)
             return
         }
 
@@ -207,35 +227,41 @@ final class AgentSessionController: ObservableObject {
         let constrainedLocalModel = Self.isConstrainedLocalModel(
             engine: engine,
             modelID: activeModelIDHandler())
-        let trusted = WorkspaceTrust.isTrusted(workspace)
-        if WorkspaceTrust.needsConsent(workspace) {
+        let trusted = !chatOnly && WorkspaceTrust.isTrusted(workspace)
+        if !chatOnly && WorkspaceTrust.needsConsent(workspace) {
             workspaceTrustNeeded = true
             transcript.append(TranscriptItem(id: UUID(), kind: .notice(
                 "This project wants to run MCP servers or hooks. Trust the workspace to enable them.")))
         } else {
             workspaceTrustNeeded = false
         }
-        let mcpResult = await mcpRegistry.start(
-            workspaceRoot: workspace,
-            includeOpenCode: trusted && !constrainedLocalModel,
-            includeWorkspace: trusted && !constrainedLocalModel)
-        guard isRunning, !Task.isCancelled else {
-            isRunning = false
-            return
+        var mcpTools: [any AgentTool] = []
+        if !chatOnly {
+            let mcpResult = await mcpRegistry.start(
+                workspaceRoot: workspace,
+                includeOpenCode: trusted && !constrainedLocalModel,
+                includeWorkspace: trusted && !constrainedLocalModel)
+            guard isRunning, !Task.isCancelled else {
+                isRunning = false
+                return
+            }
+            for error in mcpResult.errors {
+                transcript.append(TranscriptItem(id: UUID(), kind: .notice(error)))
+            }
+            if !mcpResult.connectedServers.isEmpty {
+                transcript.append(TranscriptItem(id: UUID(), kind: .notice(
+                    "MCP servers connected: \(mcpResult.connectedServers.joined(separator: ", ")) (\(mcpResult.tools.count) tools)")))
+            }
+            mcpTools = mcpResult.tools
         }
-        for error in mcpResult.errors {
-            transcript.append(TranscriptItem(id: UUID(), kind: .notice(error)))
-        }
-        if !mcpResult.connectedServers.isEmpty {
-            transcript.append(TranscriptItem(id: UUID(), kind: .notice(
-                "MCP servers connected: \(mcpResult.connectedServers.joined(separator: ", ")) (\(mcpResult.tools.count) tools)")))
-        }
-        let tools = constrainedLocalModel
+        let tools: [any AgentTool] = chatOnly
+            ? []
+            : constrainedLocalModel
             ? Self.constrainedLocalTools
             : Self.sessionTools(computerControlEnabled: settings.computerControlEnabled)
-                + mcpResult.tools
+                + mcpTools
 
-        if constrainedLocalModel {
+        if constrainedLocalModel && !chatOnly {
             transcript.append(TranscriptItem(id: UUID(), kind: .notice(
                 "Memory-safe local mode: using a compact prompt and core coding tools so this model can answer without exhausting RAM.")))
         }
@@ -261,15 +287,19 @@ final class AgentSessionController: ObservableObject {
             : settings.temperature
         let checkpointingEnabled = settings.checkpointingEnabled
         let showReasoning = settings.showReasoning
-        let catalog = openCodeCatalogHandler()
-        let projectPolicy = ProjectPolicy.load(workspaceRoot: workspace)
+        let catalog = chatOnly ? .empty : openCodeCatalogHandler()
+        let projectPolicy = chatOnly ? nil : ProjectPolicy.load(workspaceRoot: workspace)
         let preferredAgentName = projectPolicy?.agent ?? selectedOpenCodeAgentName
-        let selectedAgent = catalog.agent(named: preferredAgentName)
-            ?? catalog.agent(named: "build")
-        let planMode = settings.planMode || selectedAgent?.name.caseInsensitiveCompare("plan") == .orderedSame
-        let goalMode = settings.agentMode == .goal
+        let selectedAgent = chatOnly
+            ? nil
+            : catalog.agent(named: preferredAgentName) ?? catalog.agent(named: "build")
+        let planMode = !chatOnly
+            && (settings.planMode || selectedAgent?.name.caseInsensitiveCompare("plan") == .orderedSame)
+        let goalMode = !chatOnly && settings.agentMode == .goal
         let outputStyle = projectPolicy?.outputStyle ?? settings.outputStyle
-        let compatibilityPermissions = catalog.permissions.merged(with: selectedAgent?.permissions ?? .empty)
+        let compatibilityPermissions = chatOnly
+            ? .empty
+            : catalog.permissions.merged(with: selectedAgent?.permissions ?? .empty)
         // Per-run live overrides: "Always approve" on an approval card flips
         // these, taking effect immediately for THIS running loop.
         let runOverrides = ApprovalOverrides()
@@ -299,26 +329,30 @@ final class AgentSessionController: ObservableObject {
                 maxTurns: maxTurns,
                 maxTokensPerTurn: maxTokensPerTurn,
                 temperature: temperature,
-                checkpointingEnabled: checkpointingEnabled,
+                checkpointingEnabled: !chatOnly && checkpointingEnabled,
                 contextWindowTokens: contextWindowTokens,
                 thermalTokenCeiling: thermal.maxTokens(ceiling: maxTokensPerTurn),
-                verifyAfterEdits: settings.verifyAfterEdits,
+                verifyAfterEdits: !chatOnly && settings.verifyAfterEdits,
                 showReasoning: showReasoning,
                 planMode: planMode,
                 goalMode: goalMode,
-                memoryMode: constrainedLocalModel ? .off : settings.memoryMode,
+                memoryMode: chatOnly || constrainedLocalModel ? .off : settings.memoryMode,
                 compressionLevel: constrainedLocalModel ? .aggressive : settings.compressionLevel,
                 outputStyle: outputStyle,
-                agentName: constrainedLocalModel ? nil : selectedAgent?.name,
-                agentPrompt: constrainedLocalModel ? nil : selectedAgent?.prompt,
-                intelligenceContext: !constrainedLocalModel,
-                allowSubagents: !constrainedLocalModel,
-                leanPrompt: constrainedLocalModel),
+                agentName: chatOnly || constrainedLocalModel ? nil : selectedAgent?.name,
+                agentPrompt: chatOnly || constrainedLocalModel ? nil : selectedAgent?.prompt,
+                intelligenceContext: !chatOnly && !constrainedLocalModel,
+                allowSubagents: !chatOnly && !constrainedLocalModel,
+                allowAskUser: !chatOnly,
+                leanPrompt: constrainedLocalModel,
+                chatOnly: chatOnly),
             modelID: activeModelIDHandler(),
             sessionID: sessionID,
             seedRecord: continuationSeed,
-            repoIndex: constrainedLocalModel ? nil : RepoIndexer.build(root: workspace, taskHint: modelText),
-            memory: constrainedLocalModel || settings.memoryMode == .off
+            repoIndex: chatOnly || constrainedLocalModel
+                ? nil
+                : RepoIndexer.build(root: workspace, taskHint: modelText),
+            memory: chatOnly || constrainedLocalModel || settings.memoryMode == .off
                 ? nil
                 : AgentMemory(workspacePath: workspace.path),
             taskHint: modelText)
@@ -346,7 +380,8 @@ final class AgentSessionController: ObservableObject {
         workspace: URL,
         modelText: String,
         displayText: String,
-        seed: SessionRecord?
+        seed: SessionRecord?,
+        chatOnly: Bool
     ) async {
         guard codexAccount.isSignedIn else {
             finishCodex(
@@ -361,13 +396,13 @@ final class AgentSessionController: ObservableObject {
             title: String(displayText.prefix(80)),
             createdAt: Date(),
             updatedAt: Date(),
-            workspacePath: workspace.path,
+            workspacePath: chatOnly ? "" : workspace.path,
             modelID: "openai-codex:\(modelID)",
             messages: [],
             checkpoints: [],
             source: .app,
             schemaVersion: SessionRecord.currentSchemaVersion)
-        record.workspacePath = workspace.path
+        record.workspacePath = chatOnly ? "" : workspace.path
         record.modelID = "openai-codex:\(modelID)"
         record.source = .app
         record.messages.append(SessionMessage(
@@ -390,11 +425,13 @@ final class AgentSessionController: ObservableObject {
                 threadID = try await codexAccount.client.resumeThread(
                     threadID: savedThreadID,
                     modelID: modelID,
-                    workspace: workspace)
+                    workspace: workspace,
+                    chatOnly: chatOnly)
             } else {
                 threadID = try await codexAccount.client.startThread(
                     modelID: modelID,
-                    workspace: workspace)
+                    workspace: workspace,
+                    chatOnly: chatOnly)
             }
             guard isRunning, !Task.isCancelled else { return }
             record.codexThreadID = threadID
@@ -405,7 +442,8 @@ final class AgentSessionController: ObservableObject {
                 threadID: threadID,
                 modelID: modelID,
                 workspace: workspace,
-                text: threadInput)
+                text: chatOnly ? Self.chatOnlyCodexPrompt(threadInput) : threadInput,
+                chatOnly: chatOnly)
             guard isRunning, !Task.isCancelled else {
                 try? await codexAccount.client.interrupt(
                     threadID: threadID,
@@ -859,6 +897,18 @@ final class AgentSessionController: ObservableObject {
         return "Previous Beet Code conversation context:\n\(history.joined(separator: "\n\n"))\n\nCurrent request:\n\(current)"
     }
 
+    private static func chatOnlyCodexPrompt(_ current: String) -> String {
+        """
+        You are in Beet Code's chat-only mode. Answer the user directly. No
+        project is connected. Do not inspect files, run commands, change code,
+        call tools, or claim to have performed actions. If project access is
+        needed, tell the user to open a project folder.
+
+        User message:
+        \(current)
+        """
+    }
+
     private static func codexCompletionSummary(_ text: String) -> String {
         let summary = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? "Codex turn completed." : String(summary.prefix(240))
@@ -934,6 +984,15 @@ final class AgentSessionController: ObservableObject {
             .first(where: { $0.workspacePath == url.path }) {
             _ = restore(latest)
         }
+    }
+
+    /// Leaves project mode and starts a fresh, project-free conversation.
+    /// The next turn uses the chat-only prompt and an empty tool registry.
+    func switchToChatOnly() async {
+        await stopAndWait()
+        workspaceURL = nil
+        workspaceTrustNeeded = false
+        newSession()
     }
 
     func trustCurrentWorkspace() {
@@ -1147,7 +1206,9 @@ final class AgentSessionController: ObservableObject {
         rawStreamingText = ""
         isReasoningVisible = false
         liveReasoningText = ""
-        workspaceURL = URL(fileURLWithPath: record.workspacePath)
+        workspaceURL = record.workspacePath.isEmpty
+            ? nil
+            : URL(fileURLWithPath: record.workspacePath)
 
         var rebuilt: [TranscriptItem] = []
         for message in record.messages {
@@ -1206,7 +1267,7 @@ final class AgentSessionController: ObservableObject {
     var restoredSeed: SessionRecord? {
         guard let id = SessionStore.shared.currentSessionID,
               let record = SessionStore.shared.load(id: id),
-              record.workspacePath == workspaceURL?.path
+              record.workspacePath == (workspaceURL?.path ?? "")
         else { return nil }
         return record
     }
@@ -1809,6 +1870,14 @@ final class AgentSessionController: ObservableObject {
               record.workspacePath == workspacePath
         else { return nil }
         return record
+    }
+
+    private static func chatRuntimeDirectory() throws -> URL {
+        let directory = overrideChatRuntimeDirectory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("BeetCode/ChatRuntime", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
     /// Async: local VLM first load can take seconds (weights page-in), and a
     /// BYOK describe is a network call — a synchronous bridge with a fixed

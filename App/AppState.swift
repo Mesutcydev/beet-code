@@ -417,6 +417,12 @@ final class AppState: ObservableObject {
             let sessionID = preferences.lastSessionID
             Task { await self.sessions.switchWorkspace(to: workspace, sessionID: sessionID) }
             Log.app.info("Restored workspace \(workspace.path, privacy: .public)")
+        } else if !isTestHost,
+                  let sessionID = preferences.lastSessionID,
+                  let record = SessionStore.shared.load(id: sessionID),
+                  record.workspacePath.isEmpty {
+            _ = sessions.restore(record)
+            Log.app.info("Restored project-free chat")
         }
 
         // Model: reload the last-used local model so the composer is ready

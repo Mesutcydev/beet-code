@@ -197,6 +197,7 @@ final class ComposerStoreTests: XCTestCase {
         ModelStore.shared.overrideModelsDir = appSupport.url(for: "Models")
         SessionStore.shared.overrideSessionsDir = appSupport.url(for: "Sessions")
         ComposerStore.overrideDraftsDir = appSupport.url(for: "Drafts")
+        AgentSessionController.overrideChatRuntimeDirectory = appSupport.url(for: "ChatRuntime")
         workspace = TempWorkspace()
         workspace.write("# Project docs", to: "README.md")
         workspace.makeDirectory("docs")
@@ -214,6 +215,7 @@ final class ComposerStoreTests: XCTestCase {
         }
         savedPlanMode = nil
         ComposerStore.overrideDraftsDir = nil
+        AgentSessionController.overrideChatRuntimeDirectory = nil
         ModelStore.shared.overrideModelsDir = nil
         SessionStore.shared.overrideSessionsDir = nil
     }
@@ -402,23 +404,40 @@ final class ComposerStoreTests: XCTestCase {
 
     // MARK: Validation + send
 
-    func testSendBlockedWithoutWorkspaceOrModel() async {
+    func testSendNeedsAModelButNotAWorkspace() async {
         let (appState, store, _) = makeStack()
         store.prompt = "do work"
-        XCTAssertEqual(store.sendBlocker, "Open a project folder first")
+        XCTAssertEqual(store.sendBlocker, "Choose a model to run")
         XCTAssertFalse(store.send())
         XCTAssertEqual(store.prompt, "do work", "a blocked send keeps the draft")
 
-        await openWorkspace(appState, store)
-        XCTAssertEqual(store.sendBlocker, "Choose a model to run")
-        XCTAssertFalse(store.send())
-
         activateFirstModel(appState)
-        // Opening a workspace loads its draft (empty here), so the prompt is
-        // (re)entered after the switch — exactly like a user.
-        store.prompt = "do work"
         XCTAssertNil(store.sendBlocker)
         XCTAssertTrue(store.canSend)
+    }
+
+    func testChatOnlySendHasNoWorkspaceOrToolPromptAndPersists() async throws {
+        let (appState, store, engine) = makeStack()
+        activateFirstModel(appState)
+        engine.enqueue(.text("Hello from chat mode."))
+        store.prompt = "Hello"
+
+        XCTAssertTrue(store.send())
+        let finished = await waitUntil { !appState.sessions.isRunning && engine.streamCallCount == 1 }
+        XCTAssertTrue(finished)
+        XCTAssertNil(appState.sessions.workspaceURL)
+
+        let systemPrompt = try XCTUnwrap(engine.turnHistory.first?.first?.content)
+        XCTAssertTrue(systemPrompt.contains("chat-only mode"))
+        XCTAssertFalse(systemPrompt.contains("# Tool protocol"))
+        XCTAssertFalse(systemPrompt.contains("ChatRuntime"))
+        XCTAssertFalse(systemPrompt.contains("read_file"))
+
+        let sessionID = try XCTUnwrap(appState.sessions.activeSessionID)
+        let record = try XCTUnwrap(SessionStore.shared.load(id: sessionID))
+        XCTAssertEqual(record.workspacePath, "")
+        XCTAssertTrue(record.checkpoints.isEmpty)
+        XCTAssertTrue(SessionStore.shared.validateWorkspaceBinding(record))
     }
 
     func testSendReadinessTracksEnginePhaseAfterAttach() async {

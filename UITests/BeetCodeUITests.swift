@@ -11,7 +11,7 @@ final class BeetCodeUITests: XCTestCase {
 
         XCTAssertTrue(app.textFields["Task description"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Attach files"].exists)
-        XCTAssertTrue(app.buttons["Turn context"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Chat only mode"].exists)
         XCTAssertTrue(app.buttons["Send"].exists)
     }
 
@@ -21,7 +21,8 @@ final class BeetCodeUITests: XCTestCase {
 
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
         XCTAssertTrue(composer.isEnabled)
-        XCTAssertTrue(app.descendants(matching: .any)["Agent setup"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Chat only mode"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["Agent setup"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["Composer commands"].exists)
     }
 

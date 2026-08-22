@@ -226,4 +226,18 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertTrue(text.contains("Answer ordinary questions directly"))
         XCTAssertFalse(text.contains("# Goal mode"))
     }
+
+    func testChatOnlyPromptOmitsWorkspaceAndAllToolInstructions() {
+        let text = PromptBuilder.systemPrompt(
+            tools: [StubTool(name: "read_file")],
+            workspace: Workspace(root: tempRoot),
+            chatOnly: true)
+
+        XCTAssertTrue(text.contains("chat-only mode"))
+        XCTAssertTrue(text.contains("No project folder is connected"))
+        XCTAssertFalse(text.contains(tempRoot.path))
+        XCTAssertFalse(text.contains("read_file"))
+        XCTAssertFalse(text.contains("# Tool protocol"))
+        XCTAssertFalse(text.contains("# Workspace structure"))
+    }
 }

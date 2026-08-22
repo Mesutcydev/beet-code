@@ -124,7 +124,7 @@ struct ComposerView: View {
     }
 
     private var editor: some View {
-        TextField("Ask Beet Code to build, fix, or explain…", text: Bindable(store).prompt, axis: .vertical)
+        TextField(composerPlaceholder, text: Bindable(store).prompt, axis: .vertical)
             .textFieldStyle(.plain)
             .font(AppFont.editor)
             .foregroundStyle(Theme.textPrimary)
@@ -160,6 +160,12 @@ struct ComposerView: View {
                 return .ignored
             }
             .accessibilityLabel("Task description")
+    }
+
+    private var composerPlaceholder: LocalizedStringKey {
+        controller.workspaceURL == nil
+            ? "Message Beet Code…"
+            : "Ask Beet Code to build, fix, or explain…"
     }
 
     private func acceptDroppedFiles(from providers: [NSItemProvider]) -> Bool {
@@ -324,6 +330,7 @@ private struct ComposerDropOverlay: View {
 /// and draft clearing all operate on the same ComposerStore as the visible
 /// controls below.
 private struct ComposerCommandMenu: View {
+    @EnvironmentObject private var controller: AgentSessionController
     @ObservedObject private var settings = SettingsStore.shared
     @State private var showsDeliverySetup = false
 
@@ -338,43 +345,45 @@ private struct ComposerCommandMenu: View {
                 Label("Focus prompt", systemImage: "text.cursor")
             }
 
-            Menu("Use a guidance preset") {
-                ForEach(IntentPresets.all) { preset in
-                    Button {
-                        store.applyPreset(preset)
-                    } label: {
-                        Label(preset.name, systemImage: preset.glyph)
+            if controller.workspaceURL != nil {
+                Menu("Use a guidance preset") {
+                    ForEach(IntentPresets.all) { preset in
+                        Button {
+                            store.applyPreset(preset)
+                        } label: {
+                            Label(preset.name, systemImage: preset.glyph)
+                        }
                     }
                 }
-            }
 
-            Menu("Start an Apple app") {
-                Button {
-                    prepareAppleAppPrompt(platform: "iPhone and iPad")
-                } label: {
-                    Label("iPhone & iPad app", systemImage: "iphone.and.arrow.forward")
+                Menu("Start an Apple app") {
+                    Button {
+                        prepareAppleAppPrompt(platform: "iPhone and iPad")
+                    } label: {
+                        Label("iPhone & iPad app", systemImage: "iphone.and.arrow.forward")
+                    }
+
+                    Button {
+                        prepareAppleAppPrompt(platform: "macOS")
+                    } label: {
+                        Label("Mac app", systemImage: "macwindow")
+                    }
                 }
 
                 Button {
-                    prepareAppleAppPrompt(platform: "macOS")
+                    prepareShipPrompt()
                 } label: {
-                    Label("Mac app", systemImage: "macwindow")
+                    Label("Ship current Apple app", systemImage: "shippingbox")
                 }
-            }
 
-            Button {
-                prepareShipPrompt()
-            } label: {
-                Label("Ship current Apple app", systemImage: "shippingbox")
-            }
+                Button {
+                    showsDeliverySetup = true
+                } label: {
+                    Label("Sign & install on device…", systemImage: "checkmark.shield")
+                }
 
-            Button {
-                showsDeliverySetup = true
-            } label: {
-                Label("Sign & install on device…", systemImage: "checkmark.shield")
+                Divider()
             }
-
-            Divider()
 
             Toggle(isOn: Binding(
                 get: { settings.showReasoning },
@@ -792,10 +801,17 @@ private struct AccessoryRow: View {
                 AttachChip(store: store)
                 ModelSelectionPill()
                     .environmentObject(appState)
-                IntentChipButton(store: store)
-                AgentSetupMenu()
-                    .environmentObject(appState)
-                    .environmentObject(controller)
+                if controller.workspaceURL == nil {
+                    Label("Chat only", systemImage: "bubble.left.and.bubble.right")
+                        .lfComposerPill(active: true)
+                        .help("No project tools are available until you open a folder")
+                        .accessibilityLabel("Chat only mode")
+                } else {
+                    IntentChipButton(store: store)
+                    AgentSetupMenu()
+                        .environmentObject(appState)
+                        .environmentObject(controller)
+                }
             }
             .padding(.trailing, 2)
         }

@@ -515,6 +515,9 @@ final class SessionStore: @unchecked Sendable {
 
     /// True when the session's workspace binding still exists on disk.
     func validateWorkspaceBinding(_ record: SessionRecord) -> Bool {
+        // An empty binding is intentional for project-free chat sessions.
+        // These conversations never receive a synthetic user workspace.
+        if record.workspacePath.isEmpty { return true }
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: record.workspacePath, isDirectory: &isDirectory)
             && isDirectory.boolValue

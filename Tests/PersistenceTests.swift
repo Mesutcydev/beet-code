@@ -46,6 +46,22 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(store.load(id: record.id))
     }
 
+    func testProjectFreeChatBindingIsValidWithoutAFolder() {
+        let (store, temp) = isolatedStore()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let record = SessionRecord(
+            id: UUID(),
+            title: "Chat only",
+            createdAt: Date(),
+            updatedAt: Date(),
+            workspacePath: "",
+            modelID: "m",
+            messages: [],
+            checkpoints: [])
+
+        XCTAssertTrue(store.validateWorkspaceBinding(record))
+    }
+
     func testSecretsAreRedactedBeforePersistence() {
         let scrubbed = SessionStore.redact(
             "token hf_AbCdEf1234567890AbCdEf1234 and sk-abcdefghijklmnopqrstuvwx and Authorization: Bearer xyz-token-value-1234")

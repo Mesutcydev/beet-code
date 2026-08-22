@@ -171,7 +171,7 @@ final class ComposerStore {
         // will load the current workspace's draft.
         guard workspace?.path == controller?.workspaceURL?.path else { return }
         flushPersistNow()
-        workspaceKey = workspace?.path
+        workspaceKey = workspace?.path ?? "chat-only"
         loadDraft(for: workspace)
         refreshAvailability()
         refreshHistoryEstimate()
@@ -358,7 +358,6 @@ final class ComposerStore {
     /// The single reason the composer can't send right now, or nil. Slash
     /// commands bypass this entirely (they run locally).
     var sendBlocker: String? {
-        if controller?.workspaceURL == nil { return "Open a project folder first" }
         if case .loading = currentEnginePhase { return "Model is loading…" }
         if appState?.isModelReady != true { return "Choose a model to run" }
         if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Describe the task first" }

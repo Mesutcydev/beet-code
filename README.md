@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.9.5](https://img.shields.io/badge/Download-Beet%20Code%200.9.5%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.5.zip)
+[![Download Beet Code 0.9.6](https://img.shields.io/badge/Download-Beet%20Code%200.9.6%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.6.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.5.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.6.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -302,6 +302,14 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   and `api_key=…` without storing the wrapper.
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
+
+## v0.9.6 — Chat without a project
+
+- Beet Code can now start and restore ordinary chats without opening a project folder.
+- Chat-only sessions expose no files, terminal, build tools, workspace context, project instructions, memory, hooks, checkpoints, MCP tools, or subagents.
+- The welcome screen, composer, empty state, and sidebar clearly distinguish chat-only conversations from project work.
+- Opening a project restores the complete coding workflow, while leaving a project starts a fresh isolated chat.
+- The verified suite covers project-free prompting, persistence, launch behavior, and the existing project-mode workflow with 741 unit tests plus 3 UI tests.
 
 ## v0.9.5 — Safer sessions and focused native surfaces
 

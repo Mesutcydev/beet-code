@@ -64,6 +64,13 @@
 > coverage. The verified suite executes 738 unit tests with 2 intentional
 > opt-in skips plus 3 UI tests, with no failures.
 >
+> **Addendum (2026-08-22, v0.9.6 chat-only mode):** Beet Code can run and
+> restore conversations without a workspace. These sessions use a dedicated
+> conversational prompt and expose no project context, file or command tools,
+> MCP tools, hooks, memory, checkpoints, intelligence, or subagents. The
+> verified suite executes 741 unit tests with 2 intentional skips plus 3 UI
+> tests, with no failures.
+>
 |> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
 |> (README v0.6) and the simulator tools were registered but the system prompt
 |> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now
@@ -105,7 +112,7 @@ xcodebuild -project BeetCode.xcodeproj -scheme BeetCode \
   -destination 'platform=macOS' -derivedDataPath .derived test
 ```
 
-Current suite: **738 unit tests executed, 2 intentionally skipped, plus 3 UI tests; 0 failures**.
+Current suite: **741 unit tests executed, 2 intentionally skipped, plus 3 UI tests; 0 failures**.
 Tests never need model weights or Metal (FakeLLMEngine + FixtureHub).
 
 ## 3. Directory map

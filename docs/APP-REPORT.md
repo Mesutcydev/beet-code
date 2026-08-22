@@ -71,6 +71,13 @@
 > verified suite executes 741 unit tests with 2 intentional skips plus 3 UI
 > tests, with no failures.
 >
+> **Addendum (2026-08-22, v0.9.7 answer readability):** assistant answers
+> receive Markdown structure guidance and a display-only repair pass for
+> missing paragraph boundaries, while fenced code remains unchanged. The
+> completion card now starts a fresh chat directly, and Qwen3.5 9B 4-bit is
+> classified as tight but allowed on an M4 Mac with 16 GB. The verified suite
+> executes 743 unit tests with 2 intentional skips plus 3 UI tests.
+>
 |> **Addendum (2026-08-19, prompt capability guidance):** the in-app browser
 |> (README v0.6) and the simulator tools were registered but the system prompt
 |> never told models WHEN to use them. `PromptBuilder.capabilityGuidance` now

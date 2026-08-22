@@ -43,6 +43,25 @@ final class ReasoningTests: XCTestCase {
         XCTAssertFalse(reasoning)
     }
 
+    func testAssistantAnswerFormatterRepairsDenseFactBoundaries() {
+        let dense = """
+        Here are overlooked facts:Berlin Wall's Fall (1989): While celebrated, it also changed policy.Titanic's Logs (1912): Records disagree.Roman Empire's Decline: The causes were complex.
+        """
+        let formatted = AssistantAnswerFormatter.formattedForDisplay(dense)
+
+        XCTAssertTrue(formatted.contains("facts:\n\nBerlin Wall's Fall"), formatted)
+        XCTAssertTrue(formatted.contains("policy.\n\nTitanic's Logs"), formatted)
+        XCTAssertTrue(formatted.contains("disagree.\n\nRoman Empire's Decline"), formatted)
+    }
+
+    func testAssistantAnswerFormatterDoesNotRewriteCodeFences() {
+        let source = "Before:Heading:\n\n```swift\nlet value:Thing = 1\n```"
+        let formatted = AssistantAnswerFormatter.formattedForDisplay(source)
+
+        XCTAssertTrue(formatted.contains("Before:\n\nHeading:"), formatted)
+        XCTAssertTrue(formatted.contains("```swift\nlet value:Thing = 1\n```"), formatted)
+    }
+
     func testAdjacentProviderReasoningDeltasReadAsOneTrace() {
         let raw = "<think>I</think><think> need</think><think> to create</think>"
         XCTAssertEqual(

@@ -74,7 +74,11 @@ final class DeviceProfileTests: XCTestCase {
             CatalogLibrary.recommendedChat(
                 from: catalog,
                 device: DeviceProfile.parse(brand: "Apple M4", memoryBytes: 16 * gb1024))?.id,
-            "qwen3.5-9b-4bit")
+            "ornith-1.5-9b-4bit")
+        let m4Sixteen = DeviceProfile.parse(brand: "Apple M4", memoryBytes: 16 * gb1024)
+        let qwenNine = ModelCatalog.model(id: "qwen3.5-9b-4bit")
+        XCTAssertNotNil(qwenNine)
+        XCTAssertEqual(qwenNine.map(m4Sixteen.fit), .tight)
         XCTAssertEqual(
             CatalogLibrary.recommendedChat(
                 from: catalog,

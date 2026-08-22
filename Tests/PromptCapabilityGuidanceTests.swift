@@ -239,5 +239,7 @@ final class PromptCapabilityGuidanceTests: XCTestCase {
         XCTAssertFalse(text.contains("read_file"))
         XCTAssertFalse(text.contains("# Tool protocol"))
         XCTAssertFalse(text.contains("# Workspace structure"))
+        XCTAssertTrue(text.contains("Separate paragraphs"))
+        XCTAssertTrue(text.contains("each item on its own bullet"))
     }
 }

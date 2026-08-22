@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.9.6](https://img.shields.io/badge/Download-Beet%20Code%200.9.6%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.6.zip)
+[![Download Beet Code 0.9.7](https://img.shields.io/badge/Download-Beet%20Code%200.9.7%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.7.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.6.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.7.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -303,6 +303,14 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
 
+## v0.9.7 — Readable answers and faster follow-up
+
+- Assistant replies render with comfortable line spacing and repair common missing paragraph boundaries from local models without changing saved conversation text or code blocks.
+- Every model receives concise Markdown readability guidance for paragraphs, headings, and lists.
+- Completed chats now include a clear New chat button that resets the finished state and opens a fresh conversation.
+- Qwen3.5 9B 4-bit remains available on M4 Macs with 16 GB as a tight configuration, with active cooling recommended for sustained generation.
+- The verified suite covers dense-answer repair, code-fence preservation, prompt guidance, and device-tier model fit with 743 unit tests plus 3 UI tests.
+
 ## v0.9.6 — Chat without a project
 
 - Beet Code can now start and restore ordinary chats without opening a project folder.
@@ -486,7 +494,7 @@ reads chip generation, Pro/Max/Ultra, unified memory, and Mac Studio
 `hw.model` IDs. `CatalogLibrary` then shows only the matching lane:
 
 - **8 GB** (M3/M4 Air) — Qwen3 1.7B, Nanbeige 4.1 3B, Nemotron 3 Nano 4B, Phi-4 mini, Llama 3.2 1B, Gemma 3 1B
-- **16 GB M3/M4** — adds Qwen3.5 9B, Ornith 1.5 9B, Llama 3.1 8B, DeepSeek R1 8B (no 14B Pro models)
+- **16 GB M3/M4** — Qwen3.5 9B is available as a tight configuration (close memory-heavy apps; active cooling is recommended for sustained generation), alongside Ornith 1.5 9B, Llama 3.1 8B, and DeepSeek R1 8B (no 14B Pro models)
 - **M5 Air 16 GB** — 16 GB set plus 24 GB Pro models; daily pick is Qwen2.5 Coder 14B
 - **M5 Air 24 GB / M5 Pro 24 GB** — adds 32 GB class (Qwen3.5 27B, Nemotron Lightning); daily pick is 27B
 - **M5 Air 32 GB / M5 Pro 36 GB** — adds Max-class 35B (Ornith 1.5 35B, Qwen3.5 35B)

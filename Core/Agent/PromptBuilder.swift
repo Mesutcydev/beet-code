@@ -207,6 +207,13 @@ enum PromptBuilder {
     }
 
     private static func outputStylePrompt(_ style: ProjectPolicy.OutputStyle) -> String {
+        let readability = """
+        Format every answer as readable Markdown. Separate paragraphs with a
+        blank line. When presenting three or more facts, options, steps, or
+        examples, put each item on its own bullet or numbered line. Use short
+        headings or bold labels when they make the structure clearer. Never
+        concatenate headings, list items, or sentences without whitespace.
+        """
         switch style {
         case .concise:
             return """
@@ -215,6 +222,8 @@ enum PromptBuilder {
             Keep the final answer concise. State what changed, the verification
             result, and any blocker or next action. Do not repeat the user's
             request or narrate routine tool calls.
+
+            \(readability)
             """
         case .normal:
             return """
@@ -223,6 +232,8 @@ enum PromptBuilder {
             Use a balanced final answer: summarize the meaningful changes,
             mention verification, and explain any remaining caveat in plain
             language. Keep routine tool narration out of the final response.
+
+            \(readability)
             """
         case .detailed:
             return """
@@ -231,6 +242,8 @@ enum PromptBuilder {
             Give a detailed final answer with the important design decisions,
             files or surfaces affected, verification performed, and any
             remaining caveat. Stay organized and avoid repeating raw logs.
+
+            \(readability)
             """
         }
     }

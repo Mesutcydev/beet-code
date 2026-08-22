@@ -115,3 +115,40 @@ enum StreamDisplayFilter {
         word.lowercased().trimmingCharacters(in: .punctuationCharacters)
     }
 }
+
+/// Repairs a narrow class of formatting defects produced by some local
+/// instruct models without rewriting the answer itself. The original text is
+/// still persisted; this is a display-only pass. Code fences are excluded so
+/// source code, shell snippets, and exact output remain byte-for-byte intact.
+enum AssistantAnswerFormatter {
+    static func formattedForDisplay(_ text: String) -> String {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let fenceParts = normalized.components(separatedBy: "```")
+        return fenceParts.enumerated().map { index, part in
+            index.isMultiple(of: 2) ? formatProse(part) : part
+        }.joined(separator: "```")
+    }
+
+    private static func formatProse(_ prose: String) -> String {
+        var result = prose
+
+        // A title-like label immediately after punctuation is usually a
+        // missing list/paragraph boundary, for example
+        // "policies.Titanic's Logs (1912): Discrepancies…".
+        result = result.replacingOccurrences(
+            of: #"(?<=[.!?:])(?=[\p{Lu}][\p{L}\p{N}'’& -]{2,64}(?:\([12][0-9]{3}\))?:)"#,
+            with: "\n\n",
+            options: .regularExpression)
+
+        // Keep ordinary sentence and label boundaries readable when a model
+        // omits the whitespace but the following token clearly starts with
+        // an uppercase letter. URLs, decimals, and code are unaffected.
+        result = result.replacingOccurrences(
+            of: #"(?<=[.!?:;,])(?=\p{Lu})"#,
+            with: " ",
+            options: .regularExpression)
+        return result
+    }
+}

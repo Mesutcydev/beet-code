@@ -1021,6 +1021,7 @@ final class AgentSessionController: ObservableObject {
         codexItemInvocations.removeAll()
         runID = UUID()
         isRunning = false
+        currentPhase = .idle
         clearPending()
         finishReason = nil
         dropTokenBuffer()

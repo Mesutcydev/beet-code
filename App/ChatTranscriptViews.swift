@@ -215,16 +215,21 @@ struct MarkdownText: View {
     let text: String
 
     var body: some View {
+        let displayText = AssistantAnswerFormatter.formattedForDisplay(text)
         if let attributed = try? AttributedString(
-            markdown: text,
+            markdown: displayText,
             options: .init(interpretedSyntax: .full)) {
             Text(attributed)
                 .font(.body)
+                .lineSpacing(3)
                 .foregroundStyle(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
-            Text(text)
+            Text(displayText)
                 .font(.body)
+                .lineSpacing(3)
                 .foregroundStyle(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -1010,6 +1015,7 @@ struct CompletionSnapshot: Equatable {
 struct FinishBanner: View {
     let reason: AgentFinish
     let summary: CompletionSnapshot
+    let onNewChat: () -> Void
 
     var body: some View {
         HStack {
@@ -1097,6 +1103,11 @@ struct FinishBanner: View {
                 }
             }
             Spacer(minLength: 0)
+            Button(action: onNewChat) {
+                Label("New chat", systemImage: "square.and.pencil")
+            }
+            .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+            .accessibilityHint("Clears this conversation and starts a new chat")
         }
         .padding(Spacing.md)
         .frame(maxWidth: 680, alignment: .leading)

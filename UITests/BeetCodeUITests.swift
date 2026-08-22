@@ -28,8 +28,14 @@ final class BeetCodeUITests: XCTestCase {
 
     func testHistoryNavigationIsAccessible() {
         let app = launchApp()
+        let myChats = app.buttons["My chats"]
 
-        XCTAssertTrue(app.buttons["My chats"].waitForExistence(timeout: 10))
+        if !myChats.waitForExistence(timeout: 2), app.buttons["Show Sidebar"].exists {
+            app.activate()
+            app.buttons["Show Sidebar"].click()
+        }
+
+        XCTAssertTrue(myChats.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Other tools"].exists)
         XCTAssertTrue(app.textFields["Search all history"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["More chat actions"].exists)

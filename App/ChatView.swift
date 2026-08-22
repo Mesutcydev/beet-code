@@ -127,7 +127,8 @@ struct ChatView: View {
                         FinishBanner(
                             reason: finish,
                             summary: CompletionSnapshot.make(
-                                transcript: controller.transcript))
+                                transcript: controller.transcript),
+                            onNewChat: controller.newSession)
                     }
                     Color.clear.frame(height: 8).id("bottom")
                 }

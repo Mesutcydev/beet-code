@@ -130,6 +130,7 @@ extension Notification.Name {
     static let newChat = Notification.Name("com.beetcode.newChat")
     static let stopAgent = Notification.Name("com.beetcode.stopAgent")
     static let sendMessage = Notification.Name("com.beetcode.sendMessage")
+    static let sessionTitleChanged = Notification.Name("com.beetcode.sessionTitleChanged")
     static let openWorkspace = Notification.Name("com.beetcode.openWorkspace")
     static let openSystemReadiness = Notification.Name("com.beetcode.openSystemReadiness")
 }

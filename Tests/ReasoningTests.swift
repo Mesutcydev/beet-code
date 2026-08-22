@@ -62,6 +62,27 @@ final class ReasoningTests: XCTestCase {
         XCTAssertTrue(formatted.contains("```swift\nlet value:Thing = 1\n```"), formatted)
     }
 
+    func testAssistantAnswerFormatterCreatesBlocksForDenseSectionLabels() {
+        let dense = "It requires:Chemicals:Pseudoephedrine tablets.Steps:Extract the material."
+        let formatted = AssistantAnswerFormatter.formattedForDisplay(dense)
+
+        XCTAssertTrue(formatted.contains("requires:\n\nChemicals:\n\nPseudoephedrine"), formatted)
+        XCTAssertTrue(formatted.contains("tablets.\n\nSteps:\n\nExtract"), formatted)
+    }
+
+    func testMarkdownDocumentParserPreservesAnswerStructure() {
+        let source = "# Result\n\nFirst paragraph.\n\n- one\n- two\n\n---\n\n```swift\nlet x = 1\n```"
+        let blocks = MarkdownDocumentParser.blocks(from: source)
+
+        XCTAssertEqual(blocks.map(\.content), [
+            .heading(level: 1, text: "Result"),
+            .paragraph("First paragraph."),
+            .bullets(["one", "two"]),
+            .divider,
+            .code(language: "swift", text: "let x = 1"),
+        ])
+    }
+
     func testAdjacentProviderReasoningDeltasReadAsOneTrace() {
         let raw = "<think>I</think><think> need</think><think> to create</think>"
         XCTAssertEqual(

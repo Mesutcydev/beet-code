@@ -13,12 +13,12 @@ struct SidebarGroupHeader: View {
     var expanded: Bool = true
 
     var body: some View {
-        HStack(spacing: Spacing.sm) {
+        HStack(spacing: 7) {
             Image(systemName: "chevron.right")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(Theme.textTertiary)
                 .rotationEffect(.degrees(expanded ? 90 : 0))
-                .frame(width: 10)
+                .frame(width: 9)
             headerGlyph
             Text(name)
                 .font(.system(size: 11, weight: .semibold))
@@ -33,17 +33,11 @@ struct SidebarGroupHeader: View {
                     .foregroundStyle(Theme.textTertiary)
             }
         }
-        .padding(.horizontal, 4)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        .padding(.horizontal, 5)
+        .padding(.top, 11)
+        .padding(.bottom, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Theme.hairline.opacity(0.65))
-                .frame(height: 1)
-                .padding(.leading, 28)
-        }
         .accessibilityLabel(count.map { "\(name), \($0) chats" } ?? name)
         .accessibilityHint(expanded ? "Collapse" : "Expand")
         .accessibilityAddTraits(.isButton)
@@ -56,14 +50,13 @@ struct SidebarGroupHeader: View {
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 18, height: 18)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .frame(width: 15, height: 15)
+                .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
         } else {
             Image(systemName: icon)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 18, height: 18)
-                .background(Theme.surfaceInset.opacity(0.72), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .foregroundStyle(Theme.textTertiary)
+                .frame(width: 15, height: 15)
         }
     }
 }

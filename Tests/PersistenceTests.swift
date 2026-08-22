@@ -25,7 +25,16 @@ final class SessionStoreTests: XCTestCase {
             modelID: "qwen",
             messages: [
                 SessionMessage(role: .user, content: "hello", toolName: nil, timestamp: Date()),
-                SessionMessage(role: .assistant, content: "hi", toolName: nil, timestamp: Date()),
+                SessionMessage(
+                    role: .assistant,
+                    content: "hi",
+                    toolName: nil,
+                    timestamp: Date(),
+                    answerMetrics: AnswerMetrics(
+                        outputTokens: 2,
+                        tokensPerSecond: 8.5,
+                        elapsedSeconds: 0.4,
+                        tokenCountIsEstimated: false)),
                 SessionMessage(role: .toolCall, content: "{\"command\": \"swift build\"}", toolName: "run_command", timestamp: Date()),
                 SessionMessage(role: .toolResult, content: "Build succeeded", toolName: "run_command", timestamp: Date()),
             ],
@@ -37,6 +46,7 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNotNil(loaded)
         XCTAssertEqual(loaded?.title, record.title)
         XCTAssertEqual(loaded?.messages.count, record.messages.count)
+        XCTAssertEqual(loaded?.messages[1].answerMetrics, record.messages[1].answerMetrics)
         XCTAssertEqual(loaded?.checkpoints.count, 1)
         // Schema version is stamped on save.
         XCTAssertEqual(loaded?.schemaVersion, SessionRecord.currentSchemaVersion)

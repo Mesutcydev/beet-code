@@ -142,12 +142,25 @@ enum AssistantAnswerFormatter {
             with: "\n\n",
             options: .regularExpression)
 
+        // Local instruct models also concatenate compact section labels,
+        // for example "...requires:Chemicals:Pseudo...Steps:Extract...".
+        // Put each label on its own block so the renderer can give it the
+        // same hierarchy and rhythm as authored Markdown.
+        result = result.replacingOccurrences(
+            of: #"(?m)^([\p{Lu}][\p{L}\p{N}'’& /-]{2,40}):(?=\S)"#,
+            with: "$1:\n\n",
+            options: .regularExpression)
+
         // Keep ordinary sentence and label boundaries readable when a model
         // omits the whitespace but the following token clearly starts with
         // an uppercase letter. URLs, decimals, and code are unaffected.
         result = result.replacingOccurrences(
             of: #"(?<=[.!?:;,])(?=\p{Lu})"#,
             with: " ",
+            options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: #"\n{3,}"#,
+            with: "\n\n",
             options: .regularExpression)
         return result
     }

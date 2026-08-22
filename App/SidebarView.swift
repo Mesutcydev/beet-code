@@ -49,7 +49,6 @@ struct SidebarView: View {
             SidebarHeaderView(
                 workspaceURL: sessions.workspaceURL,
                 sidebarTab: sidebarTab,
-                importedCount: recentSessions.count(where: { $0.source != .app }),
                 historySearch: $historySearch,
                 queuedTasks: pendingQueueTasks,
                 isImporting: isImporting,
@@ -690,9 +689,69 @@ struct SidebarView: View {
             workspaceAvailable: workspaceAvailable,
             workspaceLabel: workspacePathLabel(record.workspacePath),
             onTogglePinned: { togglePinned(record) },
+            onRename: { renameSession(record) },
+            onDelete: { deleteSession(record) },
             onExport: { export(record, format: $0) },
             onExportTaskBundle: { exportTaskBundleFile(for: record) }
         )
+    }
+
+    private func renameSession(_ record: SessionRecord) {
+        guard !(record.id == sessions.activeSessionID && sessions.isRunning) else {
+            let alert = NSAlert()
+            alert.messageText = "Finish the current answer first"
+            alert.informativeText = "This chat can be renamed as soon as the model stops responding."
+            alert.alertStyle = .informational
+            alert.runModal()
+            return
+        }
+
+        let field = NSTextField(string: SessionTitle.display(for: record))
+        field.placeholderString = "Chat name"
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = "Rename chat"
+        alert.informativeText = "Choose a short name that is easy to find in history."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let title = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        var updated = record
+        updated.title = title
+        updated.updatedAt = Date()
+        guard case .success = SessionStore.shared.save(updated) else { return }
+        if let index = recentSessions.firstIndex(where: { $0.id == updated.id }) {
+            recentSessions[index] = updated
+        }
+        if updated.id == sessions.activeSessionID {
+            _ = sessions.restore(updated)
+        }
+        NotificationCenter.default.post(
+            name: .sessionTitleChanged,
+            object: updated.id,
+            userInfo: ["title": title])
+    }
+
+    private func deleteSession(_ record: SessionRecord) {
+        let alert = NSAlert()
+        alert.messageText = "Delete this chat?"
+        alert.informativeText = "“\(SessionTitle.display(for: record))” will be removed from this Mac. This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        SessionStore.shared.delete(record)
+        recentSessions.removeAll { $0.id == record.id }
+        pinnedSessionIDs.remove(record.id)
+        if selectedSessionID == record.id || sessions.activeSessionID == record.id {
+            sessions.newSession()
+            selectedSessionID = nil
+        }
     }
 
     private func sourceTint(_ source: SessionSource) -> Color {
@@ -1003,82 +1062,95 @@ struct SessionHistoryRow: View {
     let workspaceAvailable: Bool
     let workspaceLabel: String
     let onTogglePinned: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
     let onExport: (SessionExporter.Format) -> Void
     let onExportTaskBundle: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: record.source.systemImage)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(sourceTint)
-                .frame(width: 24, height: 24)
-                .background(Theme.wash(sourceTint), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(record.source == .app ? Theme.textTertiary.opacity(0.7) : sourceTint.opacity(0.85))
+                .frame(width: 5, height: 5)
+                .frame(width: 10, height: 18, alignment: .center)
+                .padding(.top, 1)
+                .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(SessionTitle.display(for: record))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(SessionTitle.display(for: record))
+                        .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(workspaceAvailable ? Theme.textPrimary : Theme.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Text(SessionTitle.compactAge(record.updatedAt))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.textTertiary)
+                }
                 HStack(spacing: 5) {
                     if let subtitle {
                         Text(subtitle)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(record.source == .app ? Theme.textSecondary : sourceTint)
-                            .padding(.horizontal, record.source == .app ? 0 : 5)
-                            .frame(minHeight: record.source == .app ? nil : 17)
-                            .background(record.source == .app ? Color.clear : Theme.wash(sourceTint), in: Capsule())
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Theme.textSecondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
                     Text("\(record.messages.count) messages")
                         .monospacedDigit()
-                    Text("·")
-                    Text(SessionTitle.compactAge(record.updatedAt))
-                        .monospacedDigit()
+                    if pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(Theme.accent)
+                            .accessibilityLabel("Pinned")
+                    }
+                    if statusTitle != nil {
+                        Text("·")
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    if let statusTitle {
+                        HStack(spacing: 3) {
+                            Image(systemName: statusIcon)
+                                .font(.system(size: 8, weight: .semibold))
+                            Text(statusTitle)
+                                .lineLimit(1)
+                        }
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(statusColor)
+                        .accessibilityLabel(statusTitle)
+                    }
                 }
                 .font(.caption2)
                 .foregroundStyle(Theme.textTertiary)
             }
-            Spacer(minLength: 0)
-            VStack(alignment: .trailing, spacing: 4) {
-                if pinned {
-                    Image(systemName: "pin.fill")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Theme.accent)
-                        .accessibilityLabel("Pinned")
-                }
-                if let statusTitle {
-                    HStack(spacing: 3) {
-                        Image(systemName: statusIcon)
-                            .font(.caption2.weight(.bold))
-                        Text(statusTitle)
-                            .lineLimit(1)
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(statusColor)
-                    .accessibilityLabel(statusTitle)
-                }
-            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(selected ? Theme.wash(Theme.accent) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(selected ? Theme.accent : Color.clear)
-                .frame(width: 3, height: 25)
-        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(
+            selected
+                ? Theme.surfaceInset.opacity(0.82)
+                : isHovered ? Theme.surfaceInset.opacity(0.38) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(selected ? Theme.hairline : Color.clear, lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovered)
         .tag(record.id)
         .contextMenu {
             Button(pinned ? "Unpin task" : "Pin task", action: onTogglePinned)
+            Button("Rename chat…", action: onRename)
             Divider()
             Button("Export as Markdown…") { onExport(.markdown) }
             Button("Export as JSON…") { onExport(.json) }
             Button("Export task bundle…", action: onExportTaskBundle)
+            Divider()
+            Button("Delete chat", role: .destructive, action: onDelete)
         }
-        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+        .listRowInsets(EdgeInsets(top: 1, leading: 7, bottom: 1, trailing: 7))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .disabled(!workspaceAvailable)
@@ -1096,7 +1168,6 @@ struct SessionHistoryRow: View {
 struct SidebarHeaderView: View {
     let workspaceURL: URL?
     let sidebarTab: SidebarHistoryTab
-    let importedCount: Int
     @Binding var historySearch: String
     let queuedTasks: [QueuedAgentTask]
     let isImporting: Bool
@@ -1114,7 +1185,7 @@ struct SidebarHeaderView: View {
     let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             identityRow
             primaryActions
             historyModeBar
@@ -1123,10 +1194,10 @@ struct SidebarHeaderView: View {
                 queueSummary
             }
         }
-        .padding(.horizontal, showsCloseButton ? 18 : 14)
-        .padding(.top, showsCloseButton ? 14 : 16)
-        .padding(.bottom, 14)
-        .background(Theme.surface)
+        .padding(.horizontal, showsCloseButton ? 18 : 12)
+        .padding(.top, showsCloseButton ? 14 : 12)
+        .padding(.bottom, 11)
+        .background(Theme.bg)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.hairline).frame(height: 1)
         }
@@ -1136,17 +1207,13 @@ struct SidebarHeaderView: View {
         HStack(spacing: 9) {
             workspaceMark
             VStack(alignment: .leading, spacing: 2) {
-                Text("BEET CODE")
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.1)
-                    .foregroundStyle(Theme.textTertiary)
                 Text(workspaceURL?.lastPathComponent ?? "Chat only")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(workspaceURL == nil ? "No project connected" : "Current workspace")
-                    .font(.caption2.weight(.medium))
+                Text(workspaceURL == nil ? "Beet Code chats" : "Current workspace")
+                    .font(.caption2)
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
             }
@@ -1174,7 +1241,7 @@ struct SidebarHeaderView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+                .buttonStyle(LFCapsuleButtonStyle())
                 .disabled(isImporting)
                 .help("Import or refresh chats from Claude, Codex and Cursor")
             } else if workspaceURL == nil {
@@ -1183,7 +1250,7 @@ struct SidebarHeaderView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+                .buttonStyle(LFCapsuleButtonStyle())
                 .help("Start a new chat without a project")
             } else {
                 Button(action: onNewSession) {
@@ -1191,7 +1258,7 @@ struct SidebarHeaderView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+                .buttonStyle(LFCapsuleButtonStyle())
                 .help("Start a new chat in this workspace")
             }
 
@@ -1229,21 +1296,21 @@ struct SidebarHeaderView: View {
                     .aspectRatio(contentMode: .fit)
             } else {
                 Image(systemName: workspaceURL == nil ? "bubble.left.and.bubble.right.fill" : "folder.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
             }
         }
-        .frame(width: 30, height: 30)
-        .background(Theme.washStrong(Theme.accent), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(Theme.washBorder(Theme.accent), lineWidth: 1))
+        .frame(width: 26, height: 26)
+        .background(Theme.surfaceInset.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .strokeBorder(Theme.hairline.opacity(0.8), lineWidth: 1))
         .accessibilityHidden(true)
     }
 
     private var historyModeBar: some View {
         HStack(spacing: 4) {
             historyModeButton(.sessions, title: "My chats", icon: "bubble.left.and.bubble.right")
-            historyModeButton(.imported, title: "Other tools", icon: "arrow.down.doc", count: importedCount)
+            historyModeButton(.imported, title: "Other tools", icon: "arrow.down.doc")
         }
         .padding(3)
         .background(Theme.surfaceInset.opacity(0.62), in: Capsule())

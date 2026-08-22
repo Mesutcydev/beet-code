@@ -182,10 +182,55 @@ struct AssistantMessage: View {
         if case .assistant(let text) = item.kind {
             HStack(alignment: .top, spacing: 12) {
                 AssistantAvatar()
-                MarkdownText(text: text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 10) {
+                    MarkdownText(text: text)
+                    AnswerFooterRow(text: text, metrics: item.answerMetrics)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
             }
+        }
+    }
+}
+
+/// Quiet, standard answer actions. The useful generation details stay close
+/// to the response, while copy feedback is visible without a toast or modal.
+struct AnswerFooterRow: View {
+    let text: String
+    let metrics: AnswerMetrics?
+    @State private var didCopy = false
+
+    var body: some View {
+        HStack(spacing: 9) {
+            if let metrics {
+                AnswerMetadataRow(metrics: metrics)
+            }
+            if metrics != nil {
+                Text("·")
+                    .foregroundStyle(Theme.hairline)
+                    .accessibilityHidden(true)
+            }
+            Button(action: copyAnswer) {
+                Label(didCopy ? "Copied" : "Copy", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                    .font(.caption2)
+                    .foregroundStyle(didCopy ? Theme.success : Theme.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Copy answer")
+            .accessibilityLabel(didCopy ? "Answer copied" : "Copy answer")
+        }
+        .frame(minHeight: 18)
+    }
+
+    private func copyAnswer() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        didCopy = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.4))
+            guard !Task.isCancelled else { return }
+            didCopy = false
         }
     }
 }
@@ -206,30 +251,310 @@ struct AssistantAvatar: View {
     }
 }
 
-/// Markdown text with a plain-text fallback. Full parsing keeps headings,
-/// lists, paragraphs, and fenced code blocks structurally separated; if
-/// parsing fails (raw identifiers with stray underscores), plain text shows —
-/// never a blank bubble. Set at `.body` (not callout): the transcript is the
-/// app's primary reading surface, so prose gets the full reading size.
+/// Codex-style block markdown. SwiftUI's single `Text(AttributedString)`
+/// flattens paragraph presentation intent, so every semantic block gets its
+/// own layout row: real paragraph rhythm, properly indented lists, distinct
+/// headings, quotes, and horizontally scrollable code.
 struct MarkdownText: View {
     let text: String
 
     var body: some View {
         let displayText = AssistantAnswerFormatter.formattedForDisplay(text)
-        if let attributed = try? AttributedString(
-            markdown: displayText,
-            options: .init(interpretedSyntax: .full)) {
-            Text(attributed)
-                .font(.body)
-                .lineSpacing(3)
-                .foregroundStyle(Theme.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
+        let blocks = MarkdownDocumentParser.blocks(from: displayText)
+
+        VStack(alignment: .leading, spacing: 13) {
+            ForEach(blocks) { block in
+                MarkdownBlockView(block: block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct AnswerMetadataRow: View {
+    let metrics: AnswerMetrics
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Label(tokenLabel, systemImage: "text.word.spacing")
+            if let speed = metrics.tokensPerSecond {
+                separator
+                Label(String(format: "%.1f tok/s", speed), systemImage: "speedometer")
+            }
+            separator
+            Label(durationLabel, systemImage: "clock")
+        }
+        .font(.caption2)
+        .foregroundStyle(Theme.textTertiary)
+        .monospacedDigit()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var tokenLabel: String {
+        (metrics.tokenCountIsEstimated ? "≈" : "")
+            + metrics.outputTokens.formatted()
+            + " tokens"
+    }
+
+    private var durationLabel: String {
+        if metrics.elapsedSeconds < 60 {
+            return String(format: "%.1fs", metrics.elapsedSeconds)
+        }
+        let minutes = Int(metrics.elapsedSeconds) / 60
+        let seconds = Int(metrics.elapsedSeconds) % 60
+        return "\(minutes)m \(seconds)s"
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [tokenLabel]
+        if let speed = metrics.tokensPerSecond {
+            parts.append(String(format: "%.1f tokens per second", speed))
+        }
+        parts.append("\(durationLabel) elapsed")
+        return parts.joined(separator: ", ")
+    }
+
+    private var separator: some View {
+        Text("·")
+            .foregroundStyle(Theme.hairline)
+            .accessibilityHidden(true)
+    }
+}
+
+struct MarkdownBlock: Identifiable, Equatable {
+    enum Content: Equatable {
+        case paragraph(String)
+        case heading(level: Int, text: String)
+        case bullets([String])
+        case numbers([String])
+        case quote(String)
+        case code(language: String?, text: String)
+        case divider
+    }
+
+    let id: Int
+    let content: Content
+}
+
+enum MarkdownDocumentParser {
+    static func blocks(from source: String) -> [MarkdownBlock] {
+        var contents: [MarkdownBlock.Content] = []
+        var paragraph: [String] = []
+        var listItems: [String] = []
+        var listIsNumbered = false
+        var codeLines: [String] = []
+        var codeLanguage: String?
+        var insideCode = false
+
+        func flushParagraph() {
+            guard !paragraph.isEmpty else { return }
+            contents.append(.paragraph(paragraph.joined(separator: " ")))
+            paragraph.removeAll(keepingCapacity: true)
+        }
+
+        func flushList() {
+            guard !listItems.isEmpty else { return }
+            contents.append(listIsNumbered ? .numbers(listItems) : .bullets(listItems))
+            listItems.removeAll(keepingCapacity: true)
+        }
+
+        func flushProse() {
+            flushParagraph()
+            flushList()
+        }
+
+        for rawLine in source.components(separatedBy: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+
+            if insideCode {
+                if line.hasPrefix("```") {
+                    contents.append(.code(
+                        language: codeLanguage,
+                        text: codeLines.joined(separator: "\n")))
+                    codeLines.removeAll(keepingCapacity: true)
+                    codeLanguage = nil
+                    insideCode = false
+                } else {
+                    codeLines.append(rawLine)
+                }
+                continue
+            }
+
+            if line.hasPrefix("```") {
+                flushProse()
+                let language = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                codeLanguage = language.isEmpty ? nil : language
+                insideCode = true
+            } else if line.isEmpty {
+                flushProse()
+            } else if isDivider(line) {
+                flushProse()
+                contents.append(.divider)
+            } else if let heading = heading(in: line) {
+                flushProse()
+                contents.append(.heading(level: heading.level, text: heading.text))
+            } else if isStandaloneLabel(line) {
+                flushProse()
+                contents.append(.heading(level: 3, text: String(line.dropLast())))
+            } else if let item = bulletItem(in: line) {
+                flushParagraph()
+                if !listItems.isEmpty, listIsNumbered { flushList() }
+                listIsNumbered = false
+                listItems.append(item)
+            } else if let item = numberedItem(in: line) {
+                flushParagraph()
+                if !listItems.isEmpty, !listIsNumbered { flushList() }
+                listIsNumbered = true
+                listItems.append(item)
+            } else if line.hasPrefix(">") {
+                flushProse()
+                contents.append(.quote(String(line.dropFirst()).trimmingCharacters(in: .whitespaces)))
+            } else {
+                flushList()
+                paragraph.append(line)
+            }
+        }
+
+        if insideCode {
+            contents.append(.code(language: codeLanguage, text: codeLines.joined(separator: "\n")))
         } else {
-            Text(displayText)
+            flushProse()
+        }
+
+        if contents.isEmpty, !source.isEmpty { contents = [.paragraph(source)] }
+        return contents.enumerated().map { MarkdownBlock(id: $0.offset, content: $0.element) }
+    }
+
+    private static func heading(in line: String) -> (level: Int, text: String)? {
+        let hashes = line.prefix { $0 == "#" }
+        guard (1...6).contains(hashes.count), line.dropFirst(hashes.count).first == " " else {
+            return nil
+        }
+        return (
+            hashes.count,
+            String(line.dropFirst(hashes.count + 1)).trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func isStandaloneLabel(_ line: String) -> Bool {
+        line.hasSuffix(":") && line.count <= 48 && !line.dropLast().contains(where: { ".!?".contains($0) })
+    }
+
+    private static func isDivider(_ line: String) -> Bool {
+        guard line.count >= 3 else { return false }
+        let compact = line.filter { !$0.isWhitespace }
+        guard let first = compact.first, "-*_".contains(first) else { return false }
+        return compact.allSatisfy { $0 == first }
+    }
+
+    private static func bulletItem(in line: String) -> String? {
+        for prefix in ["- ", "* ", "+ "] where line.hasPrefix(prefix) {
+            return String(line.dropFirst(prefix.count))
+        }
+        return nil
+    }
+
+    private static func numberedItem(in line: String) -> String? {
+        guard let period = line.firstIndex(of: "."),
+              Int(line[..<period]) != nil else { return nil }
+        let remainder = line[line.index(after: period)...]
+        guard remainder.first == " " else { return nil }
+        return String(remainder.dropFirst())
+    }
+}
+
+struct MarkdownBlockView: View {
+    let block: MarkdownBlock
+
+    var body: some View {
+        switch block.content {
+        case .paragraph(let text):
+            inline(text)
                 .font(.body)
-                .lineSpacing(3)
-                .foregroundStyle(Theme.textPrimary)
+                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
+
+        case .heading(let level, let text):
+            inline(text)
+                .font(headingFont(level))
+                .fixedSize(horizontal: false, vertical: true)
+
+        case .bullets(let items):
+            list(items: items, numbered: false)
+
+        case .numbers(let items):
+            list(items: items, numbered: true)
+
+        case .quote(let text):
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(Theme.hairline)
+                    .frame(width: 2)
+                inline(text)
+                    .font(.body)
+                    .lineSpacing(4)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+        case .code(let language, let text):
+            VStack(alignment: .leading, spacing: 6) {
+                if let language {
+                    Text(language)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(verbatim: text)
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(Theme.textPrimary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surfaceInset, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1))
+
+        case .divider:
+            Divider()
+                .overlay(Theme.hairline.opacity(0.75))
+                .padding(.vertical, 2)
+        }
+    }
+
+    private func inline(_ source: String) -> Text {
+        if let attributed = try? AttributedString(
+            markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            return Text(attributed).foregroundStyle(Theme.textPrimary)
+        }
+        return Text(source).foregroundStyle(Theme.textPrimary)
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: .title2.weight(.semibold)
+        case 2: .title3.weight(.semibold)
+        default: .headline
+        }
+    }
+
+    private func list(items: [String], numbered: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text(numbered ? "\(index + 1)." : "•")
+                        .font(.body.weight(numbered ? .regular : .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 20, alignment: .trailing)
+                    inline(item)
+                        .font(.body)
+                        .lineSpacing(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 }
@@ -1062,14 +1387,17 @@ struct FinishBanner: View {
     }
 
     private var completionCard: some View {
-        HStack(alignment: .top, spacing: Spacing.md) {
-            Image(systemName: summary.artifact == nil ? "checkmark.seal.fill" : "shippingbox.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Theme.success)
-                .frame(width: 38, height: 38)
-                .background(Theme.washStrong(Theme.success), in: Circle())
+        let shape = RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
 
-            VStack(alignment: .leading, spacing: Spacing.sm) {
+        return HStack(alignment: .center, spacing: Spacing.md) {
+            Image(systemName: summary.artifact == nil ? "checkmark.seal.fill" : "shippingbox.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.success)
+                .frame(width: 34, height: 34)
+                .background(Theme.wash(Theme.success), in: Circle())
+                .overlay(Circle().strokeBorder(Theme.success.opacity(0.18), lineWidth: 0.75))
+
+            VStack(alignment: .leading, spacing: Spacing.xs) {
                 Text(completionTitle)
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
@@ -1106,23 +1434,28 @@ struct FinishBanner: View {
             Button(action: onNewChat) {
                 Label("New chat", systemImage: "square.and.pencil")
             }
-            .buttonStyle(LFCapsuleButtonStyle(tone: .primary))
+            .buttonStyle(LFCapsuleButtonStyle())
+            .lfHoverLift()
             .accessibilityHint("Clears this conversation and starts a new chat")
         }
-        .padding(Spacing.md)
+        .padding(.horizontal, Spacing.lg)
+        .padding(.vertical, Spacing.md)
         .frame(maxWidth: 680, alignment: .leading)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(alignment: .leading) {
-            Capsule()
-                .fill(Theme.success)
-                .frame(width: 3)
-                .padding(.vertical, 10)
-                .padding(.leading, 6)
+        .background(Theme.surface, in: shape)
+        .overlay {
+            LinearGradient(
+                colors: [Theme.success.opacity(0.075), .clear],
+                startPoint: .leading,
+                endPoint: .trailing)
+                .clipShape(shape)
+                .allowsHitTesting(false)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 1)
+            shape
+                .strokeBorder(Theme.success.opacity(0.18), lineWidth: 0.75)
+                .allowsHitTesting(false)
         }
+        .shadow(color: Theme.cardShadow.opacity(0.55), radius: 6, y: 2)
     }
 
     @ViewBuilder

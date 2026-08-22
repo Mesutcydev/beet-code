@@ -11,6 +11,17 @@ struct SessionCheckpoint: Codable, Identifiable, Sendable, Equatable {
     var summary: String
 }
 
+/// Small, durable generation details shown beneath a finished assistant
+/// answer. Every field is optional at the provider boundary; older sessions
+/// decode without it and providers that do not report usage fall back to an
+/// explicitly approximate output-token count.
+struct AnswerMetrics: Codable, Sendable, Equatable {
+    var outputTokens: Int
+    var tokensPerSecond: Double?
+    var elapsedSeconds: Double
+    var tokenCountIsEstimated: Bool
+}
+
 struct SessionMessage: Codable, Sendable, Equatable {
     enum Role: String, Codable, Sendable {
         case user
@@ -27,6 +38,21 @@ struct SessionMessage: Codable, Sendable, Equatable {
     var content: String
     var toolName: String?
     var timestamp: Date
+    var answerMetrics: AnswerMetrics?
+
+    init(
+        role: Role,
+        content: String,
+        toolName: String?,
+        timestamp: Date,
+        answerMetrics: AnswerMetrics? = nil
+    ) {
+        self.role = role
+        self.content = content
+        self.toolName = toolName
+        self.timestamp = timestamp
+        self.answerMetrics = answerMetrics
+    }
 }
 
 /// Where a session came from. `.app` sessions are BeetCode's own; the rest

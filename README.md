@@ -2,7 +2,7 @@
 
 A lightweight, native, **Apple Silicon-only macOS coding agent**. Beet Code runs MLX models in-process through Metal, downloads them directly from Hugging Face with pause/resume, and gives a local coding agent safe, reviewable tools.
 
-[![Download Beet Code 0.9.8](https://img.shields.io/badge/Download-Beet%20Code%200.9.8%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.8.zip)
+[![Download Beet Code 0.9.9](https://img.shields.io/badge/Download-Beet%20Code%200.9.9%20ZIP-7A1F3D?style=for-the-badge)](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.9.zip)
 [![Open source](https://img.shields.io/badge/Open%20source-7A1F3D?style=for-the-badge)](LICENSE)
 
 <p align="center">
@@ -32,7 +32,7 @@ Beet Code keeps your project, model, chats, browser, and iOS Simulator in one si
 
 The [GitHub Pages site](https://mesutcydev.github.io/beet-code/) has the full preview gallery, light/dark mode, and app details.
 
-**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.8.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
+**Install:** download the [ZIP](https://github.com/Mesutcydev/beet-code/releases/latest/download/BeetCode-0.9.9.zip), extract it, and move **Beet Code.app** to Applications. Apple Silicon + macOS 15+.
 
 > Gatekeeper will warn — this build is Apple Development–signed, **not notarized** (Developer ID certs are revoked). Right-click → Open, or `xattr -dr com.apple.quarantine "/path/to/Beet Code.app"`.
 
@@ -302,6 +302,14 @@ Docs: [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
   and `api_key=…` without storing the wrapper.
 
 Project policy reference: [`docs/PROJECT-POLICY.md`](docs/PROJECT-POLICY.md).
+
+## v0.9.9 — Native chat reading and history polish
+
+- Assistant answers now render as real Markdown blocks with comfortable paragraph, heading, list, quote, divider, and code spacing.
+- Completed answers show compact token, generation-speed, elapsed-time, and copy controls, and the transcript follows the model through the final completion card.
+- Chat history uses a quieter native text-first hierarchy inspired by Codex and Cursor, with clearer selection, project grouping, search, rename, pin, export, and confirmed deletion.
+- The completion card and New chat action now blend into the app instead of competing with the answer.
+- Qwen3.5 9B 4-bit is verified on an M4 Mac with 16 GB, including a real structured Markdown generation.
 
 ## v0.9.8 — Qwen3.5 9B compatibility
 

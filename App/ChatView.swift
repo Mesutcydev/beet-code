@@ -50,6 +50,12 @@ struct ChatView: View {
             guard !Task.isCancelled else { return }
             sessionTitle = title
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionTitleChanged)) { note in
+            guard let id = note.object as? UUID,
+                  id == controller.activeSessionID,
+                  let title = note.userInfo?["title"] as? String else { return }
+            sessionTitle = title
+        }
         .onPasteCommand(of: [.png, .tiff, .jpeg, .fileURL]) { providers in
             handlePaste(providers)
         }
@@ -161,6 +167,14 @@ struct ChatView: View {
             .onChange(of: controller.isRunning) { _, running in
                 if running { scrollToLatest(proxy, animated: true) }
             }
+            .onChange(of: controller.finishReason) { _, reason in
+                guard reason != nil else { return }
+                // The completion card is inserted after the last streamed
+                // token. Force one final follow pass so it is fully visible
+                // instead of landing just below the viewport.
+                isPinnedToBottom = true
+                scrollToLatest(proxy, animated: true)
+            }
             .overlay(alignment: .bottomTrailing) {
                 if !isPinnedToBottom && (controller.isRunning || hasPendingGate) {
                     Button {
@@ -189,9 +203,13 @@ struct ChatView: View {
     /// real before asking the proxy to move, which keeps streamed answers
     /// pinned without stealing the user's position when they scroll up.
     private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool = false) {
-        guard isPinnedToBottom else { return }
+        // During generation the content itself can briefly move the viewport
+        // outside the bottom threshold before this callback runs. Treat an
+        // active answer as follow mode so growing Markdown blocks cannot
+        // accidentally disable auto-scroll.
+        guard isPinnedToBottom || controller.isRunning else { return }
         DispatchQueue.main.async {
-            guard self.isPinnedToBottom else { return }
+            guard self.isPinnedToBottom || self.controller.isRunning else { return }
             if animated {
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo("bottom", anchor: .bottom)

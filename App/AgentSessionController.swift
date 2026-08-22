@@ -24,6 +24,7 @@ final class AgentSessionController: ObservableObject {
 
         let id: UUID
         var kind: Kind
+        var answerMetrics: AnswerMetrics? = nil
     }
 
     @Published private(set) var transcript: [TranscriptItem] = []
@@ -79,6 +80,10 @@ final class AgentSessionController: ObservableObject {
     /// message, so a local finetune's conversational filler never flashes in
     /// the transcript while it is generating.
     private var exactAnswerOverride: String?
+    /// Wall-clock task timing powers the quiet metadata row under the final
+    /// answer. It intentionally includes preparation and tool work, matching
+    /// the "worked for …" timing users expect from Codex-style chat.
+    private var runStartedAt: Date?
 
     /// Test seam for the otherwise private project-free runtime directory.
     /// The directory exists only because engines require a working directory;
@@ -145,6 +150,7 @@ final class AgentSessionController: ObservableObject {
         // HTTP requests can both pass the guard before the async MCP/model
         // preparation marks the loop as running.
         isRunning = true
+        runStartedAt = Date()
         // A stale event task must never outlive the run it belongs to.
         eventTask?.cancel()
         codexTurnID = nil
@@ -741,6 +747,7 @@ final class AgentSessionController: ObservableObject {
         isRunning = false
         finishReason = reason
         currentPhase = .finished
+        attachMetricsToLastAnswer()
         clearPending()
         eventTask?.cancel()
         eventTask = nil
@@ -1221,7 +1228,10 @@ final class AgentSessionController: ObservableObject {
                 // older sessions stored raw tool-call JSON in assistant text.
                 let prose = Self.cleanedAssistantText(message.content)
                 if !prose.isEmpty {
-                    rebuilt.append(TranscriptItem(id: UUID(), kind: .assistant(prose)))
+                    rebuilt.append(TranscriptItem(
+                        id: UUID(),
+                        kind: .assistant(prose),
+                        answerMetrics: message.answerMetrics))
                 }
             case .reasoning:
                 if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1751,6 +1761,7 @@ final class AgentSessionController: ObservableObject {
             liveReasoningText = ""
             isRunning = false
             finishReason = reason
+            attachMetricsToLastAnswer()
             clearPending()
             loop = nil
             eventTask = nil
@@ -1766,6 +1777,55 @@ final class AgentSessionController: ObservableObject {
             case .engineError(let message):
                 diagnostics.record(.engine, "Engine error", detail: message, level: .error)
             }
+        }
+    }
+
+    /// Enriches only the final visible answer for a run. Local and remote
+    /// engines provide exact generation counts when available; Codex account
+    /// runs and providers without usage data are clearly marked approximate.
+    private func attachMetricsToLastAnswer() {
+        guard let index = transcript.lastIndex(where: {
+            if case .assistant = $0.kind { return true }
+            return false
+        }), case .assistant(let answer) = transcript[index].kind else {
+            runStartedAt = nil
+            return
+        }
+
+        let answerID = transcript[index].id
+        let startedAt = runStartedAt
+        let elapsed = max(Date().timeIntervalSince(startedAt ?? Date()), 0.01)
+        let accountBacked = activeCodexModelIDHandler() != nil
+        runStartedAt = nil
+
+        Task { [weak self] in
+            guard let self else { return }
+            let stats = await engine.stats
+            let hasReportedUsage = !accountBacked && stats.generatedTokens > 0
+            let estimatedTokens = max(1, Int(ceil(Double(answer.utf8.count) / 4.0)))
+            let metrics = AnswerMetrics(
+                outputTokens: hasReportedUsage ? stats.generatedTokens : estimatedTokens,
+                tokensPerSecond: hasReportedUsage ? stats.tokensPerSecond : nil,
+                elapsedSeconds: elapsed,
+                tokenCountIsEstimated: !hasReportedUsage)
+
+            guard let liveIndex = transcript.firstIndex(where: { $0.id == answerID }) else { return }
+            transcript[liveIndex].answerMetrics = metrics
+            persistAnswerMetrics(metrics, matching: answer)
+        }
+    }
+
+    private func persistAnswerMetrics(_ metrics: AnswerMetrics, matching answer: String) {
+        guard let id = activeSessionID,
+              var record = SessionStore.shared.load(id: id),
+              let messageIndex = record.messages.lastIndex(where: {
+                  $0.role == .assistant && Self.cleanedAssistantText($0.content) == answer
+              }) else { return }
+
+        record.messages[messageIndex].answerMetrics = metrics
+        record.updatedAt = Date()
+        if persistSessionRecord(record), codexRecord?.id == id {
+            codexRecord = record
         }
     }
 
